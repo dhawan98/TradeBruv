@@ -24,6 +24,9 @@ TradeBruv currently supports:
 - historical forward review of saved scanner reports
 - strategy performance aggregation by labels, scores, catalysts, themes, and warnings
 - a local CSV research/trade journal
+- timestamped scan archives for daily history
+- deterministic daily alerts and watchlist state tracking
+- daily summary JSON/Markdown outputs
 - strategy labels and status labels
 - trade-plan levels
 - avoid/risk flags
@@ -39,6 +42,8 @@ The scanner does **not** do:
 - options strategy building
 - AI-driven buy/sell decisions
 - predictive backtest claims
+- hype-driven alert decisions
+- notification credential management
 - guaranteed-profit claims
 
 ## Scanner Modes
@@ -195,6 +200,105 @@ python3 -m tradebruv scan \
   --provider local \
   --data-dir path/to/data
 ```
+
+### Archive Scan Reports
+
+Normal scan output still writes `scan_report.json/csv` or `outlier_scan_report.json/csv`. Add `--archive` to also save a timestamped copy under `reports/scans/YYYY-MM-DD/`:
+
+```bash
+python3 -m tradebruv scan \
+  --universe config/outlier_watchlist.txt \
+  --provider real \
+  --mode outliers \
+  --archive
+```
+
+Archived JSON includes metadata:
+- `scan_id`
+- `created_at`
+- provider and mode
+- universe and catalyst file paths
+- AI enabled flag
+- result count
+- command used
+- git commit when available
+
+## Daily Scan Automation
+
+The `daily` command runs a full deterministic workflow:
+1. run the scanner
+2. archive timestamped JSON/CSV reports
+3. compare results with the previous local watchlist state
+4. generate deterministic alerts
+5. update watchlist state
+6. write daily summary outputs
+
+```bash
+python3 -m tradebruv daily \
+  --universe config/outlier_watchlist.txt \
+  --provider real \
+  --mode outliers
+```
+
+For deterministic sample checks:
+
+```bash
+python3 -m tradebruv daily \
+  --universe config/outlier_watchlist.txt \
+  --provider sample \
+  --mode outliers \
+  --as-of-date 2026-04-24
+```
+
+Default local outputs:
+- `reports/scans/YYYY-MM-DD/scan_<mode>_<provider>_<time>.json`
+- `reports/scans/YYYY-MM-DD/scan_<mode>_<provider>_<time>.csv`
+- `reports/watchlist_state.json`
+- `outputs/daily/alerts.json`
+- `outputs/daily/alerts.csv`
+- `outputs/daily/daily_summary.json`
+- `outputs/daily/daily_summary.md`
+
+### Watchlist State
+
+The watchlist state file is local JSON. It stores the prior and current values needed to compare scans:
+- status
+- winner, outlier, risk, and setup quality scores
+- outlier type
+- price
+- entry zone
+- invalidation
+- TP1/TP2
+- warnings
+- catalyst quality
+- theme tags
+
+It is intentionally inspectable and does not require a database or cloud service.
+
+### Alerts
+
+Alerts are deterministic comparisons between the previous state and the current scan. AI does not create alert decisions. Alerts never mean buy or guaranteed.
+
+Alert severities:
+- `Info`: data or workflow note
+- `Watch`: monitor or review context
+- `Important`: meaningful setup, target, or risk change
+- `Critical`: avoid/invalidation/provider-risk style warning
+
+Alert categories:
+- `Opportunity`: upgrades, active setups, threshold crossings, entry-zone events, catalyst confirmation
+- `Risk`: Avoid downgrades, invalidations, failed breakouts, risk score jumps, hype/pump warnings
+- `Target/Management`: TP1/TP2, reward/risk changes, extended moves, journal review prompts
+- `Data Quality`: missing ticker data, provider failures, missing catalyst data, unavailable AI explanation when enabled
+
+Recommended actions are limited to:
+- `Research`
+- `Watch`
+- `Avoid`
+- `Review Journal`
+- `No Action`
+
+Use `daily_summary.md` as the quick daily brief. It is designed to be copied into notes, Slack, Discord, or email manually without adding credentials or paid notification dependencies.
 
 ## Historical Review / Backtest Mode
 
@@ -398,6 +502,10 @@ Loaded reports show the same outlier feed, table, detail view, avoid panel, opti
 - `Strategy Performance`: shows best/worst historical buckets, warning buckets with negative outcomes, and small-sample warnings.
 - `Journal`: adds scanner ideas to the local journal, updates decisions/entries/exits/notes, and separates open from closed ideas/trades.
 - `Process Quality`: summarizes rule-following, mistakes, chasing frequency, invalidation violations, early exits, and results when rules were followed versus ignored.
+- `Daily Brief`: loads the daily summary and shows market regime, top candidates, top avoid names, top alerts, and data issues.
+- `Alerts`: loads `alerts.json`, filters by severity/type/ticker/category/search text, and can add alert tickers to the journal.
+- `Watchlist Changes`: groups alerts into score, status, risk, setup, level, and catalyst changes.
+- `Alert History`: loads `alerts.json`, `daily_summary.json`, `daily_summary.md`, and archived scan reports.
 
 Expected layout:
 
@@ -580,6 +688,8 @@ Reports are written to `outputs/` by default:
 - `review_report.json` / `review_report.csv`
 - `strategy_performance.json` / `strategy_performance.csv`
 - `journal.csv` unless a different journal path is supplied
+- `alerts.json` / `alerts.csv`
+- `daily_summary.json` / `daily_summary.md`
 
 Each row includes:
 - ticker and company
@@ -629,6 +739,11 @@ Current test coverage includes:
 - strategy aggregation and small-sample warnings
 - journal add/list/update/export/stats
 - dashboard review/performance/journal/process transformations
+- scan archive naming and metadata
+- watchlist state creation and update
+- deterministic upgrade, downgrade, threshold, entry-zone, target, invalidation, failed-breakout, hype/pump, and missing-data alerts
+- daily summary JSON and Markdown output
+- dashboard alert filtering and watchlist-change transformations
 
 ## Known Limitations
 
@@ -642,6 +757,9 @@ Current test coverage includes:
 - small sample sizes are unreliable
 - review results may be affected by survivorship bias if the historical universe was built poorly
 - saved-report review depends on available later OHLCV data and does not reconstruct unavailable signals
+- daily alerts are research prompts, not buy/sell instructions
+- alert state depends on the previous local `watchlist_state.json`; deleting it resets change detection
+- local notifications/email/SMS are not integrated in this pass
 - AI explanations require explicit opt-in and configured credentials unless using the mock provider
 - live news remains lightweight/free-provider based; manual catalyst ingestion is the reliable path
 - no broker integration, trade execution, social scraping, or options strategy builder is active yet

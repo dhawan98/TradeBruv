@@ -13,16 +13,21 @@ from tradebruv.dashboard_data import (
     DashboardReport,
     build_process_quality_summary,
     build_daily_summary,
+    build_daily_brief_view,
     build_review_summary,
     build_strategy_performance_highlights,
+    build_watchlist_change_summary,
     classify_avoid_reasons,
     extract_options_fields,
+    filter_dashboard_alerts,
     filter_results,
     filter_review_results,
     find_latest_report,
     is_avoid,
     load_dashboard_journal,
     load_dashboard_report,
+    load_alerts_report,
+    load_daily_summary_report,
     load_review_report,
     load_strategy_performance,
     run_dashboard_review,
@@ -108,6 +113,10 @@ def main() -> None:
         "Strategy Performance",
         "Journal",
         "Process Quality",
+        "Daily Brief",
+        "Alerts",
+        "Watchlist Changes",
+        "Alert History",
     ])
     with tabs[0]:
         _outlier_feed(filtered)
@@ -135,6 +144,14 @@ def main() -> None:
         _journal_page(filtered or rows)
     with tabs[12]:
         _process_quality_page()
+    with tabs[13]:
+        _daily_brief_page()
+    with tabs[14]:
+        _alerts_page(filtered or rows)
+    with tabs[15]:
+        _watchlist_changes_page()
+    with tabs[16]:
+        _alert_history_loader_page()
 
 
 def _sidebar_controls() -> None:
@@ -766,6 +783,114 @@ def _process_quality_page() -> None:
             "avoided_setups": summary["avoided_setups"],
         }
     )
+
+
+def _daily_brief_page() -> None:
+    st.subheader("Daily Brief")
+    st.caption("Deterministic daily research brief. Alerts are prompts to research, watch, avoid, or review.")
+    summary = st.session_state.get("daily_summary")
+    alerts_payload = st.session_state.get("alerts_report", {})
+    alerts = alerts_payload.get("alerts", []) if isinstance(alerts_payload, dict) else []
+    if not isinstance(summary, dict):
+        st.info("Load a daily summary from the Alert History tab or run the daily CLI.")
+        return
+    brief = build_daily_brief_view(summary, alerts)
+    cols = st.columns(4)
+    regime = brief["market_regime"]
+    cols[0].metric("Regime", regime.get("regime", "Unavailable") if isinstance(regime, dict) else "Unavailable")
+    cols[1].metric("Top candidates", len(brief["top_candidates"]))
+    cols[2].metric("Top alerts", len(brief["top_alerts"]))
+    cols[3].metric("Data issues", len(brief["data_issues"]))
+    st.markdown("**Top Candidates**")
+    st.dataframe(brief["top_candidates"], hide_index=True, use_container_width=True)
+    st.markdown("**Top Avoid Names**")
+    st.dataframe(brief["top_avoid_names"], hide_index=True, use_container_width=True)
+    st.markdown("**Top Alerts**")
+    st.dataframe(brief["top_alerts"], hide_index=True, use_container_width=True)
+    st.markdown("**Data Issues**")
+    st.dataframe(brief["data_issues"], hide_index=True, use_container_width=True)
+    st.markdown("**Daily Summary Markdown**")
+    st.code(summary.get("markdown", "Load daily_summary.md in Alert History to show the markdown text."), language="markdown")
+
+
+def _alerts_page(scan_rows: list[dict[str, Any]]) -> None:
+    st.subheader("Alerts")
+    alerts_payload = st.session_state.get("alerts_report")
+    alerts = alerts_payload.get("alerts", []) if isinstance(alerts_payload, dict) else []
+    if not alerts:
+        st.info("Load alerts.json from the Alert History tab.")
+        return
+    filters = {
+        "severity": st.multiselect("Severity", sorted({alert.get("severity", "") for alert in alerts if alert.get("severity")})),
+        "alert_type": st.multiselect("Alert type", sorted({alert.get("alert_type", "") for alert in alerts if alert.get("alert_type")})),
+        "ticker": st.multiselect("Ticker", sorted({alert.get("ticker", "") for alert in alerts if alert.get("ticker")})),
+        "category": st.multiselect("Category", sorted({alert.get("category", "") for alert in alerts if alert.get("category")})),
+        "search": st.text_input("Search alerts", ""),
+    }
+    filtered = filter_dashboard_alerts(alerts, filters)
+    st.dataframe(filtered, hide_index=True, use_container_width=True)
+    st.markdown("**Add alert ticker to journal**")
+    tickers = sorted({alert.get("ticker", "") for alert in filtered if alert.get("ticker")})
+    if not tickers:
+        st.info("No alert ticker selected by the current filters.")
+        return
+    selected = st.selectbox("Alert ticker", tickers, key="alert_journal_ticker")
+    decision = st.selectbox("Journal decision from alert", ["Research", "Watch", "Paper Trade", "Skipped", "Avoided"])
+    journal_path = Path(st.text_input("Alert journal path", str(DEFAULT_JOURNAL_PATH), key="alert_journal_path"))
+    if st.button("Add alert ticker to journal", use_container_width=True):
+        row = next((item for item in scan_rows if item.get("ticker") == selected), {})
+        try:
+            add_journal_entry(
+                journal_path=journal_path,
+                ticker=selected,
+                updates={**_journal_updates_from_row(row), "decision": decision, "notes": "Added from deterministic alert."},
+            )
+            st.success(f"Added {selected} to journal as {decision}.")
+        except Exception as exc:
+            st.error(f"Could not add alert ticker to journal: {exc}")
+
+
+def _watchlist_changes_page() -> None:
+    st.subheader("Watchlist Changes")
+    alerts_payload = st.session_state.get("alerts_report")
+    alerts = alerts_payload.get("alerts", []) if isinstance(alerts_payload, dict) else []
+    if not alerts:
+        st.info("Load alerts.json from the Alert History tab.")
+        return
+    changes = build_watchlist_change_summary(alerts)
+    for title, rows in changes.items():
+        st.markdown(f"**{title.replace('_', ' ').title()}**")
+        st.dataframe(rows, hide_index=True, use_container_width=True)
+
+
+def _alert_history_loader_page() -> None:
+    st.subheader("Alert History Loader")
+    alerts_path = Path(st.text_input("alerts.json path", "outputs/daily/alerts.json"))
+    summary_path = Path(st.text_input("daily_summary.json path", "outputs/daily/daily_summary.json"))
+    markdown_path = Path(st.text_input("daily_summary.md path", "outputs/daily/daily_summary.md"))
+    archived_report_path = Path(st.text_input("Archived scan report path", "reports/scans/YYYY-MM-DD/scan_outliers_real_093000.json"))
+    cols = st.columns(3)
+    if cols[0].button("Load alerts", use_container_width=True):
+        try:
+            st.session_state["alerts_report"] = load_alerts_report(alerts_path)
+            st.success("Alerts loaded.")
+        except Exception as exc:
+            st.error(f"Could not load alerts: {exc}")
+    if cols[1].button("Load daily summary", use_container_width=True):
+        try:
+            summary = load_daily_summary_report(summary_path)
+            if markdown_path.exists():
+                summary["markdown"] = markdown_path.read_text(encoding="utf-8")
+            st.session_state["daily_summary"] = summary
+            st.success("Daily summary loaded.")
+        except Exception as exc:
+            st.error(f"Could not load daily summary: {exc}")
+    if cols[2].button("Load archived scan", use_container_width=True):
+        try:
+            st.session_state["report"] = load_dashboard_report(archived_report_path)
+            st.success("Archived scan report loaded.")
+        except Exception as exc:
+            st.error(f"Could not load archived scan: {exc}")
 
 
 def _style() -> None:

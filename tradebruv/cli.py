@@ -2,10 +2,24 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import date
 from pathlib import Path
 
 from .ai_explanations import apply_ai_explanations, build_explanation_provider
+from .automation import (
+    DEFAULT_DAILY_OUTPUT_DIR,
+    DEFAULT_SCAN_ARCHIVE_ROOT,
+    DEFAULT_WATCHLIST_STATE_PATH,
+    archive_scan_report,
+    build_daily_summary_payload,
+    build_simple_market_regime,
+    generate_alerts,
+    load_watchlist_state,
+    save_watchlist_state,
+    update_watchlist_state,
+    write_daily_outputs,
+)
 from .catalysts import CatalystOverlayProvider, load_catalyst_repository
 from .journal import (
     DEFAULT_JOURNAL_PATH,
@@ -39,28 +53,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "scan":
-        universe = load_universe(args.universe)
         analysis_date = args.as_of_date or date.today()
 
         try:
-            provider = build_provider(args=args, analysis_date=analysis_date)
+            results, provider = _run_scan(args=args, analysis_date=analysis_date)
         except ProviderConfigurationError as exc:
             print(f"Provider configuration error: {exc}")
             return 2
-        catalyst_repository = load_catalyst_repository(args.catalyst_file)
-        if catalyst_repository.warnings:
-            for warning in catalyst_repository.warnings:
-                print(f"Catalyst warning: {warning}")
-        if catalyst_repository.items_by_ticker:
-            provider = CatalystOverlayProvider(provider, catalyst_repository)
-
-        scanner = DeterministicScanner(provider=provider, analysis_date=analysis_date)
-        results = scanner.scan(universe, mode=args.mode)
-        if args.ai_explanations:
-            explanation_provider = build_explanation_provider(enabled=True, mock=args.mock_ai_explanations)
-            apply_ai_explanations(results, explanation_provider)
-        if args.limit:
-            results = results[: args.limit]
+        except FileNotFoundError as exc:
+            print(f"Scan error: {exc}")
+            return 2
 
         output_dir = args.output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -71,9 +73,25 @@ def main(argv: list[str] | None = None) -> int:
         print_console_summary(results, mode=args.mode)
         write_json_report(results, json_path, mode=args.mode)
         write_csv_report(results, csv_path)
+        if args.archive:
+            archived = archive_scan_report(
+                results=results,
+                provider=args.provider,
+                mode=args.mode,
+                universe_file=args.universe,
+                catalyst_file=args.catalyst_file,
+                ai_enabled=args.ai_explanations,
+                command_used=_command_used(),
+                archive_root=args.archive_root,
+            )
+            print(f"Archived JSON: {archived['json_path']}")
+            print(f"Archived CSV:  {archived['csv_path']}")
         print(f"\nJSON report: {json_path}")
         print(f"CSV report:  {csv_path}")
         return 0
+
+    if args.command == "daily":
+        return _handle_daily(args)
 
     if args.command == "review":
         try:
@@ -179,6 +197,23 @@ def build_parser() -> argparse.ArgumentParser:
         type=_parse_date,
         help="Anchor date in YYYY-MM-DD format for deterministic sample scans.",
     )
+    scan.add_argument("--archive", action="store_true", help="Archive a timestamped scan report under reports/scans/.")
+    scan.add_argument("--archive-root", type=Path, default=DEFAULT_SCAN_ARCHIVE_ROOT, help="Root directory for archived scans.")
+
+    daily = subparsers.add_parser("daily", help="Run scanner, archive results, generate alerts, and write daily summary.")
+    daily.add_argument("--universe", type=Path, required=True, help="Path to a newline-delimited ticker file.")
+    daily.add_argument("--provider", choices=("sample", "local", "real"), default="sample")
+    daily.add_argument("--mode", choices=("standard", "outliers"), default="outliers")
+    daily.add_argument("--data-dir", type=Path)
+    daily.add_argument("--history-period", default="3y")
+    daily.add_argument("--output-dir", type=Path, default=DEFAULT_DAILY_OUTPUT_DIR)
+    daily.add_argument("--archive-root", type=Path, default=DEFAULT_SCAN_ARCHIVE_ROOT)
+    daily.add_argument("--state-path", type=Path, default=DEFAULT_WATCHLIST_STATE_PATH)
+    daily.add_argument("--catalyst-file", type=Path)
+    daily.add_argument("--ai-explanations", action="store_true")
+    daily.add_argument("--mock-ai-explanations", action="store_true")
+    daily.add_argument("--limit", type=int, default=0)
+    daily.add_argument("--as-of-date", type=_parse_date)
 
     review = subparsers.add_parser("review", help="Review a saved scan report against later OHLCV data.")
     _add_review_provider_args(review)
@@ -235,8 +270,84 @@ def load_universe(path: Path) -> list[str]:
     return tickers
 
 
+def _run_scan(*, args: argparse.Namespace, analysis_date: date):
+    universe = load_universe(args.universe)
+    provider = build_provider(args=args, analysis_date=analysis_date)
+    catalyst_repository = load_catalyst_repository(args.catalyst_file)
+    if catalyst_repository.warnings:
+        for warning in catalyst_repository.warnings:
+            print(f"Catalyst warning: {warning}")
+    if catalyst_repository.items_by_ticker:
+        provider = CatalystOverlayProvider(provider, catalyst_repository)
+
+    scanner = DeterministicScanner(provider=provider, analysis_date=analysis_date)
+    results = scanner.scan(universe, mode=args.mode)
+    if args.ai_explanations:
+        explanation_provider = build_explanation_provider(enabled=True, mock=args.mock_ai_explanations)
+        apply_ai_explanations(results, explanation_provider)
+    if args.limit:
+        results = results[: args.limit]
+    return results, provider
+
+
+def _handle_daily(args: argparse.Namespace) -> int:
+    analysis_date = args.as_of_date or date.today()
+    try:
+        results, provider = _run_scan(args=args, analysis_date=analysis_date)
+    except (ProviderConfigurationError, FileNotFoundError) as exc:
+        print(f"Daily scan error: {exc}")
+        return 2
+
+    archived = archive_scan_report(
+        results=results,
+        provider=args.provider,
+        mode=args.mode,
+        universe_file=args.universe,
+        catalyst_file=args.catalyst_file,
+        ai_enabled=args.ai_explanations,
+        command_used=_command_used(),
+        archive_root=args.archive_root,
+    )
+    rows = [result.to_dict() for result in results]
+    previous_state = load_watchlist_state(args.state_path)
+    new_state, changes = update_watchlist_state(
+        previous_state=previous_state,
+        rows=rows,
+        scan_id=archived["scan_id"],
+        timestamp=archived["metadata"]["created_at"],
+    )
+    alerts = generate_alerts(
+        changes=changes,
+        source_scan_id=archived["scan_id"],
+        timestamp=archived["metadata"]["created_at"],
+        ai_enabled=args.ai_explanations,
+    )
+    save_watchlist_state(new_state, args.state_path)
+    summary = build_daily_summary_payload(
+        rows=rows,
+        alerts=alerts,
+        scan_metadata=archived["metadata"],
+        market_regime=build_simple_market_regime(provider),
+    )
+    outputs = write_daily_outputs(alerts=alerts, summary_payload=summary, output_dir=args.output_dir)
+    print_console_summary(results, mode=args.mode)
+    print(f"\nArchived JSON: {archived['json_path']}")
+    print(f"Archived CSV:  {archived['csv_path']}")
+    print(f"Watchlist state: {args.state_path}")
+    print(f"Alerts JSON: {outputs['alerts_json']}")
+    print(f"Alerts CSV:  {outputs['alerts_csv']}")
+    print(f"Daily summary JSON: {outputs['summary_json']}")
+    print(f"Daily summary MD:   {outputs['summary_markdown']}")
+    print(f"Alerts generated: {len(alerts)}")
+    return 0
+
+
 def _parse_date(raw: str) -> date:
     return date.fromisoformat(raw)
+
+
+def _command_used() -> str:
+    return " ".join(sys.argv)
 
 
 def _add_review_provider_args(parser: argparse.ArgumentParser) -> None:

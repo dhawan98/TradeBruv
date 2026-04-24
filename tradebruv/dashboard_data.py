@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any, Iterable
 
 from .ai_explanations import apply_ai_explanations, build_explanation_provider
+from .automation import filter_alerts, summarize_watchlist_changes
 from .catalysts import CatalystOverlayProvider, load_catalyst_repository
 from .cli import build_provider, load_universe
 from .journal import DEFAULT_JOURNAL_PATH, journal_stats, read_journal
@@ -211,6 +212,38 @@ def load_dashboard_journal(path: Path = DEFAULT_JOURNAL_PATH) -> list[dict[str, 
 
 def build_process_quality_summary(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
     return journal_stats(list(rows))
+
+
+def load_alerts_report(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(payload, list):
+        return {"generated_at": "unavailable", "alerts": payload}
+    payload.setdefault("alerts", [])
+    return payload
+
+
+def load_daily_summary_report(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def filter_dashboard_alerts(alerts: Iterable[dict[str, Any]], filters: dict[str, Any]) -> list[dict[str, Any]]:
+    return filter_alerts(alerts, filters)
+
+
+def build_watchlist_change_summary(alerts: Iterable[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    return summarize_watchlist_changes(alerts)
+
+
+def build_daily_brief_view(summary: dict[str, Any], alerts: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    alert_rows = list(alerts)
+    return {
+        "market_regime": summary.get("market_regime", {}),
+        "top_candidates": summary.get("top_outlier_candidates", []),
+        "top_avoid_names": summary.get("top_avoid_names", []),
+        "top_alerts": summary.get("top_alerts", alert_rows[:10]),
+        "daily_summary_markdown": summary.get("markdown", ""),
+        "data_issues": summary.get("data_quality_issues", []),
+    }
 
 
 def find_latest_report(output_dir: Path = Path("outputs")) -> Path | None:
