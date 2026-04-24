@@ -9,10 +9,33 @@ from types import SimpleNamespace
 from typing import Any, Iterable
 
 from .ai_explanations import apply_ai_explanations, build_explanation_provider
+from .ai_committee import combine_recommendations, run_ai_committee
+from .analysis import analyze_portfolio, build_portfolio_recommendation, deep_research
 from .automation import filter_alerts, summarize_watchlist_changes
 from .catalysts import CatalystOverlayProvider, load_catalyst_repository
 from .cli import build_provider, load_universe
+from .data_sources import build_data_source_status, data_health_summary
 from .journal import DEFAULT_JOURNAL_PATH, journal_stats, read_journal
+from .portfolio import (
+    DEFAULT_PORTFOLIO_PATH,
+    delete_position,
+    export_portfolio_csv,
+    import_portfolio_csv,
+    load_portfolio,
+    portfolio_summary,
+    refresh_portfolio_prices,
+    save_portfolio,
+    upsert_position,
+)
+from .validation_lab import (
+    add_prediction,
+    create_prediction_record,
+    famous_outlier_case_study,
+    load_predictions,
+    save_predictions,
+    update_prediction_outcomes,
+    validation_metrics,
+)
 from .indicators import pct_change, sma
 from .performance import aggregate_strategy_performance
 from .providers import MarketDataProvider
@@ -208,6 +231,149 @@ def build_strategy_performance_highlights(rows: Iterable[dict[str, Any]]) -> dic
 
 def load_dashboard_journal(path: Path = DEFAULT_JOURNAL_PATH) -> list[dict[str, Any]]:
     return read_journal(path)
+
+
+def load_dashboard_portfolio(path: Path = DEFAULT_PORTFOLIO_PATH) -> list[dict[str, Any]]:
+    return [position.to_dict() for position in load_portfolio(path)]
+
+
+def save_dashboard_portfolio(rows: Iterable[dict[str, Any]], path: Path = DEFAULT_PORTFOLIO_PATH) -> Path:
+    return save_portfolio(list(rows), path)
+
+
+def import_dashboard_portfolio_csv(import_path: Path, portfolio_path: Path = DEFAULT_PORTFOLIO_PATH) -> list[dict[str, Any]]:
+    return [position.to_dict() for position in import_portfolio_csv(import_path, portfolio_path)]
+
+
+def export_dashboard_portfolio_csv(rows: Iterable[dict[str, Any]], output_path: Path) -> Path:
+    return export_portfolio_csv(list(rows), output_path)
+
+
+def upsert_dashboard_position(position: dict[str, Any], portfolio_path: Path = DEFAULT_PORTFOLIO_PATH) -> dict[str, Any]:
+    return upsert_position(position=position, portfolio_path=portfolio_path).to_dict()
+
+
+def delete_dashboard_position(ticker: str, portfolio_path: Path = DEFAULT_PORTFOLIO_PATH, account_name: str | None = None) -> bool:
+    return delete_position(ticker=ticker, account_name=account_name, portfolio_path=portfolio_path)
+
+
+def refresh_dashboard_portfolio_prices(
+    *,
+    rows: Iterable[dict[str, Any]],
+    provider: MarketDataProvider,
+) -> list[dict[str, Any]]:
+    return [position.to_dict() for position in refresh_portfolio_prices(positions=rows, provider=provider)]
+
+
+def build_dashboard_portfolio_summary(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    return portfolio_summary(list(rows))
+
+
+def run_dashboard_portfolio_analysis(
+    *,
+    rows: Iterable[dict[str, Any]],
+    provider: MarketDataProvider,
+    analysis_date: date | None = None,
+) -> dict[str, Any]:
+    return analyze_portfolio(positions=list(rows), provider=provider, analysis_date=analysis_date)
+
+
+def run_dashboard_deep_research(
+    *,
+    ticker: str,
+    provider: MarketDataProvider,
+    portfolio_rows: Iterable[dict[str, Any]] | None = None,
+    journal_rows: Iterable[dict[str, Any]] | None = None,
+    analysis_date: date | None = None,
+) -> dict[str, Any]:
+    return deep_research(
+        ticker=ticker,
+        provider=provider,
+        portfolio_positions=list(portfolio_rows or []),
+        journal_rows=list(journal_rows or []),
+        analysis_date=analysis_date,
+    )
+
+
+def run_dashboard_ai_committee(
+    *,
+    scanner_row: dict[str, Any],
+    portfolio_context: dict[str, Any] | None = None,
+    mode: str = "Mock AI for testing",
+) -> dict[str, Any]:
+    return run_ai_committee(scanner_row=scanner_row, portfolio_context=portfolio_context, mode=mode)
+
+
+def build_dashboard_combined_recommendation(
+    *,
+    rule_based: str,
+    ai_output: dict[str, Any],
+    scanner_row: dict[str, Any],
+) -> dict[str, Any]:
+    return combine_recommendations(rule_based, ai_output, scanner_row)
+
+
+def build_dashboard_data_source_status() -> dict[str, Any]:
+    rows = build_data_source_status()
+    return {"rows": rows, "summary": data_health_summary(rows)}
+
+
+def load_dashboard_predictions(path: Path) -> list[dict[str, Any]]:
+    return load_predictions(path)
+
+
+def save_dashboard_predictions(records: Iterable[dict[str, Any]], path: Path) -> Path:
+    return save_predictions(list(records), path)
+
+
+def create_dashboard_prediction(
+    *,
+    scanner_row: dict[str, Any],
+    rule_based_recommendation: str,
+    ai_committee_recommendation: str = "Data Insufficient",
+    final_combined_recommendation: str | None = None,
+    thesis: str = "",
+    events_to_watch: Iterable[str] | None = None,
+    owned_at_signal: bool = False,
+    portfolio_weight_at_signal: float | str = "",
+) -> dict[str, Any]:
+    return create_prediction_record(
+        scanner_row=scanner_row,
+        rule_based_recommendation=rule_based_recommendation,
+        ai_committee_recommendation=ai_committee_recommendation,
+        final_combined_recommendation=final_combined_recommendation,
+        thesis=thesis,
+        events_to_watch=events_to_watch,
+        owned_at_signal=owned_at_signal,
+        portfolio_weight_at_signal=portfolio_weight_at_signal,
+    )
+
+
+def add_dashboard_prediction(record: dict[str, Any], path: Path) -> dict[str, Any]:
+    return add_prediction(record, path)
+
+
+def update_dashboard_prediction_outcomes(
+    *,
+    records: Iterable[dict[str, Any]],
+    provider: MarketDataProvider,
+    as_of_date: date | None = None,
+) -> list[dict[str, Any]]:
+    return update_prediction_outcomes(records=list(records), provider=provider, as_of_date=as_of_date)
+
+
+def build_dashboard_validation_metrics(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    return validation_metrics(list(records))
+
+
+def run_dashboard_case_study(
+    *,
+    ticker: str,
+    provider: MarketDataProvider,
+    signal_date: date,
+    end_date: date | None = None,
+) -> dict[str, Any]:
+    return famous_outlier_case_study(ticker=ticker, provider=provider, signal_date=signal_date, end_date=end_date)
 
 
 def build_process_quality_summary(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:

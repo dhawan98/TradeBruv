@@ -11,7 +11,10 @@ The project is deliberately not an AI stock picker. AI is not making decisions h
 - Pass 2: dashboard
 - Pass 3: news/social + AI explanation layer
 - Pass 4: historical review + strategy feedback + journal
-- Pass 5: optional day-trading/options module
+- Pass 5: daily scan automation, alerts, watchlist state, and daily summaries
+- Pass 6: personal portfolio-aware stock picker, analyst cockpit, AI committee, and validation lab
+
+Options/day-trading remains deferred. TradeBruv stays stock-first.
 
 ## What Exists Now
 
@@ -34,17 +37,29 @@ TradeBruv currently supports:
 - sample data scans
 - local file scans
 - optional real-data scans through `yfinance` when available
+- local portfolio CSV import/export and manual holdings entry
+- portfolio-aware recommendation labels for hold/add/trim/sell/review decisions
+- single-stock Deep Research from the dashboard
+- optional AI Analyst Committee with mock/OpenAI-compatible support and missing-key fallback
+- paper prediction tracking and forward validation metrics
+- famous outlier case-study mode for selected tickers
+- Data Sources / API Setup dashboard page with env-var readiness and degraded capability notes
 
 The scanner does **not** do:
 - broker integration
 - trade execution
+- broker order placement
+- broker credential scraping
+- storage of API keys in code
 - crypto asset scanning
-- options strategy building
+- options strategy building or day-trading modules
 - AI-driven buy/sell decisions
 - predictive backtest claims
 - hype-driven alert decisions
 - notification credential management
 - guaranteed-profit claims
+
+Every recommendation label is research support. It must be checked against risk, invalidation, data quality, and your own portfolio context before any manual decision outside the app.
 
 ## Scanner Modes
 
@@ -372,6 +387,176 @@ Metrics include:
 
 Small sample sizes are clearly flagged. Do not tighten or loosen scanner rules based on one tiny bucket. Use this as evidence gathering for scanner improvement, not as proof that a setup will work next time.
 
+## Pass 6 Personal Portfolio Workflow
+
+Pass 6 turns the dashboard into the main workflow for personal stock research:
+
+1. Use `Home / Daily Brief` for market regime, candidates, portfolio review prompts, open predictions, alerts, and data health.
+2. Use `Stock Picker` to run scanner-driven candidate triage and save names to journal, portfolio review, or Prediction Lab.
+3. Use `Deep Research` to type any ticker such as NVDA, PLTR, MU, RDDT, GME, CAR, AAPL and get a full deterministic research card.
+4. Use `Portfolio` to manually enter holdings, import a CSV, refresh prices, inspect allocation, and export holdings.
+5. Use `Portfolio Analyst` to see hold/add/trim/sell/watch/review candidates based on scanner output and local position context.
+6. Use `AI Committee` only when you want an optional grounded debate layered beside deterministic rules.
+7. Use `Validation Lab` to save paper predictions and measure what happened later.
+8. Use `Data Sources / API Setup` to see configured/missing API keys and what capabilities are degraded.
+
+No broker execution exists. Broker integrations are read-only future research items unless explicitly changed later.
+
+## Portfolio
+
+Default local file:
+
+```text
+data/portfolio.csv
+```
+
+Supported workflow:
+- manual position entry from the dashboard
+- generic broker CSV import
+- Fidelity-style CSV import when exported columns match common names such as `Symbol`, `Quantity`, `Average Cost`, `Last Price`, and `Market Value`
+- local CSV export
+- price refresh through the selected market data provider
+
+Portfolio fields:
+
+```csv
+account_name,ticker,company_name,quantity,average_cost,current_price,market_value,cost_basis,unrealized_gain_loss,unrealized_gain_loss_pct,realized_gain_loss,position_weight_pct,sector,theme_tags,purchase_date,intended_holding_period,thesis,risk_notes,user_notes,stop_or_invalidation,target_price,decision_status,last_reviewed_at
+```
+
+Decision statuses:
+- `Hold`
+- `Buy More / Add`
+- `Trim`
+- `Sell / Exit`
+- `Watch Closely`
+- `Research More`
+- `Avoid Adding`
+- `Data Insufficient`
+
+Portfolio CLI examples:
+
+```bash
+python3 -m tradebruv portfolio import --input holdings.csv
+python3 -m tradebruv portfolio add --ticker NVDA --set quantity=2 --set average_cost=150 --set current_price=180
+python3 -m tradebruv portfolio update-prices --provider sample
+python3 -m tradebruv portfolio analyze --provider sample
+python3 -m tradebruv portfolio export --output outputs/portfolio_export.csv
+```
+
+Portfolio-aware labels:
+- `Strong Hold`
+- `Hold`
+- `Add on Strength`
+- `Add on Pullback / Better Entry`
+- `Trim`
+- `Exit / Sell`
+- `Watch Closely`
+- `Do Not Add`
+- `Data Insufficient`
+
+Each portfolio recommendation includes confidence, conviction score, risk score, urgency, reason to hold, reason to add, reason to trim/sell, events to watch, invalidation, portfolio risk, suggested review date, and data quality.
+
+## Deep Research
+
+The `Deep Research` dashboard page analyzes one ticker from the frontend. It shows scanner status, winner/outlier/risk/setup scores, catalyst/news/social summary, entry zone, invalidation, TP1/TP2, reward/risk, bull case, bear case, risks, events to watch, portfolio context if owned, journal history if present, and a decision card.
+
+Deep Research labels:
+- `Strong Buy Candidate`
+- `Buy Candidate`
+- `Hold / Watch`
+- `Wait for Better Entry`
+- `Avoid`
+- `Sell / Exit Candidate` only when owned and setup is broken
+- `Data Insufficient`
+
+`Strong Buy Candidate` means a research/action candidate inside this personal system. It is not a guarantee and not an order.
+
+## AI Analyst Committee
+
+The AI Committee is optional. The app works without any AI key.
+
+Dashboard modes:
+- `No AI`
+- `OpenAI only`
+- `Claude only`
+- `Gemini only`
+- `Multi-agent committee`
+- `Mock AI for testing`
+
+Implemented MVP behavior:
+- mock committee works offline and is covered by tests
+- OpenAI/OpenRouter-style chat completions are supported through an OpenAI-compatible endpoint
+- Claude and Gemini readiness are detected through env vars, with adapters kept unavailable until explicitly enabled
+- missing keys return a visible unavailable payload instead of crashing
+
+Committee roles:
+- Bull Analyst
+- Bear Analyst
+- Risk Manager
+- Catalyst Analyst
+- Final Decision Analyst
+
+AI output includes bull case, bear case, risk manager view, catalyst view, debate summary, final recommendation label, confidence, evidence used, missing data, events to watch, what would change the view, portfolio-specific action, and recommended next step.
+
+Guardrails:
+- AI must use only supplied scanner, portfolio, catalyst, and source fields
+- AI must not invent news, fundamentals, social data, or positions
+- AI must not place trades
+- deterministic rules remain primary
+- hard Avoid/risk flags stay visible and cannot be silently overridden
+- rule-based, AI, and combined recommendations are shown side by side
+
+## Validation Lab
+
+The `Validation Lab` supports paper prediction tracking and historical case studies.
+
+Default local file:
+
+```text
+data/predictions.csv
+```
+
+Prediction records include signal price, rule-based recommendation, AI committee recommendation, final combined recommendation, confidence, winner/outlier/setup/risk scores, strategy/outlier/catalyst labels, thesis, invalidation, TP1/TP2, expected holding period, events to watch, data quality, evidence snapshot, ownership flag, portfolio weight, forward returns, MFE/MAE, TP/invalidation hits, and outcome label.
+
+Forward tracking horizons:
+- 1D
+- 5D
+- 10D
+- 20D
+- 60D
+- 120D
+
+Outcome labels:
+- `Worked`
+- `Failed`
+- `Mixed`
+- `Still Open`
+- `Data Unavailable`
+
+Validation metrics group performance by recommendation label, AI agreement/disagreement field when available, outlier type, catalyst quality, and risk bucket. Small samples are flagged. This is paper validation, not proof.
+
+Famous outlier case-study mode supports:
+- CAR
+- GME
+- RDDT
+- MU
+- NVDA
+- PLTR
+- SMCI
+- COIN
+- HOOD
+- ARM
+- CAVA
+
+Case-study mode filters OHLCV to the selected signal date before scanning. If true point-in-time fundamentals/news are unavailable, the output says so and relies only on available OHLCV/scanner fields.
+
+Prediction CLI examples:
+
+```bash
+python3 -m tradebruv predictions update --provider sample
+python3 -m tradebruv predictions summary
+```
+
 ## Journal
 
 The local journal is a simple CSV file by default at `outputs/journal.csv`. It is meant to track your decisions and process quality, not execute trades or connect to a broker.
@@ -487,6 +672,15 @@ Loaded reports show the same outlier feed, table, detail view, avoid panel, opti
 
 ### Dashboard Sections
 
+- `Home / Daily Brief`: market regime, top candidates, portfolio snapshot, open predictions needing review, and data source health.
+- `Stock Picker`: scanner feed/table plus actions to save candidates to journal, portfolio review, or Prediction Lab.
+- `Deep Research`: single-ticker research card with deterministic scores, risk, invalidation, portfolio context, and journal context.
+- `Portfolio`: manual holdings entry, CSV import/export, price refresh, allocation, P/L, winners/losers, and concentration risk.
+- `Portfolio Analyst`: portfolio-aware hold/add/trim/sell/watch/review labels.
+- `AI Committee`: optional grounded analyst committee with rule-based, AI, and combined recommendations shown side by side.
+- `Validation Lab`: paper predictions, forward outcome refresh, validation metrics, and famous outlier case studies.
+- `Data Sources / API Setup`: API key readiness, missing env vars, setup instructions, last check, last error, and degraded capabilities.
+- `Reports`: archived scanner, daily summary, alerts, and watchlist-change loaders.
 - `Market Regime`: SPY/QQQ trend summary, Bullish/Mixed/Risk-Off stance, long exposure posture, leading and weak theme tags, provider/timestamp, and risk warnings.
 - `Daily Summary`: rule-based aggregation of top outliers, normal winners, avoid names, common themes, common warnings, highest-risk name, best reward/risk, best long-term monster, and best high-risk/squeeze watch.
 - `Outlier Feed`: ranked research cards centered on `outlier_score`, with winner score, risk, setup quality, entry zone, invalidation, targets, chase risk, big-winner case, and failure case.
@@ -642,6 +836,45 @@ AI safety rules:
 - It must cite/mention source items when available.
 - It is not used by deterministic scoring.
 
+## Data Sources / API Key Setup
+
+All optional keys are read from environment variables only. Do not commit secrets. Missing optional keys do not crash the app; the dashboard shows which capability is degraded.
+
+Recommended optional sources, based on current public docs reviewed for Pass 6:
+
+| Area | Provider | Env vars | Unlocks | Docs |
+|---|---|---|---|---|
+| Market data | yfinance/free provider | none | Current real provider, OHLCV, partial metadata/news | https://ranaroussi.github.io/yfinance/ |
+| Market data | Polygon.io | `POLYGON_API_KEY` | Aggregates, reference data, corporate actions, paid news feeds | https://polygon.io/docs |
+| Market data/news | Finnhub | `FINNHUB_API_KEY` | Quotes, profiles, earnings calendar, company news, analyst data on supported plans | https://finnhub.io/docs/api |
+| Market data | Twelve Data | `TWELVE_DATA_API_KEY` | Time series, indicators, some fundamentals | https://twelvedata.com/docs |
+| Market data/news | Alpha Vantage | `ALPHA_VANTAGE_API_KEY` | Time series, overview, earnings, news sentiment | https://www.alphavantage.co/documentation/ |
+| Market data | IEX Cloud | `IEX_CLOUD_API_KEY` | Legacy equities data if your account/API access remains viable | https://iexcloud.io/docs/api/ |
+| Data | Nasdaq Data Link | `NASDAQ_DATA_LINK_API_KEY` | Premium datasets and alternative/economic data | https://docs.data.nasdaq.com/ |
+| News/events | Benzinga | `BENZINGA_API_KEY` | News, analyst ratings, earnings/calendars on supported plans | https://docs.benzinga.io/ |
+| News/events | NewsAPI | `NEWSAPI_KEY` | General news search/headline monitoring | https://newsapi.org/docs |
+| News/events | GDELT | none for many public endpoints | Global news/event/narrative monitoring | https://www.gdeltproject.org/ |
+| Filings | SEC EDGAR | none | Company submissions/facts and filings | https://www.sec.gov/search-filings/edgar-application-programming-interfaces |
+| Social | Reddit API | `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` | Subreddit mentions and attention velocity | https://www.reddit.com/dev/api/ |
+| Social | X/Twitter API | `X_BEARER_TOKEN` | Public post search if plan allows | https://developer.x.com/en/docs |
+| Social | StockTwits | `STOCKTWITS_ACCESS_TOKEN` | Symbol stream attention/sentiment clues where available | https://api.stocktwits.com/developers/docs |
+| Social/political | Truth Social/political mentions | none in MVP | Manual CSV fallback only unless a compliant licensed source is selected | https://truthsocial.com/ |
+| AI | OpenAI | `OPENAI_API_KEY` | AI explanations and committee through OpenAI API | https://platform.openai.com/docs |
+| AI | Anthropic Claude | `ANTHROPIC_API_KEY` | Future committee adapter readiness | https://docs.anthropic.com/ |
+| AI | Google Gemini | `GEMINI_API_KEY` | Future committee adapter readiness | https://ai.google.dev/gemini-api/docs |
+| AI | OpenRouter/OpenAI-compatible | `TRADEBRUV_LLM_API_KEY`, `TRADEBRUV_LLM_BASE_URL` | OpenAI-compatible model routing | https://openrouter.ai/docs/api-reference/overview |
+| Portfolio | Manual CSV/local file | none | Current local holdings workflow | this README |
+| Portfolio | Plaid Investments | `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENV` | Future read-only holdings/transactions | https://plaid.com/docs/investments/ |
+| Portfolio | SnapTrade | `SNAPTRADE_CLIENT_ID`, `SNAPTRADE_CONSUMER_KEY` | Future read-only brokerage holdings | https://docs.snaptrade.com/ |
+
+Portfolio/broker notes:
+- Manual CSV and manual entry are the implemented default.
+- Fidelity CSV export import is local file parsing only.
+- Plaid/SnapTrade/Fidelity Access are documented as future read-only integration candidates.
+- No broker credential scraping.
+- No order placement.
+- No trade execution.
+
 ## Real Data Provider
 
 The optional real provider is currently a `yfinance` adapter. It aims to pull:
@@ -715,7 +948,7 @@ Each row includes:
 Run the full suite with:
 
 ```bash
-python3 -m unittest
+python3 -m pytest
 ```
 
 Current test coverage includes:
@@ -744,6 +977,11 @@ Current test coverage includes:
 - deterministic upgrade, downgrade, threshold, entry-zone, target, invalidation, failed-breakout, hype/pump, and missing-data alerts
 - daily summary JSON and Markdown output
 - dashboard alert filtering and watchlist-change transformations
+- portfolio CSV import, manual add/update/delete, export, price refresh, allocation, P/L, concentration risk, and no broker execution path
+- portfolio-aware recommendation labels and deep research portfolio context
+- AI committee mock debate and missing-key handling
+- data-source/API-key status detection and secret-leak guard
+- prediction record creation, forward outcome updates, validation metrics, and famous outlier case-study mode
 
 ## Known Limitations
 
@@ -762,4 +1000,7 @@ Current test coverage includes:
 - local notifications/email/SMS are not integrated in this pass
 - AI explanations require explicit opt-in and configured credentials unless using the mock provider
 - live news remains lightweight/free-provider based; manual catalyst ingestion is the reliable path
-- no broker integration, trade execution, social scraping, or options strategy builder is active yet
+- broker API integrations are not active; portfolio work is local CSV/manual entry only
+- no broker credential scraping, trade execution, order placement, social scraping, crypto scanning, or options/day-trading module is active
+- AI committee Claude/Gemini adapters are readiness stubs in this MVP; use mock or OpenAI-compatible mode for active output
+- Validation Lab results are paper validation and can suffer from small samples, provider gaps, survivorship bias, and non-point-in-time fundamentals/news

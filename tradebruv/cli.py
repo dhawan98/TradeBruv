@@ -29,6 +29,16 @@ from .journal import (
     read_journal,
     update_journal_entry,
 )
+from .portfolio import (
+    DEFAULT_PORTFOLIO_PATH,
+    export_portfolio_csv,
+    import_portfolio_csv,
+    load_portfolio,
+    refresh_portfolio_prices,
+    save_portfolio,
+    upsert_position,
+)
+from .analysis import analyze_portfolio
 from .performance import build_strategy_performance_report, write_performance_csv, write_performance_json
 from .providers import (
     LocalFileMarketDataProvider,
@@ -46,6 +56,7 @@ from .review import (
     write_review_json,
 )
 from .scanner import DeterministicScanner
+from .validation_lab import DEFAULT_PREDICTIONS_PATH, load_predictions, save_predictions, update_prediction_outcomes, validation_metrics
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -125,6 +136,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "journal":
         return _handle_journal(args)
+
+    if args.command == "portfolio":
+        return _handle_portfolio(args)
+
+    if args.command == "predictions":
+        return _handle_predictions(args)
 
     parser.error(f"Unknown command: {args.command}")
     return 2
@@ -257,6 +274,35 @@ def build_parser() -> argparse.ArgumentParser:
     journal_export.add_argument("--output", type=Path, required=True)
     journal_stats_cmd = journal_subparsers.add_parser("stats", help="Show journal process/outcome stats.")
     journal_stats_cmd.add_argument("--journal-path", type=Path, default=DEFAULT_JOURNAL_PATH)
+
+    portfolio = subparsers.add_parser("portfolio", help="Manage local stock portfolio CSV.")
+    portfolio_subparsers = portfolio.add_subparsers(dest="portfolio_command", required=True)
+    portfolio_import = portfolio_subparsers.add_parser("import", help="Import generic/Fidelity-style holdings CSV.")
+    portfolio_import.add_argument("--input", type=Path, required=True)
+    portfolio_import.add_argument("--portfolio-path", type=Path, default=DEFAULT_PORTFOLIO_PATH)
+    portfolio_list = portfolio_subparsers.add_parser("list", help="List local portfolio positions.")
+    portfolio_list.add_argument("--portfolio-path", type=Path, default=DEFAULT_PORTFOLIO_PATH)
+    portfolio_add = portfolio_subparsers.add_parser("add", help="Add or update a portfolio position.")
+    portfolio_add.add_argument("--portfolio-path", type=Path, default=DEFAULT_PORTFOLIO_PATH)
+    portfolio_add.add_argument("--ticker", required=True)
+    portfolio_add.add_argument("--set", action="append", default=[], help="Set a field as key=value. May be repeated.")
+    portfolio_refresh = portfolio_subparsers.add_parser("update-prices", help="Refresh current prices with a market data provider.")
+    _add_review_provider_args(portfolio_refresh)
+    portfolio_refresh.add_argument("--portfolio-path", type=Path, default=DEFAULT_PORTFOLIO_PATH)
+    portfolio_analyze = portfolio_subparsers.add_parser("analyze", help="Analyze portfolio holdings.")
+    _add_review_provider_args(portfolio_analyze)
+    portfolio_analyze.add_argument("--portfolio-path", type=Path, default=DEFAULT_PORTFOLIO_PATH)
+    portfolio_export = portfolio_subparsers.add_parser("export", help="Export portfolio CSV.")
+    portfolio_export.add_argument("--portfolio-path", type=Path, default=DEFAULT_PORTFOLIO_PATH)
+    portfolio_export.add_argument("--output", type=Path, required=True)
+
+    predictions = subparsers.add_parser("predictions", help="Update and summarize paper prediction records.")
+    predictions_subparsers = predictions.add_subparsers(dest="predictions_command", required=True)
+    predictions_update = predictions_subparsers.add_parser("update", help="Refresh forward outcomes.")
+    _add_review_provider_args(predictions_update)
+    predictions_update.add_argument("--predictions-path", type=Path, default=DEFAULT_PREDICTIONS_PATH)
+    predictions_summary = predictions_subparsers.add_parser("summary", help="Show validation metrics.")
+    predictions_summary.add_argument("--predictions-path", type=Path, default=DEFAULT_PREDICTIONS_PATH)
     return parser
 
 
@@ -437,6 +483,69 @@ def _handle_journal(args: argparse.Namespace) -> int:
         print(f"Journal error: {exc}")
         return 2
     print(f"Unknown journal command: {args.journal_command}")
+    return 2
+
+
+def _handle_portfolio(args: argparse.Namespace) -> int:
+    try:
+        if args.portfolio_command == "import":
+            rows = import_portfolio_csv(args.input, args.portfolio_path)
+            print(f"Imported positions: {len(rows)}")
+            return 0
+        if args.portfolio_command == "list":
+            rows = load_portfolio(args.portfolio_path)
+            if not rows:
+                print("No portfolio positions found.")
+                return 0
+            for row in rows:
+                payload = row.to_dict()
+                print(
+                    f"{payload['account_name']} | {payload['ticker']} | qty={payload['quantity']} | "
+                    f"value={payload['market_value']} | weight={payload['position_weight_pct']} | {payload['decision_status']}"
+                )
+            return 0
+        if args.portfolio_command == "add":
+            updates = _parse_set_args(args.set)
+            position = upsert_position(position={"ticker": args.ticker, **updates}, portfolio_path=args.portfolio_path)
+            print(f"Saved position: {position.account_name} {position.ticker}")
+            return 0
+        if args.portfolio_command == "update-prices":
+            provider = build_provider(args=args, analysis_date=args.price_as_of_date or date.today())
+            rows = refresh_portfolio_prices(positions=load_portfolio(args.portfolio_path), provider=provider)
+            save_portfolio(rows, args.portfolio_path)
+            print(f"Updated prices for {len(rows)} positions.")
+            return 0
+        if args.portfolio_command == "analyze":
+            provider = build_provider(args=args, analysis_date=args.price_as_of_date or date.today())
+            payload = analyze_portfolio(positions=load_portfolio(args.portfolio_path), provider=provider)
+            print(json.dumps(payload, indent=2))
+            return 0
+        if args.portfolio_command == "export":
+            export_portfolio_csv(load_portfolio(args.portfolio_path), args.output)
+            print(f"Portfolio exported: {args.output}")
+            return 0
+    except (ValueError, ProviderConfigurationError, FileNotFoundError) as exc:
+        print(f"Portfolio error: {exc}")
+        return 2
+    print(f"Unknown portfolio command: {args.portfolio_command}")
+    return 2
+
+
+def _handle_predictions(args: argparse.Namespace) -> int:
+    try:
+        if args.predictions_command == "update":
+            provider = build_provider(args=args, analysis_date=args.price_as_of_date or date.today())
+            records = update_prediction_outcomes(records=load_predictions(args.predictions_path), provider=provider)
+            save_predictions(records, args.predictions_path)
+            print(f"Updated predictions: {len(records)}")
+            return 0
+        if args.predictions_command == "summary":
+            print(json.dumps(validation_metrics(load_predictions(args.predictions_path)), indent=2))
+            return 0
+    except (ProviderConfigurationError, FileNotFoundError, ValueError) as exc:
+        print(f"Prediction error: {exc}")
+        return 2
+    print(f"Unknown predictions command: {args.predictions_command}")
     return 2
 
 

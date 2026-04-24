@@ -11,29 +11,48 @@ from tradebruv.cli import build_provider
 from tradebruv.dashboard_data import (
     DEFAULT_UNIVERSE_FILES,
     DashboardReport,
+    add_dashboard_prediction,
+    create_dashboard_prediction,
     build_process_quality_summary,
     build_daily_summary,
     build_daily_brief_view,
+    build_dashboard_combined_recommendation,
+    build_dashboard_data_source_status,
+    build_dashboard_portfolio_summary,
+    build_dashboard_validation_metrics,
     build_review_summary,
     build_strategy_performance_highlights,
     build_watchlist_change_summary,
     classify_avoid_reasons,
+    delete_dashboard_position,
+    export_dashboard_portfolio_csv,
     extract_options_fields,
     filter_dashboard_alerts,
     filter_results,
     filter_review_results,
     find_latest_report,
+    import_dashboard_portfolio_csv,
     is_avoid,
+    load_dashboard_predictions,
     load_dashboard_journal,
+    load_dashboard_portfolio,
     load_dashboard_report,
     load_alerts_report,
     load_daily_summary_report,
     load_review_report,
     load_strategy_performance,
+    refresh_dashboard_portfolio_prices,
+    run_dashboard_ai_committee,
+    run_dashboard_case_study,
+    run_dashboard_deep_research,
+    run_dashboard_portfolio_analysis,
     run_dashboard_review,
     run_dashboard_review_batch,
     run_dashboard_scan,
+    save_dashboard_portfolio,
+    save_dashboard_predictions,
     sort_results,
+    upsert_dashboard_position,
     unique_theme_tags,
     unique_values,
 )
@@ -44,6 +63,8 @@ from tradebruv.journal import (
     add_journal_entry,
     update_journal_entry,
 )
+from tradebruv.portfolio import DEFAULT_PORTFOLIO_PATH, DECISION_STATUSES
+from tradebruv.validation_lab import DEFAULT_PREDICTIONS_PATH, CASE_STUDY_TICKERS
 from tradebruv.performance import build_strategy_performance_report
 from tradebruv.providers import ProviderConfigurationError
 
@@ -77,8 +98,8 @@ def main() -> None:
     st.set_page_config(page_title="TradeBruv Research Cockpit", layout="wide")
     _style()
 
-    st.title("TradeBruv Research Cockpit")
-    st.caption("Deterministic scanner visualization and research workflow. No AI, no broker integration, no execution.")
+    st.title("TradeBruv Stock Decision Cockpit")
+    st.caption("Personal stock research, portfolio-aware analysis, and paper validation. No broker execution, no order placement, no crypto.")
 
     _sidebar_controls()
     report = _active_report()
@@ -100,58 +121,479 @@ def main() -> None:
         _daily_summary_panel(build_daily_summary(rows))
 
     tabs = st.tabs([
-        "Outlier Feed",
-        "Scanner Table",
-        "Stock Detail",
+        "Home / Daily Brief",
+        "Stock Picker",
+        "Deep Research",
+        "Portfolio",
+        "Portfolio Analyst",
+        "AI Committee",
+        "Validation Lab",
+        "Alerts",
+        "Journal",
+        "Data Sources / API Setup",
+        "Reports",
         "Catalysts",
         "Social Attention",
-        "AI Explanation",
         "Avoid Panel",
-        "Watchlists",
         "Options Placeholder",
         "Historical Review",
         "Strategy Performance",
-        "Journal",
         "Process Quality",
-        "Daily Brief",
-        "Alerts",
-        "Watchlist Changes",
-        "Alert History",
     ])
     with tabs[0]:
-        _outlier_feed(filtered)
+        _home_page(rows, filtered)
     with tabs[1]:
-        _scanner_table(filtered)
+        _stock_picker_page(filtered)
     with tabs[2]:
-        _stock_detail(filtered or rows)
+        _deep_research_page()
     with tabs[3]:
-        _catalyst_panel(filtered or rows)
+        _portfolio_page()
     with tabs[4]:
-        _social_attention_panel(filtered or rows)
+        _portfolio_analyst_page()
     with tabs[5]:
-        _ai_explanation_panel(filtered or rows)
+        _ai_committee_page(filtered or rows)
     with tabs[6]:
-        _avoid_panel(rows)
+        _validation_lab_page(filtered or rows)
     with tabs[7]:
-        _watchlist_help()
-    with tabs[8]:
-        _options_placeholder(rows)
-    with tabs[9]:
-        _historical_review_page()
-    with tabs[10]:
-        _strategy_performance_page()
-    with tabs[11]:
-        _journal_page(filtered or rows)
-    with tabs[12]:
-        _process_quality_page()
-    with tabs[13]:
-        _daily_brief_page()
-    with tabs[14]:
         _alerts_page(filtered or rows)
+    with tabs[8]:
+        _journal_page(filtered or rows)
+    with tabs[9]:
+        _data_sources_page()
+    with tabs[10]:
+        _reports_page()
+    with tabs[11]:
+        _catalyst_panel(filtered or rows)
+    with tabs[12]:
+        _social_attention_panel(filtered or rows)
+    with tabs[13]:
+        _avoid_panel(rows)
+    with tabs[14]:
+        _options_placeholder(rows)
     with tabs[15]:
-        _watchlist_changes_page()
+        _historical_review_page()
     with tabs[16]:
-        _alert_history_loader_page()
+        _strategy_performance_page()
+    with tabs[17]:
+        _process_quality_page()
+
+
+def _home_page(rows: list[dict[str, Any]], filtered: list[dict[str, Any]]) -> None:
+    st.subheader("Home / Daily Brief")
+    st.caption("A front-door view for research candidates, portfolio review, alerts, predictions, and data health.")
+    report = _active_report()
+    if report:
+        _market_regime_panel(report)
+        summary = build_daily_summary(rows)
+        cols = st.columns(4)
+        cols[0].metric("Top candidates", len(summary["top_outlier_candidates"]))
+        cols[1].metric("Avoid names", len(summary["top_avoid_names"]))
+        cols[2].metric("Filtered", len(filtered))
+        cols[3].metric("Provider", report.provider)
+        st.markdown("**Top Buy/Research Candidates**")
+        st.dataframe(summary["top_outlier_candidates"], hide_index=True, use_container_width=True)
+        st.markdown("**Top Avoid Names**")
+        st.dataframe(summary["top_avoid_names"], hide_index=True, use_container_width=True)
+    else:
+        st.info("Run a scanner pass from the sidebar to populate today's stock picker.")
+
+    portfolio_rows = load_dashboard_portfolio(Path(st.text_input("Home portfolio path", str(DEFAULT_PORTFOLIO_PATH), key="home_portfolio_path")))
+    if portfolio_rows:
+        psummary = build_dashboard_portfolio_summary(portfolio_rows)
+        st.markdown("**Portfolio Snapshot**")
+        cols = st.columns(4)
+        cols[0].metric("Portfolio value", psummary["total_market_value"])
+        cols[1].metric("Unrealized P/L", psummary["total_unrealized_gain_loss"])
+        cols[2].metric("P/L %", psummary["total_unrealized_gain_loss_pct"])
+        cols[3].metric("Concentration", psummary["concentration_risk"]["risk_label"])
+        st.markdown("**Positions Needing Review**")
+        st.dataframe(psummary["positions_needing_review"], hide_index=True, use_container_width=True)
+
+    predictions = load_dashboard_predictions(Path(st.text_input("Home predictions path", str(DEFAULT_PREDICTIONS_PATH), key="home_predictions_path")))
+    if predictions:
+        metrics = build_dashboard_validation_metrics(predictions)
+        st.markdown("**Open Predictions Needing Review**")
+        st.dataframe(metrics["recent_predictions_needing_update"][:10], hide_index=True, use_container_width=True)
+
+    health = build_dashboard_data_source_status()
+    st.markdown("**Data Source Health**")
+    st.write(health["summary"])
+
+
+def _stock_picker_page(rows: list[dict[str, Any]]) -> None:
+    st.subheader("Stock Picker")
+    st.caption("Run scans from the sidebar, then triage candidates here. Recommendations are research labels, not orders.")
+    _outlier_feed(rows)
+    st.markdown("**Scanner Table**")
+    _scanner_table(rows)
+    if not rows:
+        return
+    selected = st.selectbox("Save selected candidate", [row["ticker"] for row in rows], key="stock_picker_save")
+    row = next(item for item in rows if item["ticker"] == selected)
+    cols = st.columns(4)
+    if cols[0].button("Add to journal", use_container_width=True):
+        add_journal_entry(
+            journal_path=DEFAULT_JOURNAL_PATH,
+            ticker=selected,
+            updates={**_journal_updates_from_row(row), "decision": "Research", "notes": "Added from Stock Picker."},
+        )
+        st.success(f"Added {selected} to journal.")
+    if cols[1].button("Save prediction", use_container_width=True):
+        prediction = _prediction_from_row(row)
+        add_dashboard_prediction(prediction, DEFAULT_PREDICTIONS_PATH)
+        st.success(f"Saved paper prediction {prediction['prediction_id']}.")
+    if cols[2].button("Queue portfolio review", use_container_width=True):
+        upsert_dashboard_position(
+            {
+                "ticker": selected,
+                "company_name": row.get("company_name", ""),
+                "current_price": row.get("current_price", 0),
+                "decision_status": "Research More",
+                "thesis": row.get("outlier_reason", ""),
+                "stop_or_invalidation": row.get("invalidation_level", ""),
+                "target_price": row.get("tp1", ""),
+            },
+            DEFAULT_PORTFOLIO_PATH,
+        )
+        st.success(f"Queued {selected} in the local portfolio review file.")
+    cols[3].write("Watchlist action: use universe files under config/ for now.")
+
+
+def _deep_research_page() -> None:
+    st.subheader("Deep Research")
+    st.caption("Type any stock ticker for a deterministic research card with portfolio and journal context when available.")
+    cols = st.columns(4)
+    ticker = cols[0].text_input("Ticker", "NVDA").strip().upper()
+    provider_name = cols[1].selectbox("Deep Research provider", ["sample", "real", "local"], index=0)
+    history_period = cols[2].text_input("History period", "3y", key="deep_history_period")
+    data_dir_raw = cols[3].text_input("Local data dir", "", key="deep_data_dir")
+    portfolio_path = Path(st.text_input("Portfolio path", str(DEFAULT_PORTFOLIO_PATH), key="deep_portfolio_path"))
+    if st.button("Analyze ticker", type="primary", use_container_width=True):
+        try:
+            provider = build_provider(
+                args=SimpleNamespace(
+                    provider=provider_name,
+                    data_dir=Path(data_dir_raw) if data_dir_raw else None,
+                    history_period=history_period,
+                ),
+                analysis_date=date.today(),
+            )
+            st.session_state["deep_research"] = run_dashboard_deep_research(
+                ticker=ticker,
+                provider=provider,
+                portfolio_rows=load_dashboard_portfolio(portfolio_path),
+                journal_rows=load_dashboard_journal(DEFAULT_JOURNAL_PATH),
+            )
+        except Exception as exc:
+            st.error(f"Deep research failed: {exc}")
+    payload = st.session_state.get("deep_research")
+    if not isinstance(payload, dict):
+        return
+    card = payload["decision_card"]
+    cols = st.columns(5)
+    cols[0].metric("Recommendation", card["research_recommendation"])
+    cols[1].metric("Confidence", card["confidence_label"])
+    cols[2].metric("Winner", payload["winner_score"])
+    cols[3].metric("Outlier", payload["outlier_score"])
+    cols[4].metric("Risk", payload["risk_score"])
+    st.markdown("**Decision Card**")
+    st.write(card)
+    left, right = st.columns(2)
+    left.markdown("**Bull Case**")
+    left.write(payload["bull_case"])
+    left.markdown("**Entry / Risk**")
+    left.write(
+        {
+            "entry_zone": payload["entry_zone"],
+            "invalidation": payload["invalidation"],
+            "tp1": payload["tp1"],
+            "tp2": payload["tp2"],
+            "reward_risk": payload["reward_risk"],
+        }
+    )
+    right.markdown("**Bear Case / Risks**")
+    right.write(payload["key_risks"])
+    right.markdown("**Portfolio Context**")
+    right.write(payload["portfolio_context"])
+    st.markdown("**Full Research Payload**")
+    st.json(payload, expanded=False)
+
+
+def _portfolio_page() -> None:
+    st.subheader("Portfolio")
+    st.caption("Local, inspectable holdings. Manual and CSV import only; no broker credentials and no order placement.")
+    portfolio_path = Path(st.text_input("Portfolio CSV path", str(DEFAULT_PORTFOLIO_PATH), key="portfolio_path"))
+    rows = load_dashboard_portfolio(portfolio_path)
+    summary = build_dashboard_portfolio_summary(rows)
+    cols = st.columns(5)
+    cols[0].metric("Positions", summary["position_count"])
+    cols[1].metric("Market value", summary["total_market_value"])
+    cols[2].metric("Cost basis", summary["total_cost_basis"])
+    cols[3].metric("Unrealized P/L", summary["total_unrealized_gain_loss"])
+    cols[4].metric("P/L %", summary["total_unrealized_gain_loss_pct"])
+
+    st.markdown("**Manual Position Entry**")
+    edit_cols = st.columns(4)
+    ticker = edit_cols[0].text_input("Ticker", key="portfolio_ticker").upper()
+    account = edit_cols[1].text_input("Account", "Personal")
+    quantity = edit_cols[2].number_input("Quantity", min_value=0.0, value=0.0, step=1.0)
+    avg_cost = edit_cols[3].number_input("Average cost", min_value=0.0, value=0.0, step=1.0)
+    more_cols = st.columns(4)
+    current_price = more_cols[0].number_input("Current price", min_value=0.0, value=0.0, step=1.0)
+    sector = more_cols[1].text_input("Sector")
+    decision = more_cols[2].selectbox("Decision status", list(DECISION_STATUSES))
+    target = more_cols[3].text_input("Target price")
+    thesis = st.text_area("Thesis")
+    risk_notes = st.text_area("Risk notes")
+    stop = st.text_input("Stop / invalidation")
+    if st.button("Add or update position", use_container_width=True):
+        try:
+            upsert_dashboard_position(
+                {
+                    "account_name": account,
+                    "ticker": ticker,
+                    "quantity": quantity,
+                    "average_cost": avg_cost,
+                    "current_price": current_price,
+                    "sector": sector,
+                    "decision_status": decision,
+                    "target_price": target,
+                    "thesis": thesis,
+                    "risk_notes": risk_notes,
+                    "stop_or_invalidation": stop,
+                },
+                portfolio_path,
+            )
+            st.success(f"Saved {ticker}.")
+        except Exception as exc:
+            st.error(f"Could not save position: {exc}")
+
+    action_cols = st.columns(5)
+    import_path = Path(action_cols[0].text_input("Import CSV", "", key="portfolio_import"))
+    if action_cols[1].button("Import", use_container_width=True):
+        try:
+            rows = import_dashboard_portfolio_csv(import_path, portfolio_path)
+            st.success(f"Imported {len(rows)} positions.")
+        except Exception as exc:
+            st.error(f"Import failed: {exc}")
+    export_path = Path(action_cols[2].text_input("Export CSV", "outputs/portfolio_export.csv", key="portfolio_export"))
+    if action_cols[3].button("Export", use_container_width=True):
+        export_dashboard_portfolio_csv(rows, export_path)
+        st.success(f"Exported to {export_path}.")
+    delete_ticker = action_cols[4].text_input("Delete ticker", key="portfolio_delete")
+    if st.button("Delete position", use_container_width=True):
+        if delete_dashboard_position(delete_ticker, portfolio_path):
+            st.success(f"Deleted {delete_ticker.upper()}.")
+        else:
+            st.warning("No matching position found.")
+
+    refresh_cols = st.columns(3)
+    provider_name = refresh_cols[0].selectbox("Refresh provider", ["sample", "real", "local"], index=0)
+    data_dir_raw = refresh_cols[1].text_input("Refresh local data dir", "", key="portfolio_refresh_data_dir")
+    if refresh_cols[2].button("Refresh prices", use_container_width=True):
+        try:
+            provider = build_provider(
+                args=SimpleNamespace(provider=provider_name, data_dir=Path(data_dir_raw) if data_dir_raw else None, history_period="3y"),
+                analysis_date=date.today(),
+            )
+            refreshed = refresh_dashboard_portfolio_prices(rows=rows, provider=provider)
+            save_dashboard_portfolio(refreshed, portfolio_path)
+            st.success("Prices refreshed and portfolio saved.")
+        except Exception as exc:
+            st.error(f"Price refresh failed: {exc}")
+
+    st.markdown("**Holdings**")
+    st.dataframe(load_dashboard_portfolio(portfolio_path), hide_index=True, use_container_width=True)
+    cols = st.columns(2)
+    cols[0].markdown("**Allocation by sector**")
+    cols[0].dataframe(summary["allocation_by_sector"], hide_index=True, use_container_width=True)
+    cols[1].markdown("**Allocation by theme**")
+    cols[1].dataframe(summary["allocation_by_theme"], hide_index=True, use_container_width=True)
+    st.markdown("**Concentration Risk**")
+    st.write(summary["concentration_risk"])
+
+
+def _portfolio_analyst_page() -> None:
+    st.subheader("Portfolio Analyst")
+    st.caption("Transparent research recommendations for your local holdings. No trades are placed.")
+    portfolio_path = Path(st.text_input("Analyst portfolio path", str(DEFAULT_PORTFOLIO_PATH), key="analyst_portfolio_path"))
+    provider_name = st.selectbox("Analyst provider", ["sample", "real", "local"], index=0)
+    data_dir_raw = st.text_input("Analyst local data dir", "", key="analyst_data_dir")
+    if st.button("Analyze portfolio", type="primary", use_container_width=True):
+        try:
+            provider = build_provider(
+                args=SimpleNamespace(provider=provider_name, data_dir=Path(data_dir_raw) if data_dir_raw else None, history_period="3y"),
+                analysis_date=date.today(),
+            )
+            st.session_state["portfolio_analysis"] = run_dashboard_portfolio_analysis(
+                rows=load_dashboard_portfolio(portfolio_path),
+                provider=provider,
+            )
+        except Exception as exc:
+            st.error(f"Portfolio analysis failed: {exc}")
+    payload = st.session_state.get("portfolio_analysis")
+    if not isinstance(payload, dict):
+        return
+    rows = payload.get("positions", [])
+    st.dataframe(
+        [
+            {
+                key: row.get(key)
+                for key in [
+                    "ticker",
+                    "recommendation_label",
+                    "confidence_label",
+                    "conviction_score",
+                    "risk_score",
+                    "action_urgency",
+                    "position_weight_pct",
+                    "risk_to_portfolio",
+                    "suggested_review_date",
+                ]
+            }
+            for row in rows
+        ],
+        hide_index=True,
+        use_container_width=True,
+    )
+    summary = payload.get("summary", {})
+    for title, key in [
+        ("What should I review today?", "review_today"),
+        ("Positions to consider adding to", "consider_adding"),
+        ("Positions to consider trimming", "consider_trimming"),
+        ("Positions with broken setup", "broken_setup"),
+        ("Positions with catalyst risk", "catalyst_risk"),
+        ("Positions with high concentration", "high_concentration"),
+        ("Positions where thesis changed", "thesis_changed"),
+        ("Positions near invalidation", "near_invalidation"),
+        ("Positions near target", "near_target"),
+    ]:
+        st.markdown(f"**{title}**")
+        st.dataframe(summary.get(key, []), hide_index=True, use_container_width=True)
+
+
+def _ai_committee_page(rows: list[dict[str, Any]]) -> None:
+    st.subheader("AI Committee")
+    st.caption("Optional and visibly labeled. Grounded in deterministic scanner fields and portfolio context.")
+    if not rows:
+        st.info("Run or load a scan first.")
+        return
+    ticker = st.selectbox("Committee ticker", [row["ticker"] for row in rows], key="committee_ticker")
+    mode = st.selectbox("AI mode", ["No AI", "OpenAI only", "Claude only", "Gemini only", "Multi-agent committee", "Mock AI for testing"], index=5)
+    row = next(item for item in rows if item["ticker"] == ticker)
+    portfolio_context = None
+    analysis = st.session_state.get("portfolio_analysis")
+    if isinstance(analysis, dict):
+        portfolio_context = next((item for item in analysis.get("positions", []) if item.get("ticker") == ticker), None)
+    if st.button("Run AI committee", type="primary", use_container_width=True):
+        ai_output = run_dashboard_ai_committee(scanner_row=row, portfolio_context=portfolio_context, mode=mode)
+        rule_based = (portfolio_context or {}).get("recommendation_label") or row.get("status_label", "Data Insufficient")
+        combined = build_dashboard_combined_recommendation(rule_based=rule_based, ai_output=ai_output, scanner_row=row)
+        st.session_state["committee_output"] = {"ai": ai_output, "combined": combined}
+    payload = st.session_state.get("committee_output")
+    if not isinstance(payload, dict):
+        return
+    st.markdown("**Rule-Based vs AI vs Combined**")
+    st.write(payload["combined"])
+    st.markdown("**AI Committee Output**")
+    st.write(payload["ai"])
+
+
+def _validation_lab_page(rows: list[dict[str, Any]]) -> None:
+    st.subheader("Validation Lab")
+    st.caption("Paper prediction tracking and historical case studies. Avoid look-ahead bias; sample size matters.")
+    predictions_path = Path(st.text_input("Predictions CSV path", str(DEFAULT_PREDICTIONS_PATH), key="validation_predictions_path"))
+    records = load_dashboard_predictions(predictions_path)
+    cols = st.columns(4)
+    cols[0].metric("Predictions", len(records))
+    metrics = build_dashboard_validation_metrics(records)
+    cols[1].metric("Open", len(metrics["open_predictions"]))
+    cols[2].metric("Closed", len(metrics["closed_predictions"]))
+    cols[3].metric("Sample warning", "Yes" if metrics["sample_size_warning"] else "No")
+    if rows:
+        selected = st.selectbox("Save current scanner row as prediction", [row["ticker"] for row in rows], key="prediction_save_ticker")
+        row = next(item for item in rows if item["ticker"] == selected)
+        thesis = st.text_area("Prediction thesis", key="prediction_thesis")
+        if st.button("Save paper prediction", use_container_width=True):
+            prediction = _prediction_from_row(row, thesis=thesis)
+            add_dashboard_prediction(prediction, predictions_path)
+            st.success(f"Saved {prediction['prediction_id']}.")
+    provider_name = st.selectbox("Outcome update provider", ["sample", "real", "local"], index=0)
+    data_dir_raw = st.text_input("Outcome local data dir", "", key="prediction_data_dir")
+    if st.button("Update forward outcomes", use_container_width=True):
+        try:
+            provider = build_provider(
+                args=SimpleNamespace(provider=provider_name, data_dir=Path(data_dir_raw) if data_dir_raw else None, history_period="3y"),
+                analysis_date=date.today(),
+            )
+            updated = update_dashboard_prediction_outcomes(records=records, provider=provider)
+            save_dashboard_predictions(updated, predictions_path)
+            st.success("Prediction outcomes updated.")
+        except Exception as exc:
+            st.error(f"Outcome update failed: {exc}")
+    st.markdown("**Open Predictions**")
+    st.dataframe(metrics["open_predictions"], hide_index=True, use_container_width=True)
+    st.markdown("**Closed Predictions**")
+    st.dataframe(metrics["closed_predictions"], hide_index=True, use_container_width=True)
+    st.markdown("**Performance by Recommendation Label**")
+    st.dataframe(metrics["by_recommendation_label"], hide_index=True, use_container_width=True)
+    st.markdown("**Famous Outlier Case Study**")
+    case_cols = st.columns(4)
+    case_ticker = case_cols[0].selectbox("Case ticker", list(CASE_STUDY_TICKERS))
+    signal_date = case_cols[1].date_input("Signal date", date(2024, 1, 2))
+    end_date = case_cols[2].date_input("End date", date.today())
+    case_provider_name = case_cols[3].selectbox("Case provider", ["sample", "real", "local"], index=0)
+    if st.button("Run case study", use_container_width=True):
+        try:
+            provider = build_provider(
+                args=SimpleNamespace(provider=case_provider_name, data_dir=Path(data_dir_raw) if data_dir_raw else None, history_period="5y"),
+                analysis_date=end_date,
+            )
+            st.session_state["case_study"] = run_dashboard_case_study(
+                ticker=case_ticker,
+                provider=provider,
+                signal_date=signal_date,
+                end_date=end_date,
+            )
+        except Exception as exc:
+            st.error(f"Case study failed: {exc}")
+    if isinstance(st.session_state.get("case_study"), dict):
+        st.write(st.session_state["case_study"])
+
+
+def _data_sources_page() -> None:
+    st.subheader("Data Sources / API Setup")
+    st.caption("Env-var based readiness. Missing optional keys degrade enrichment but do not stop the app.")
+    payload = build_dashboard_data_source_status()
+    cols = st.columns(4)
+    summary = payload["summary"]
+    cols[0].metric("Providers", summary["providers"])
+    cols[1].metric("Required missing", summary["required_missing"])
+    cols[2].metric("Optional ready", summary["optional_ready"])
+    cols[3].metric("Optional missing", summary["optional_missing"])
+    st.dataframe(payload["rows"], hide_index=True, use_container_width=True)
+    st.markdown("**Setup Notes**")
+    for row in payload["rows"]:
+        with st.expander(f"{row['name']} - {row['optional_or_required']}"):
+            st.write(
+                {
+                    "capabilities": row["capabilities"],
+                    "env_vars_needed": row["env_vars_needed"],
+                    "missing_env_vars": row["missing_env_vars"],
+                    "degraded_when_missing": row["degraded_when_missing"],
+                    "setup": row["setup"],
+                    "url": row["url"],
+                    "notes": row["notes"],
+                }
+            )
+
+
+def _reports_page() -> None:
+    st.subheader("Reports")
+    st.caption("Load archived scanner, daily, alert, review, and performance outputs.")
+    _alert_history_loader_page()
+    st.divider()
+    _watchlist_changes_page()
 
 
 def _sidebar_controls() -> None:
@@ -1011,6 +1453,23 @@ def _journal_updates_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "planned_holding_period": row.get("holding_period", ""),
         "position_type": "stock",
     }
+
+
+def _prediction_from_row(row: dict[str, Any], thesis: str = "") -> dict[str, Any]:
+    return create_dashboard_prediction(
+        scanner_row=row,
+        rule_based_recommendation=row.get("status_label", "Data Insufficient"),
+        ai_committee_recommendation=(
+            row.get("ai_explanation", {}).get("summary", "Data Insufficient")
+            if row.get("ai_explanation_available")
+            else "Data Insufficient"
+        ),
+        final_combined_recommendation=row.get("status_label", "Data Insufficient"),
+        thesis=thesis or row.get("outlier_reason", ""),
+        events_to_watch=row.get("warnings", [])[:3],
+        owned_at_signal=False,
+        portfolio_weight_at_signal="",
+    )
 
 
 def _single_compact(row: dict[str, Any] | None) -> str:
