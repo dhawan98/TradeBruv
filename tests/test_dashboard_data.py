@@ -53,6 +53,8 @@ class DashboardDataTests(unittest.TestCase):
         self.assertTrue(summary["common_theme_tags"])
         self.assertIsNotNone(summary["highest_risk_candidate"])
         self.assertIsNone(summary["best_squeeze_watch_candidate"])
+        self.assertIn("top_official_catalysts", summary)
+        self.assertIn("top_social_attention_names", summary)
 
     def test_report_loader_normalizes_missing_fields(self) -> None:
         payload = {
@@ -68,6 +70,7 @@ class DashboardDataTests(unittest.TestCase):
         self.assertEqual(report.results[0]["ticker"], "ABC")
         self.assertEqual(report.results[0]["status_label"], "Watch Only")
         self.assertEqual(report.results[0]["warnings"], [])
+        self.assertEqual(report.results[0]["catalyst_quality"], "Unavailable")
 
     def test_missing_provider_data_returns_report_only_regime_warning(self) -> None:
         regime = build_market_regime(provider=MissingProvider(), results=[])

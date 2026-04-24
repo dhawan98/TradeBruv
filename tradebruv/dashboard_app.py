@@ -37,6 +37,10 @@ TABLE_COLUMNS = [
     "bullish_score",
     "bearish_pressure_score",
     "reward_risk",
+    "catalyst_score",
+    "catalyst_quality",
+    "catalyst_type",
+    "social_attention_score",
     "relative_strength_notes",
     "volume_accumulation_notes",
     "theme_tags",
@@ -70,7 +74,17 @@ def main() -> None:
     _market_regime_panel(report)
     _daily_summary_panel(build_daily_summary(rows))
 
-    tabs = st.tabs(["Outlier Feed", "Scanner Table", "Stock Detail", "Avoid Panel", "Watchlists", "Options Placeholder"])
+    tabs = st.tabs([
+        "Outlier Feed",
+        "Scanner Table",
+        "Stock Detail",
+        "Catalysts",
+        "Social Attention",
+        "AI Explanation",
+        "Avoid Panel",
+        "Watchlists",
+        "Options Placeholder",
+    ])
     with tabs[0]:
         _outlier_feed(filtered)
     with tabs[1]:
@@ -78,10 +92,16 @@ def main() -> None:
     with tabs[2]:
         _stock_detail(filtered or rows)
     with tabs[3]:
-        _avoid_panel(rows)
+        _catalyst_panel(filtered or rows)
     with tabs[4]:
-        _watchlist_help()
+        _social_attention_panel(filtered or rows)
     with tabs[5]:
+        _ai_explanation_panel(filtered or rows)
+    with tabs[6]:
+        _avoid_panel(rows)
+    with tabs[7]:
+        _watchlist_help()
+    with tabs[8]:
         _options_placeholder(rows)
 
 
@@ -94,6 +114,9 @@ def _sidebar_controls() -> None:
         universe_path = Path(st.text_input("Universe path", str(DEFAULT_UNIVERSE_FILES[universe_label])))
         limit = st.number_input("Result limit", min_value=0, max_value=500, value=50, step=5)
         history_period = st.text_input("Real provider history period", "3y")
+        catalyst_path_raw = st.text_input("Catalyst CSV/JSON path", "config/catalysts_watchlist.csv")
+        enable_ai = st.checkbox("Enable AI explanations", value=False)
+        mock_ai = st.checkbox("Use mock AI provider", value=False)
         use_as_of = st.checkbox("Use fixed as-of date", value=provider_name == "sample")
         as_of_date = st.date_input("As-of date", date(2026, 4, 24)) if use_as_of else None
 
@@ -106,6 +129,9 @@ def _sidebar_controls() -> None:
                     limit=int(limit),
                     analysis_date=as_of_date,
                     history_period=history_period,
+                    catalyst_file=Path(catalyst_path_raw) if catalyst_path_raw else None,
+                    ai_explanations=enable_ai,
+                    mock_ai_explanations=mock_ai,
                 )
             except (ProviderConfigurationError, FileNotFoundError, ValueError) as exc:
                 st.error(str(exc))
@@ -230,6 +256,20 @@ def _daily_summary_panel(summary: dict[str, Any]) -> None:
     cols[2].write(_single_compact(summary["best_long_term_monster_candidate"]))
     cols[3].caption("Best squeeze/high-risk watch")
     cols[3].write(_single_compact(summary["best_squeeze_watch_candidate"]))
+    cols = st.columns(3)
+    cols[0].caption("Top official catalysts")
+    cols[0].write(_compact_list(summary["top_official_catalysts"]))
+    cols[1].caption("Top narrative catalysts")
+    cols[1].write(_compact_list(summary["top_narrative_catalysts"]))
+    cols[2].caption("Top social attention")
+    cols[2].write(_compact_list(summary["top_social_attention_names"]))
+    cols = st.columns(3)
+    cols[0].caption("Highest hype risk")
+    cols[0].write(_compact_list(summary["highest_hype_risk_names"]))
+    cols[1].caption("Price-confirmed catalysts")
+    cols[1].write(_compact_list(summary["top_price_confirmed_catalysts"]))
+    cols[2].caption("Watch-only attention")
+    cols[2].write(_compact_list(summary["watch_only_attention_names"]))
 
 
 def _outlier_feed(rows: list[dict[str, Any]]) -> None:
@@ -272,6 +312,7 @@ def _outlier_card(row: dict[str, Any]) -> None:
           </div>
           <p><strong>Theme:</strong> {_join_tags(row['theme_tags'])}</p>
           <p><strong>Catalysts:</strong> {_join_tags(row['catalyst_tags'])}</p>
+          <p><strong>Catalyst quality:</strong> {row['catalyst_quality']} | <strong>Score:</strong> {row['catalyst_score']} | <strong>Sources:</strong> {row['catalyst_source_count']}</p>
           <p><strong>Big winner case:</strong> {_first_sentence(row['why_it_could_be_a_big_winner'], row['outlier_reason'])}</p>
           <p><strong>Failure case:</strong> {_first_sentence(row['why_it_could_fail'], 'No specific failure reason available.')}</p>
           <p class="tb-warning"><strong>Chase risk:</strong> {row.get('chase_risk_warning', 'unavailable')}</p>
@@ -347,8 +388,105 @@ def _stock_detail(rows: list[dict[str, Any]]) -> None:
         st.write(row["data_availability_notes"] or ["No data gaps reported."])
         st.markdown("**Squeeze watch**")
         st.write(row.get("squeeze_watch", {}))
+        st.markdown("**Catalyst intelligence**")
+        st.write(
+            {
+                "catalyst_score": row["catalyst_score"],
+                "catalyst_quality": row["catalyst_quality"],
+                "catalyst_type": row["catalyst_type"],
+                "official_catalyst_found": row["official_catalyst_found"],
+                "narrative_catalyst_found": row["narrative_catalyst_found"],
+                "hype_catalyst_found": row["hype_catalyst_found"],
+                "recency": row["catalyst_recency"],
+                "source_urls": row["source_urls"],
+                "source_timestamps": row["source_timestamps"],
+            }
+        )
+        st.markdown("**Catalyst/news/social items**")
+        st.write(row.get("catalyst_items", []))
         st.markdown("**Options placeholder**")
         st.write(row.get("options_placeholders", {}))
+        st.markdown("**AI-generated explanation**")
+        st.write(row.get("ai_explanation", {"summary": "AI explanation unavailable."}))
+
+
+def _catalyst_panel(rows: list[dict[str, Any]]) -> None:
+    st.subheader("Catalyst Panel")
+    catalyst_rows = sort_results(rows, sort_by="catalyst_score")
+    if not catalyst_rows:
+        st.info("No catalyst data available.")
+        return
+    for row in catalyst_rows[:30]:
+        with st.expander(f"{row['ticker']} | {row['catalyst_quality']} | {row['catalyst_type']} | score {row['catalyst_score']}"):
+            cols = st.columns(4)
+            cols[0].metric("Source count", row["catalyst_source_count"])
+            cols[1].metric("Recency", row["catalyst_recency"])
+            cols[2].metric("Official", str(row["official_catalyst_found"]))
+            cols[3].metric("Hype", str(row["hype_catalyst_found"]))
+            st.write(
+                {
+                    "narrative_catalyst_found": row["narrative_catalyst_found"],
+                    "price_volume_confirms_catalyst": row["price_volume_confirms_catalyst"],
+                    "source_urls": row["source_urls"],
+                    "source_provider_notes": row["source_provider_notes"],
+                    "missing_reason": row["catalyst_data_missing_reason"],
+                }
+            )
+            st.dataframe(row.get("catalyst_items", []), hide_index=True, use_container_width=True)
+
+
+def _social_attention_panel(rows: list[dict[str, Any]]) -> None:
+    st.subheader("Social Attention Panel")
+    social_rows = sort_results(rows, sort_by="social_attention_score")
+    for row in social_rows[:30]:
+        if not row["social_attention_available"] and row["social_attention_score"] == 0:
+            continue
+        with st.expander(f"{row['ticker']} | social {row['social_attention_score']} | velocity {row['social_attention_velocity']}"):
+            st.write(
+                {
+                    "news_attention_score": row["news_attention_score"],
+                    "news_sentiment_label": row["news_sentiment_label"],
+                    "attention_spike": row["attention_spike"],
+                    "hype_risk": row["hype_risk"],
+                    "pump_risk": row["pump_risk"],
+                    "price_volume_confirms_attention": row["price_volume_confirms_catalyst"],
+                }
+            )
+            social_items = [
+                item
+                for item in row.get("catalyst_items", [])
+                if item.get("source_type") in {"reddit", "twitter_x", "truth_social", "news"}
+            ]
+            st.dataframe(social_items, hide_index=True, use_container_width=True)
+
+
+def _ai_explanation_panel(rows: list[dict[str, Any]]) -> None:
+    st.subheader("AI Explanation Panel")
+    st.caption("Optional, AI-generated explanation. It is grounded in scanner/report fields and does not create scores or trade signals.")
+    if not rows:
+        st.info("No rows available.")
+        return
+    selected = st.selectbox("AI ticker", [row["ticker"] for row in rows], key="ai_ticker")
+    row = next(item for item in rows if item["ticker"] == selected)
+    explanation = row.get("ai_explanation", {})
+    if not explanation.get("available"):
+        st.info(explanation.get("summary", "AI explanation unavailable."))
+        return
+    st.markdown("**AI-generated explanation**")
+    st.write(explanation.get("summary", "unavailable"))
+    cols = st.columns(2)
+    cols[0].markdown("**Bull case**")
+    cols[0].write(explanation.get("bull_case", []))
+    cols[0].markdown("**Catalyst summary**")
+    cols[0].write(explanation.get("catalyst_summary", "unavailable"))
+    cols[1].markdown("**Bear case / Why not to buy**")
+    cols[1].write(explanation.get("bear_case", []))
+    cols[1].write(explanation.get("why_not_to_buy", []))
+    st.markdown("**Invalidation and checklist**")
+    st.write(explanation.get("setup_invalidation", "unavailable"))
+    st.write(explanation.get("research_checklist", []))
+    st.markdown("**Source item refs**")
+    st.write(explanation.get("source_item_refs", []))
 
 
 def _avoid_panel(rows: list[dict[str, Any]]) -> None:

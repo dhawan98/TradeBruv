@@ -42,6 +42,52 @@ class CatalystSnapshot:
 
 
 @dataclass(frozen=True)
+class CatalystItem:
+    ticker: str
+    source_type: str
+    source_name: str | None = None
+    source_url: str | None = None
+    timestamp: str | None = None
+    headline: str | None = None
+    summary: str | None = None
+    sentiment: str | None = None
+    catalyst_type: str = "Unknown/unconfirmed"
+    attention_count: int | None = None
+    attention_velocity: float | None = None
+    official_source: bool | None = None
+    confidence: float | None = None
+    notes: str | None = None
+    source_platform: str | None = None
+    official_or_verified: bool | None = None
+    attention_spike: bool | None = None
+    hype_risk: bool | None = None
+    pump_risk: bool | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ticker": self.ticker,
+            "source_type": self.source_type,
+            "source_name": self.source_name or "unavailable",
+            "source_url": self.source_url or "unavailable",
+            "timestamp": self.timestamp or "unavailable",
+            "headline": self.headline or "unavailable",
+            "summary": self.summary or "unavailable",
+            "sentiment": self.sentiment or "unavailable",
+            "catalyst_type": self.catalyst_type,
+            "attention_count": _format_number(self.attention_count),
+            "attention_velocity": _format_number(self.attention_velocity),
+            "official_source": _format_bool(self.official_source),
+            "confidence": _format_number(self.confidence),
+            "notes": self.notes or "unavailable",
+            "source_platform": self.source_platform or "unavailable",
+            "official_or_verified": _format_bool(self.official_or_verified),
+            "attention_spike": _format_bool(self.attention_spike),
+            "hype_risk": _format_bool(self.hype_risk),
+            "pump_risk": _format_bool(self.pump_risk),
+        }
+
+
+@dataclass(frozen=True)
 class ShortInterestSnapshot:
     short_interest_percent_float: float | None = None
     days_to_cover: float | None = None
@@ -85,6 +131,7 @@ class SecurityData:
     next_earnings_date: date | None = None
     short_interest: ShortInterestSnapshot | None = None
     social_attention: SocialAttentionSnapshot | None = None
+    catalyst_items: list[CatalystItem] = field(default_factory=list)
     options_data: OptionsSnapshot | None = None
     theme_tags: list[str] = field(default_factory=list)
     catalyst_tags: list[str] = field(default_factory=list)
@@ -148,8 +195,12 @@ class ScannerResult:
     provider_name: str = "unavailable"
     source_notes: list[str] = field(default_factory=list)
     data_used: dict[str, Any] = field(default_factory=dict)
+    catalyst_intelligence: dict[str, Any] = field(default_factory=dict)
+    ai_explanation: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        catalyst_intelligence = _default_catalyst_intelligence() | self.catalyst_intelligence
+        ai_explanation = _default_ai_explanation() | self.ai_explanation
         return {
             "ticker": self.ticker,
             "company_name": self.company_name or "unavailable",
@@ -190,6 +241,32 @@ class ScannerResult:
             "component_scores": self.component_scores,
             "strategy_alignment": self.strategy_alignment,
             "data_used": self.data_used,
+            "catalyst_items": catalyst_intelligence["catalyst_items"],
+            "catalyst_score": catalyst_intelligence["catalyst_score"],
+            "catalyst_quality": catalyst_intelligence["catalyst_quality"],
+            "catalyst_type": catalyst_intelligence["catalyst_type"],
+            "catalyst_source_count": catalyst_intelligence["catalyst_source_count"],
+            "catalyst_recency": catalyst_intelligence["catalyst_recency"],
+            "official_catalyst_found": catalyst_intelligence["official_catalyst_found"],
+            "narrative_catalyst_found": catalyst_intelligence["narrative_catalyst_found"],
+            "hype_catalyst_found": catalyst_intelligence["hype_catalyst_found"],
+            "social_attention_available": catalyst_intelligence["social_attention_available"],
+            "social_attention_score": catalyst_intelligence["social_attention_score"],
+            "social_attention_velocity": catalyst_intelligence["social_attention_velocity"],
+            "news_attention_score": catalyst_intelligence["news_attention_score"],
+            "news_sentiment_label": catalyst_intelligence["news_sentiment_label"],
+            "source_urls": catalyst_intelligence["source_urls"],
+            "source_timestamps": catalyst_intelligence["source_timestamps"],
+            "source_provider_notes": catalyst_intelligence["source_provider_notes"],
+            "catalyst_data_available": catalyst_intelligence["catalyst_data_available"],
+            "catalyst_data_missing_reason": catalyst_intelligence["catalyst_data_missing_reason"],
+            "price_volume_confirms_catalyst": catalyst_intelligence["price_volume_confirms_catalyst"],
+            "attention_spike": catalyst_intelligence["attention_spike"],
+            "hype_risk": catalyst_intelligence["hype_risk"],
+            "pump_risk": catalyst_intelligence["pump_risk"],
+            "ai_explanation": ai_explanation,
+            "ai_explanation_available": ai_explanation["available"],
+            "ai_explanation_provider": ai_explanation["provider"],
         }
 
 
@@ -211,3 +288,58 @@ def _format_number(value: float | int | None) -> float | int | str:
     if isinstance(value, int):
         return value
     return round(value, 2)
+
+
+def _format_bool(value: bool | None) -> bool | str:
+    if value is None:
+        return "unavailable"
+    return bool(value)
+
+
+def _default_catalyst_intelligence() -> dict[str, Any]:
+    return {
+        "catalyst_items": [],
+        "catalyst_score": 0,
+        "catalyst_quality": "Unavailable",
+        "catalyst_type": "Unknown/unconfirmed",
+        "catalyst_source_count": 0,
+        "catalyst_recency": "unavailable",
+        "official_catalyst_found": False,
+        "narrative_catalyst_found": False,
+        "hype_catalyst_found": False,
+        "social_attention_available": False,
+        "social_attention_score": 0,
+        "social_attention_velocity": "unavailable",
+        "news_attention_score": 0,
+        "news_sentiment_label": "unavailable",
+        "source_urls": [],
+        "source_timestamps": [],
+        "source_provider_notes": [],
+        "catalyst_data_available": False,
+        "catalyst_data_missing_reason": "Catalyst data unavailable.",
+        "price_volume_confirms_catalyst": False,
+        "attention_spike": False,
+        "hype_risk": False,
+        "pump_risk": False,
+    }
+
+
+def _default_ai_explanation() -> dict[str, Any]:
+    return {
+        "available": False,
+        "provider": "unavailable",
+        "generated": False,
+        "summary": "AI explanation unavailable.",
+        "bull_case": [],
+        "bear_case": [],
+        "why_not_to_buy": [],
+        "catalyst_summary": "unavailable",
+        "social_attention_summary": "unavailable",
+        "setup_invalidation": "unavailable",
+        "research_checklist": [],
+        "source_item_refs": [],
+        "safety_notes": [
+            "AI is optional and is not part of deterministic scoring.",
+            "AI must not create buy/sell signals or invent missing evidence.",
+        ],
+    }

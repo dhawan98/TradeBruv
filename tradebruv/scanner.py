@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Iterable
 
+from .catalysts import build_catalyst_intelligence
 from .indicators import atr, average, clamp, close_location, pct_change, sample_stddev, sma
 from .models import ScannerResult, SecurityData, TradePlan
 from .providers import MarketDataProvider, SECTOR_BENCHMARKS
@@ -180,6 +181,22 @@ class DeterministicScanner:
             features=features,
             trade_plan=trade_plan,
         )
+        catalyst_intelligence, catalyst_warnings = build_catalyst_intelligence(
+            security=security,
+            features=features,
+            analysis_date=self.analysis_date,
+        )
+        for warning in catalyst_warnings:
+            if warning not in warnings:
+                warnings.append(warning)
+        if (
+            status_label != "Avoid"
+            and catalyst_intelligence["catalyst_quality"] in {"Social Attention Only", "Hype Risk"}
+            and not catalyst_intelligence["official_catalyst_found"]
+            and not catalyst_intelligence["narrative_catalyst_found"]
+            and not catalyst_intelligence["price_volume_confirms_catalyst"]
+        ):
+            status_label = "Watch Only"
 
         outlier_components = {
             "explosive_price_strength": self._score_outlier_price_strength(features),
@@ -226,6 +243,8 @@ class DeterministicScanner:
             "short_interest_available": security.short_interest is not None,
             "social_attention_available": security.social_attention is not None,
             "options_placeholder_available": security.options_data is not None,
+            "catalyst_data_available": catalyst_intelligence["catalyst_data_available"],
+            "manual_catalyst_source_count": catalyst_intelligence["catalyst_source_count"],
             "outlier_components": outlier_components,
         }
 
@@ -267,6 +286,7 @@ class DeterministicScanner:
             provider_name=security.provider_name,
             source_notes=security.source_notes,
             data_used=data_used,
+            catalyst_intelligence=catalyst_intelligence,
         )
 
     def _failure_result(self, ticker: str, error: Exception) -> ScannerResult:

@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterable
 
+from .ai_explanations import apply_ai_explanations, build_explanation_provider
+from .catalysts import CatalystOverlayProvider, load_catalyst_repository
 from .cli import build_provider, load_universe
 from .indicators import pct_change, sma
 from .providers import MarketDataProvider
@@ -47,6 +49,9 @@ def run_dashboard_scan(
     analysis_date: date | None = None,
     data_dir: Path | None = None,
     history_period: str = "3y",
+    catalyst_file: Path | None = None,
+    ai_explanations: bool = False,
+    mock_ai_explanations: bool = False,
 ) -> DashboardReport:
     as_of = analysis_date or date.today()
     args = SimpleNamespace(
@@ -55,8 +60,14 @@ def run_dashboard_scan(
         history_period=history_period,
     )
     provider = build_provider(args=args, analysis_date=as_of)
+    catalyst_repository = load_catalyst_repository(catalyst_file)
+    if catalyst_repository.items_by_ticker:
+        provider = CatalystOverlayProvider(provider, catalyst_repository)
     scanner = DeterministicScanner(provider=provider, analysis_date=as_of)
     results = scanner.scan(load_universe(universe_path), mode=mode)
+    if ai_explanations:
+        explanation_provider = build_explanation_provider(enabled=True, mock=mock_ai_explanations)
+        apply_ai_explanations(results, explanation_provider)
     if limit:
         results = results[:limit]
     result_rows = [result.to_dict() for result in results]
@@ -183,6 +194,27 @@ def build_daily_summary(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
                 key=lambda row: _to_float(row["outlier_score"]),
                 default=None,
             )
+        ),
+        "top_official_catalysts": _compact_rows(
+            sort_results((row for row in rows if row["official_catalyst_found"]), sort_by="catalyst_score")[:5]
+        ),
+        "top_narrative_catalysts": _compact_rows(
+            sort_results((row for row in rows if row["narrative_catalyst_found"]), sort_by="catalyst_score")[:5]
+        ),
+        "top_social_attention_names": _compact_rows(
+            sort_results((row for row in rows if _to_float(row["social_attention_score"]) > 0), sort_by="social_attention_score")[:5]
+        ),
+        "highest_hype_risk_names": _compact_rows(
+            sort_results((row for row in rows if row["hype_risk"] or row["pump_risk"]), sort_by="risk_score")[:5]
+        ),
+        "top_price_confirmed_catalysts": _compact_rows(
+            sort_results((row for row in rows if row["price_volume_confirms_catalyst"]), sort_by="catalyst_score")[:5]
+        ),
+        "watch_only_attention_names": _compact_rows(
+            sort_results(
+                (row for row in rows if row["status_label"] == WATCH_ONLY_STATUS and _to_float(row["social_attention_score"]) > 0),
+                sort_by="social_attention_score",
+            )[:5]
         ),
     }
 
@@ -398,6 +430,32 @@ def _normalize_result(row: dict[str, Any]) -> dict[str, Any]:
         "data_used": {},
         "squeeze_watch": {},
         "options_placeholders": {},
+        "catalyst_items": [],
+        "catalyst_score": 0,
+        "catalyst_quality": "Unavailable",
+        "catalyst_type": "Unknown/unconfirmed",
+        "catalyst_source_count": 0,
+        "catalyst_recency": "unavailable",
+        "official_catalyst_found": False,
+        "narrative_catalyst_found": False,
+        "hype_catalyst_found": False,
+        "social_attention_available": False,
+        "social_attention_score": 0,
+        "social_attention_velocity": "unavailable",
+        "news_attention_score": 0,
+        "news_sentiment_label": "unavailable",
+        "source_urls": [],
+        "source_timestamps": [],
+        "source_provider_notes": [],
+        "catalyst_data_available": False,
+        "catalyst_data_missing_reason": "Catalyst data unavailable.",
+        "price_volume_confirms_catalyst": False,
+        "attention_spike": False,
+        "hype_risk": False,
+        "pump_risk": False,
+        "ai_explanation": {},
+        "ai_explanation_available": False,
+        "ai_explanation_provider": "unavailable",
         "entry_zone": "unavailable",
         "invalidation_level": "unavailable",
         "stop_loss_reference": "unavailable",
@@ -421,8 +479,15 @@ def _normalize_result(row: dict[str, Any]) -> dict[str, Any]:
         "signals_used",
         "data_availability_notes",
         "source_notes",
+        "source_urls",
+        "source_timestamps",
+        "source_provider_notes",
     ):
         normalized[key] = _listify(normalized.get(key))
+    if not isinstance(normalized["catalyst_items"], list):
+        normalized["catalyst_items"] = []
+    if not isinstance(normalized["ai_explanation"], dict):
+        normalized["ai_explanation"] = {}
     normalized["ticker"] = str(normalized["ticker"]).upper()
     return normalized
 
@@ -444,6 +509,9 @@ def _compact_row(row: dict[str, Any] | None) -> dict[str, Any] | None:
         "winner_score": normalized["winner_score"],
         "risk_score": normalized["risk_score"],
         "reward_risk": normalized["reward_risk"],
+        "catalyst_score": normalized["catalyst_score"],
+        "catalyst_quality": normalized["catalyst_quality"],
+        "social_attention_score": normalized["social_attention_score"],
     }
 
 

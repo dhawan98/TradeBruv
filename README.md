@@ -19,6 +19,8 @@ TradeBruv currently supports:
 - deterministic winner scoring
 - deterministic outlier-winner scoring
 - a local research cockpit dashboard
+- manual CSV/JSON catalyst, news, and social-attention ingestion
+- optional AI-generated explanation layer, off by default
 - strategy labels and status labels
 - trade-plan levels
 - avoid/risk flags
@@ -129,6 +131,33 @@ python3 -m tradebruv scan \
   --as-of-date 2026-04-24
 ```
 
+### Scan Without Catalyst Data
+
+Catalyst data is optional. The scanner still runs without a catalyst file:
+
+```bash
+python3 -m tradebruv scan \
+  --universe config/sample_universe.txt \
+  --provider sample \
+  --mode outliers \
+  --as-of-date 2026-04-24
+```
+
+Missing catalyst/news/social evidence is reported as unavailable. It is never filled in by AI.
+
+### Scan With Manual Catalyst Data
+
+```bash
+python3 -m tradebruv scan \
+  --universe config/sample_universe.txt \
+  --provider sample \
+  --mode outliers \
+  --catalyst-file config/catalysts_watchlist.csv \
+  --as-of-date 2026-04-24
+```
+
+The file may be `.csv` or `.json`. Missing files produce a warning and do not crash the scan. Bad rows are skipped with warnings. Duplicate source rows are deduplicated where possible.
+
 ### Real Scan
 
 Install the optional dependency first:
@@ -165,7 +194,7 @@ python3 -m tradebruv scan \
 
 ## Dashboard
 
-Pass 2 adds a local Streamlit dashboard for fast research triage. It does not replace the scanner and does not change deterministic scoring logic. The dashboard consumes scanner output, can trigger the existing scanner, and can load existing JSON reports.
+The local Streamlit dashboard is for fast research triage. It does not replace the scanner and does not change deterministic scoring logic. The dashboard consumes scanner output, can trigger the existing scanner, and can load existing JSON reports.
 
 Install dashboard dependencies:
 
@@ -199,6 +228,8 @@ In the sidebar:
 - Provider: `sample`
 - Mode: `outliers` or `standard`
 - Universe file: `config/sample_universe.txt`
+- Catalyst CSV/JSON path: optional, for example `config/catalysts_watchlist.csv`
+- Enable AI explanations: optional and off by default
 - Optional fixed as-of date: `2026-04-24`
 - Click `Run scan`
 
@@ -215,6 +246,8 @@ In the sidebar:
 - Mode: `outliers` or `standard`
 - Universe file: `config/outlier_watchlist.txt`, `config/momentum_universe.txt`, or `config/mega_cap_universe.txt`
 - History period: default `3y`
+- Catalyst CSV/JSON path: optional
+- Enable AI explanations: optional and requires an API key
 - Click `Run scan`
 
 Real-data mode uses the existing yfinance provider. If Yahoo/yfinance returns partial fields, the dashboard displays the scanner's data-availability notes instead of filling gaps.
@@ -234,6 +267,9 @@ Loaded reports show the same outlier feed, table, detail view, avoid panel, opti
 - `Outlier Feed`: ranked research cards centered on `outlier_score`, with winner score, risk, setup quality, entry zone, invalidation, targets, chase risk, big-winner case, and failure case.
 - `Scanner Table`: sortable and filterable table for status, strategy, outlier type, scores, risk, reward/risk, relative strength notes, volume/accumulation notes, tags, and data availability.
 - `Stock Detail`: full deterministic breakdown for one ticker. The `Why NOT to buy?` block is intentionally prominent.
+- `Catalysts`: catalyst type, quality, source count, recency, official/narrative/hype flags, top source items, and URLs where supplied.
+- `Social Attention`: Reddit, Twitter/X, Truth Social/policy, news attention, velocity, hype risk, pump risk, and price/volume confirmation flags.
+- `AI Explanation`: optional AI-generated explanation, clearly labeled and grounded in scanner/report fields.
 - `Avoid / Bad Setup Panel`: risk-first review of Avoid and bad-setup names, including falling-knife, broken-trend, failed-breakout, poor reward/risk, hype, liquidity, earnings, and invalidation warnings when present.
 - `Watchlists`: uses existing universe files from `config/` without code edits.
 - `Options Placeholder`: displays only existing options fields. It does not recommend contracts, calculate Greeks, or build strategies.
@@ -270,6 +306,108 @@ date,open,high,low,close,volume
 - options placeholder fields
 
 If data is missing, the scanner keeps running and marks the field unavailable instead of hallucinating.
+
+## Catalyst / News / Social Data
+
+Manual catalyst ingestion is the primary Pass 3 path. Use `config/catalysts_watchlist.csv` as a template.
+
+CSV fields:
+
+```csv
+ticker,source_type,source_name,source_url,timestamp,headline,summary,sentiment,catalyst_type,attention_count,attention_velocity,official_source,confidence,notes
+NVDA,news,Example Source,https://example.com/story,2026-04-24T13:00:00Z,Headline,Short factual summary,positive,AI/data center narrative,120,0.4,false,0.7,Manual note
+```
+
+Supported source types:
+- `news`
+- `reddit`
+- `twitter_x`
+- `truth_social`
+- `sec_filing`
+- `earnings`
+- `analyst`
+- `insider`
+- `institutional`
+- `manual`
+
+Supported catalyst types:
+- `Earnings beat`
+- `Guidance raise`
+- `Analyst upgrade`
+- `Estimate revision`
+- `Major contract`
+- `Product launch`
+- `AI/data center narrative`
+- `Semiconductor narrative`
+- `Defense/geopolitical narrative`
+- `Energy/nuclear narrative`
+- `Financials/rate-cut narrative`
+- `IPO/post-IPO narrative`
+- `Regulatory/policy catalyst`
+- `Insider/institutional activity`
+- `Short squeeze / crowded repricing`
+- `Social hype only`
+- `Unknown/unconfirmed`
+
+Catalyst quality labels:
+- `Official Confirmed`: official-style source plus price/volume confirmation.
+- `Price Confirmed`: source evidence exists and price/volume confirms, but the source is not official.
+- `Narrative Supported`: narrative evidence exists, but price/volume confirmation is incomplete.
+- `Social Attention Only`: social activity exists without official/narrative confirmation.
+- `Hype Risk`: social-only, pump-like, or hype-risk source behavior is present.
+- `Unconfirmed`: weak or incomplete catalyst evidence.
+- `Unavailable`: no catalyst/news/social data was provided.
+
+Social attention rules:
+- Social attention alone is not a buy signal.
+- Social/news attention does not override deterministic scanner scores.
+- If social attention rises but price/volume does not confirm, the setup is kept at `Watch Only` unless the base scanner already says `Avoid`.
+- If price spikes without an official catalyst, the scanner adds a warning.
+- Low-float social spikes are flagged as pump risk or high-risk outlier context.
+- Truth Social or political/policy mentions are treated as narrative/policy watch unless tied directly to the company.
+
+No Reddit, Twitter/X, or Truth Social scraping is performed in this pass. Provide those observations manually through CSV/JSON.
+
+## AI Explanations
+
+AI explanations are optional and off by default. AI does not create scores, status labels, catalysts, trade signals, or targets. It can only summarize scanner output and provided catalyst/news/social evidence.
+
+Enable AI explanations from the CLI:
+
+```bash
+python3 -m tradebruv scan \
+  --universe config/sample_universe.txt \
+  --provider sample \
+  --mode outliers \
+  --catalyst-file config/catalysts_watchlist.csv \
+  --ai-explanations
+```
+
+Environment variables:
+- `OPENAI_API_KEY` or `TRADEBRUV_LLM_API_KEY`
+- `TRADEBRUV_LLM_MODEL` or `OPENAI_MODEL`, default `gpt-4o-mini`
+- `TRADEBRUV_LLM_BASE_URL` or `OPENAI_BASE_URL`, default `https://api.openai.com/v1`
+
+For offline tests or demos:
+
+```bash
+python3 -m tradebruv scan \
+  --universe config/sample_universe.txt \
+  --provider sample \
+  --mode outliers \
+  --catalyst-file config/catalysts_watchlist.csv \
+  --ai-explanations \
+  --mock-ai-explanations
+```
+
+If no API key is configured, the scan still works and reports `AI explanation unavailable.`
+
+AI safety rules:
+- It must say data is unavailable when evidence is unavailable.
+- It must not say `buy`, `guaranteed`, or create new price targets.
+- It must not invent news, fundamentals, analyst activity, social activity, or catalysts.
+- It must cite/mention source items when available.
+- It is not used by deterministic scoring.
 
 ## Real Data Provider
 
@@ -331,6 +469,8 @@ Each row includes:
 - warnings
 - source / provider notes
 - data availability notes
+- catalyst items, catalyst score, catalyst quality, catalyst type, source URLs/timestamps, social/news attention fields, hype/pump flags
+- optional AI explanation payload and availability/provider fields
 
 ## Tests
 
@@ -346,6 +486,8 @@ Current test coverage includes:
 - status classification
 - trade-plan generation
 - dashboard filtering, sorting, summary aggregation, report loading, and missing-field handling
+- catalyst CSV parsing, bad rows, missing files, duplicate rows, official/narrative/social-only classification, social-only guardrails, and report fields
+- optional AI unavailable/mock explanation behavior
 - outlier score ranking
 - long-term monster detection
 - short squeeze watch classification with mocked data
@@ -361,5 +503,6 @@ Current test coverage includes:
 - theme/catalyst tagging is deterministic but intentionally lightweight
 - report-loaded dashboards cannot recompute SPY/QQQ market regime unless a live scan is run
 - dashboard cards and summaries are workflow views, not buy/sell recommendations
-- no AI explanation layer is active yet
+- AI explanations require explicit opt-in and configured credentials unless using the mock provider
+- live news remains lightweight/free-provider based; manual catalyst ingestion is the reliable path
 - no broker integration, trade execution, social scraping, or options strategy builder is active yet

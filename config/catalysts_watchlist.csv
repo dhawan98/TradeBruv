@@ -1,0 +1,4 @@
+ticker,source_type,source_name,source_url,timestamp,headline,summary,sentiment,catalyst_type,attention_count,attention_velocity,official_source,confidence,notes
+NVDA,news,manual sample,,2026-04-22T14:30:00Z,AI data center demand remains the key narrative,Manual placeholder source for dashboard development,positive,AI/data center narrative,120,0.4,false,0.7,Replace with verified source before research use
+LLY,earnings,manual sample,,2026-04-21T13:00:00Z,Guidance and demand narrative remains constructive,Manual placeholder source for dashboard development,positive,Guidance raise,40,0.2,true,0.8,Example official-style catalyst row
+RIVN,reddit,manual sample,,2026-04-24T15:00:00Z,Social attention spike without confirmed official catalyst,Manual placeholder source for social-only hype testing,mixed,Social hype only,1800,1.6,false,0.5,Example social attention risk row

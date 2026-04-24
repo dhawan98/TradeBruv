@@ -4,6 +4,8 @@ import argparse
 from datetime import date
 from pathlib import Path
 
+from .ai_explanations import apply_ai_explanations, build_explanation_provider
+from .catalysts import CatalystOverlayProvider, load_catalyst_repository
 from .providers import (
     LocalFileMarketDataProvider,
     ProviderConfigurationError,
@@ -27,9 +29,18 @@ def main(argv: list[str] | None = None) -> int:
         except ProviderConfigurationError as exc:
             print(f"Provider configuration error: {exc}")
             return 2
+        catalyst_repository = load_catalyst_repository(args.catalyst_file)
+        if catalyst_repository.warnings:
+            for warning in catalyst_repository.warnings:
+                print(f"Catalyst warning: {warning}")
+        if catalyst_repository.items_by_ticker:
+            provider = CatalystOverlayProvider(provider, catalyst_repository)
 
         scanner = DeterministicScanner(provider=provider, analysis_date=analysis_date)
         results = scanner.scan(universe, mode=args.mode)
+        if args.ai_explanations:
+            explanation_provider = build_explanation_provider(enabled=True, mock=args.mock_ai_explanations)
+            apply_ai_explanations(results, explanation_provider)
         if args.limit:
             results = results[: args.limit]
 
@@ -96,6 +107,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scan.add_argument("--json-path", type=Path, help="Optional override for the JSON report path.")
     scan.add_argument("--csv-path", type=Path, help="Optional override for the CSV report path.")
+    scan.add_argument(
+        "--catalyst-file",
+        type=Path,
+        help="Optional CSV or JSON file with manual catalyst/news/social source items.",
+    )
+    scan.add_argument(
+        "--ai-explanations",
+        action="store_true",
+        help="Attach optional AI-generated explanations when an OpenAI-compatible provider is configured.",
+    )
+    scan.add_argument(
+        "--mock-ai-explanations",
+        action="store_true",
+        help="Use the local mock explanation provider for tests and offline demos.",
+    )
     scan.add_argument("--limit", type=int, default=0, help="Optional limit for console and file output.")
     scan.add_argument(
         "--as-of-date",
