@@ -10,9 +10,12 @@ requires-python = ">=3.11"
 
 [project.optional-dependencies]
 real = ["yfinance>=0.2.56"]
+dashboard = ["streamlit>=1.37"]
+all = ["streamlit>=1.37", "yfinance>=0.2.56"]
 
 [project.scripts]
 tradebruv = "tradebruv.cli:main"
+tradebruv-dashboard = "tradebruv.dashboard:main"
 
 [tool.setuptools.packages.find]
 include = ["tradebruv*"]

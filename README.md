@@ -18,6 +18,7 @@ The project is deliberately not an AI stock picker. AI is not making decisions h
 TradeBruv currently supports:
 - deterministic winner scoring
 - deterministic outlier-winner scoring
+- a local research cockpit dashboard
 - strategy labels and status labels
 - trade-plan levels
 - avoid/risk flags
@@ -162,6 +163,81 @@ python3 -m tradebruv scan \
   --data-dir path/to/data
 ```
 
+## Dashboard
+
+Pass 2 adds a local Streamlit dashboard for fast research triage. It does not replace the scanner and does not change deterministic scoring logic. The dashboard consumes scanner output, can trigger the existing scanner, and can load existing JSON reports.
+
+Install dashboard dependencies:
+
+```bash
+python3 -m pip install '.[dashboard]'
+```
+
+Install dashboard plus real-data support:
+
+```bash
+python3 -m pip install '.[all]'
+```
+
+Run the dashboard:
+
+```bash
+python3 -m tradebruv.dashboard
+```
+
+Or, after installing the package entry point:
+
+```bash
+tradebruv-dashboard
+```
+
+The dashboard opens a local Streamlit server and shows the browser URL in the terminal.
+
+### Sample Dashboard Mode
+
+In the sidebar:
+- Provider: `sample`
+- Mode: `outliers` or `standard`
+- Universe file: `config/sample_universe.txt`
+- Optional fixed as-of date: `2026-04-24`
+- Click `Run scan`
+
+### Real-Data Dashboard Mode
+
+Install the real dependency first:
+
+```bash
+python3 -m pip install '.[all]'
+```
+
+In the sidebar:
+- Provider: `real`
+- Mode: `outliers` or `standard`
+- Universe file: `config/outlier_watchlist.txt`, `config/momentum_universe.txt`, or `config/mega_cap_universe.txt`
+- History period: default `3y`
+- Click `Run scan`
+
+Real-data mode uses the existing yfinance provider. If Yahoo/yfinance returns partial fields, the dashboard displays the scanner's data-availability notes instead of filling gaps.
+
+### Loading Reports
+
+The dashboard can work without live data:
+- Click `Load latest JSON report` to load the newest `scan_report.json` or `outlier_scan_report.json` under `outputs/`
+- Or enter a custom JSON report path and click `Load custom report`
+
+Loaded reports show the same outlier feed, table, detail view, avoid panel, options placeholder fields, and deterministic daily summary. Market regime is live-provider based when running a scan; report-only mode marks SPY/QQQ regime data unavailable unless it is recomputed from a live provider.
+
+### Dashboard Sections
+
+- `Market Regime`: SPY/QQQ trend summary, Bullish/Mixed/Risk-Off stance, long exposure posture, leading and weak theme tags, provider/timestamp, and risk warnings.
+- `Daily Summary`: rule-based aggregation of top outliers, normal winners, avoid names, common themes, common warnings, highest-risk name, best reward/risk, best long-term monster, and best high-risk/squeeze watch.
+- `Outlier Feed`: ranked research cards centered on `outlier_score`, with winner score, risk, setup quality, entry zone, invalidation, targets, chase risk, big-winner case, and failure case.
+- `Scanner Table`: sortable and filterable table for status, strategy, outlier type, scores, risk, reward/risk, relative strength notes, volume/accumulation notes, tags, and data availability.
+- `Stock Detail`: full deterministic breakdown for one ticker. The `Why NOT to buy?` block is intentionally prominent.
+- `Avoid / Bad Setup Panel`: risk-first review of Avoid and bad-setup names, including falling-knife, broken-trend, failed-breakout, poor reward/risk, hype, liquidity, earnings, and invalidation warnings when present.
+- `Watchlists`: uses existing universe files from `config/` without code edits.
+- `Options Placeholder`: displays only existing options fields. It does not recommend contracts, calculate Greeks, or build strategies.
+
 Expected layout:
 
 ```text
@@ -261,7 +337,7 @@ Each row includes:
 Run the full suite with:
 
 ```bash
-python3 -m unittest discover -s tests -v
+python3 -m pytest
 ```
 
 Current test coverage includes:
@@ -269,6 +345,7 @@ Current test coverage includes:
 - rejection filters
 - status classification
 - trade-plan generation
+- dashboard filtering, sorting, summary aggregation, report loading, and missing-field handling
 - outlier score ranking
 - long-term monster detection
 - short squeeze watch classification with mocked data
@@ -282,5 +359,7 @@ Current test coverage includes:
 - the real provider is free-data based and therefore not institution-grade
 - many advanced fields are optional and may be unavailable for some names
 - theme/catalyst tagging is deterministic but intentionally lightweight
+- report-loaded dashboards cannot recompute SPY/QQQ market regime unless a live scan is run
+- dashboard cards and summaries are workflow views, not buy/sell recommendations
 - no AI explanation layer is active yet
-
+- no broker integration, trade execution, social scraping, or options strategy builder is active yet
