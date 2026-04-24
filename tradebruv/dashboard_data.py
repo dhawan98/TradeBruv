@@ -11,8 +11,11 @@ from typing import Any, Iterable
 from .ai_explanations import apply_ai_explanations, build_explanation_provider
 from .catalysts import CatalystOverlayProvider, load_catalyst_repository
 from .cli import build_provider, load_universe
+from .journal import DEFAULT_JOURNAL_PATH, journal_stats, read_journal
 from .indicators import pct_change, sma
+from .performance import aggregate_strategy_performance
 from .providers import MarketDataProvider
+from .review import load_reports_from_dir, load_scan_report, review_report, review_reports
 from .scanner import DeterministicScanner
 
 
@@ -95,6 +98,119 @@ def load_dashboard_report(path: Path) -> DashboardReport:
         source=str(path),
         market_regime=build_market_regime(provider=None, results=results),
     )
+
+
+def run_dashboard_review(
+    *,
+    report_path: Path,
+    provider: MarketDataProvider,
+    horizons: list[int],
+    signal_date: date | None = None,
+) -> dict[str, Any]:
+    report = load_scan_report(report_path)
+    return review_report(report=report, provider=provider, horizons=horizons, signal_date=signal_date)
+
+
+def run_dashboard_review_batch(
+    *,
+    reports_dir: Path,
+    provider: MarketDataProvider,
+    horizons: list[int],
+    signal_date: date | None = None,
+) -> dict[str, Any]:
+    reports = load_reports_from_dir(reports_dir)
+    return review_reports(reports=reports, provider=provider, horizons=horizons, signal_date=signal_date)
+
+
+def load_review_report(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.setdefault("results", [])
+    return payload
+
+
+def load_strategy_performance(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.setdefault("results", [])
+    return payload
+
+
+def filter_review_results(results: Iterable[dict[str, Any]], filters: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = [dict(row) for row in results]
+    strategy = set(filters.get("strategy") or [])
+    outlier_type = set(filters.get("outlier_type") or [])
+    status = set(filters.get("status") or [])
+    only_available = bool(filters.get("only_available"))
+    filtered = []
+    for row in rows:
+        if strategy and row.get("strategy_label") not in strategy:
+            continue
+        if outlier_type and row.get("outlier_type") not in outlier_type:
+            continue
+        if status and row.get("status_label") not in status:
+            continue
+        if only_available and not row.get("available"):
+            continue
+        filtered.append(row)
+    return filtered
+
+
+def build_review_summary(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    rows = [dict(row) for row in results]
+    available = [row for row in rows if row.get("available")]
+    returns = [_to_float(row.get("forward_return_pct"), default=None) for row in available]
+    returns = [value for value in returns if value is not None]
+    return {
+        "total_rows": len(rows),
+        "available_rows": len(available),
+        "unavailable_rows": len(rows) - len(available),
+        "average_forward_return": _safe_avg(returns),
+        "best_result": round(max(returns), 4) if returns else "unavailable",
+        "worst_result": round(min(returns), 4) if returns else "unavailable",
+        "tp1_hits": sum(1 for row in available if row.get("hit_tp1")),
+        "tp2_hits": sum(1 for row in available if row.get("hit_tp2")),
+        "invalidation_hits": sum(1 for row in available if row.get("hit_stop_or_invalidation")),
+    }
+
+
+def build_strategy_performance_highlights(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    performance_rows = list(rows)
+    if performance_rows and "dimension" not in performance_rows[0]:
+        performance_rows = aggregate_strategy_performance(performance_rows)
+
+    def top(dimension: str, metric: str, reverse: bool = True) -> dict[str, Any] | None:
+        candidates = [
+            row
+            for row in performance_rows
+            if row.get("dimension") == dimension and _to_float(row.get(metric), default=None) is not None
+        ]
+        return max(candidates, key=lambda row: _to_float(row.get(metric), default=0), default=None) if reverse else min(
+            candidates,
+            key=lambda row: _to_float(row.get(metric), default=0),
+            default=None,
+        )
+
+    return {
+        "best_strategy_by_expectancy": top("strategy_label", "expectancy"),
+        "best_outlier_type": top("outlier_type", "expectancy"),
+        "best_catalyst_quality": top("catalyst_quality", "expectancy"),
+        "worst_strategy": top("strategy_label", "expectancy", reverse=False),
+        "highest_invalidation_rate": top("strategy_label", "invalidation_rate"),
+        "best_theme_tag": top("theme_tags", "expectancy"),
+        "warning_types_that_predicted_bad_outcomes": [
+            row
+            for row in performance_rows
+            if row.get("dimension") == "warnings" and _to_float(row.get("expectancy"), default=0) < 0
+        ][:10],
+        "small_sample_warnings": [row for row in performance_rows if row.get("small_sample_warning")][:10],
+    }
+
+
+def load_dashboard_journal(path: Path = DEFAULT_JOURNAL_PATH) -> list[dict[str, Any]]:
+    return read_journal(path)
+
+
+def build_process_quality_summary(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    return journal_stats(list(rows))
 
 
 def find_latest_report(output_dir: Path = Path("outputs")) -> Path | None:
@@ -561,3 +677,9 @@ def _percent_or_unavailable(value: float | None) -> float | str:
     if value is None:
         return "unavailable"
     return round(value * 100, 2)
+
+
+def _safe_avg(values: list[float]) -> float | str:
+    if not values:
+        return "unavailable"
+    return round(sum(values) / len(values), 4)

@@ -10,7 +10,7 @@ The project is deliberately not an AI stock picker. AI is not making decisions h
 - Pass 1.5: real data + outlier winner engine
 - Pass 2: dashboard
 - Pass 3: news/social + AI explanation layer
-- Pass 4: journal + backtest
+- Pass 4: historical review + strategy feedback + journal
 - Pass 5: optional day-trading/options module
 
 ## What Exists Now
@@ -21,6 +21,9 @@ TradeBruv currently supports:
 - a local research cockpit dashboard
 - manual CSV/JSON catalyst, news, and social-attention ingestion
 - optional AI-generated explanation layer, off by default
+- historical forward review of saved scanner reports
+- strategy performance aggregation by labels, scores, catalysts, themes, and warnings
+- a local CSV research/trade journal
 - strategy labels and status labels
 - trade-plan levels
 - avoid/risk flags
@@ -35,6 +38,7 @@ The scanner does **not** do:
 - crypto asset scanning
 - options strategy building
 - AI-driven buy/sell decisions
+- predictive backtest claims
 - guaranteed-profit claims
 
 ## Scanner Modes
@@ -192,6 +196,123 @@ python3 -m tradebruv scan \
   --data-dir path/to/data
 ```
 
+## Historical Review / Backtest Mode
+
+Pass 4 adds a saved-report forward review mode. This is intentionally conservative: it does not recreate or tune historical scanner rules, and it does not claim future performance. It answers a narrower question: after a scanner row was saved, what happened to price over later trading-day horizons?
+
+Review one saved report:
+
+```bash
+python3 -m tradebruv review \
+  --report outputs/outlier_scan_report.json \
+  --provider real \
+  --horizons 5,10,20,60
+```
+
+Review a directory of saved reports:
+
+```bash
+python3 -m tradebruv review-batch \
+  --reports-dir reports/history \
+  --provider real \
+  --horizons 5,10,20,60
+```
+
+For deterministic sample-data checks, use a fixed later price date and, when needed, an explicit signal date:
+
+```bash
+python3 -m tradebruv review \
+  --report outputs/outlier_scan_report.json \
+  --provider sample \
+  --price-as-of-date 2026-04-24 \
+  --signal-date 2026-01-01 \
+  --horizons 5,10,20,60
+```
+
+Review output fields:
+- `forward_return_pct`: close-to-close return from the scanner signal price to the horizon close.
+- `max_favorable_excursion_pct`: best intraperiod high versus the signal price.
+- `max_adverse_excursion_pct`: worst intraperiod low versus the signal price.
+- `hit_tp1` / `hit_tp2`: whether the later high touched the saved scanner target.
+- `hit_stop_or_invalidation`: whether the later low touched the invalidation level, or stop reference if invalidation is unavailable.
+- `days_to_tp1`, `days_to_tp2`, `days_to_invalidation`: trading days until each event.
+- `best_close_after_signal`, `worst_close_after_signal`, `final_close_at_horizon`: close-price context for each horizon.
+
+If historical OHLCV data is unavailable, the review row is marked unavailable and the command keeps running.
+
+## Strategy Performance
+
+Every `review` and `review-batch` command also writes strategy performance files. These summarize historical review rows by:
+- strategy label
+- outlier type
+- status label
+- confidence label
+- risk level
+- theme tags
+- catalyst type and catalyst quality
+- warnings
+- score buckets such as `outlier_score 90+`, `winner_score 80+`, `setup_quality 80+`, and high/low `risk_score`
+- provider and universe file where known
+
+Metrics include:
+- sample size
+- average and median forward return
+- win rate
+- average winner and average loser
+- payoff ratio
+- expectancy
+- TP1/TP2 hit rates
+- invalidation rate
+- average MFE/MAE
+- best and worst result
+
+Small sample sizes are clearly flagged. Do not tighten or loosen scanner rules based on one tiny bucket. Use this as evidence gathering for scanner improvement, not as proof that a setup will work next time.
+
+## Journal
+
+The local journal is a simple CSV file by default at `outputs/journal.csv`. It is meant to track your decisions and process quality, not execute trades or connect to a broker.
+
+Add a scanner idea from a saved report:
+
+```bash
+python3 -m tradebruv journal add \
+  --from-report outputs/outlier_scan_report.json \
+  --ticker NVDA \
+  --set decision=Research
+```
+
+List journal entries:
+
+```bash
+python3 -m tradebruv journal list
+```
+
+Update an entry:
+
+```bash
+python3 -m tradebruv journal update \
+  --id <id> \
+  --set 'decision=Paper Trade' \
+  --set actual_entry_price=100 \
+  --set actual_exit_price=106 \
+  --set result_pct=6 \
+  --set followed_rules=true
+```
+
+Export journal data:
+
+```bash
+python3 -m tradebruv journal export --output journal.csv
+```
+
+Show journal/process stats:
+
+```bash
+python3 -m tradebruv journal stats
+```
+
+Journal fields include scanner context, decision, actual entry/exit, result percent/R, rule-following status, mistake category, and notes. Mistake categories include chasing, ignored invalidation, entering before confirmation, selling winners too early, holding losers too long, oversized positions, ignored market/catalyst/earnings risk, good-process/bad-outcome, bad-process/good-outcome, and other.
+
 ## Dashboard
 
 The local Streamlit dashboard is for fast research triage. It does not replace the scanner and does not change deterministic scoring logic. The dashboard consumes scanner output, can trigger the existing scanner, and can load existing JSON reports.
@@ -273,6 +394,10 @@ Loaded reports show the same outlier feed, table, detail view, avoid panel, opti
 - `Avoid / Bad Setup Panel`: risk-first review of Avoid and bad-setup names, including falling-knife, broken-trend, failed-breakout, poor reward/risk, hype, liquidity, earnings, and invalidation warnings when present.
 - `Watchlists`: uses existing universe files from `config/` without code edits.
 - `Options Placeholder`: displays only existing options fields. It does not recommend contracts, calculate Greeks, or build strategies.
+- `Historical Review`: runs or loads forward review results, including TP/SL/invalidation status and MFE/MAE.
+- `Strategy Performance`: shows best/worst historical buckets, warning buckets with negative outcomes, and small-sample warnings.
+- `Journal`: adds scanner ideas to the local journal, updates decisions/entries/exits/notes, and separates open from closed ideas/trades.
+- `Process Quality`: summarizes rule-following, mistakes, chasing frequency, invalidation violations, early exits, and results when rules were followed versus ignored.
 
 Expected layout:
 
@@ -452,6 +577,9 @@ These fields do **not** drive stock scoring in this version. No contract recomme
 Reports are written to `outputs/` by default:
 - `scan_report.json` / `scan_report.csv`
 - `outlier_scan_report.json` / `outlier_scan_report.csv`
+- `review_report.json` / `review_report.csv`
+- `strategy_performance.json` / `strategy_performance.csv`
+- `journal.csv` unless a different journal path is supplied
 
 Each row includes:
 - ticker and company
@@ -477,7 +605,7 @@ Each row includes:
 Run the full suite with:
 
 ```bash
-python3 -m pytest
+python3 -m unittest
 ```
 
 Current test coverage includes:
@@ -494,6 +622,13 @@ Current test coverage includes:
 - unavailable social/news handling
 - options placeholder isolation from stock scoring
 - provider failure handling
+- forward review return/MFE/MAE calculations
+- TP1/TP2 and invalidation hit detection
+- missing historical data handling
+- batch report review
+- strategy aggregation and small-sample warnings
+- journal add/list/update/export/stats
+- dashboard review/performance/journal/process transformations
 
 ## Known Limitations
 
@@ -503,6 +638,10 @@ Current test coverage includes:
 - theme/catalyst tagging is deterministic but intentionally lightweight
 - report-loaded dashboards cannot recompute SPY/QQQ market regime unless a live scan is run
 - dashboard cards and summaries are workflow views, not buy/sell recommendations
+- historical review does not guarantee future performance
+- small sample sizes are unreliable
+- review results may be affected by survivorship bias if the historical universe was built poorly
+- saved-report review depends on available later OHLCV data and does not reconstruct unavailable signals
 - AI explanations require explicit opt-in and configured credentials unless using the mock provider
 - live news remains lightweight/free-provider based; manual catalyst ingestion is the reliable path
 - no broker integration, trade execution, social scraping, or options strategy builder is active yet
