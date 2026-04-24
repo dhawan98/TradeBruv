@@ -4,7 +4,12 @@ import argparse
 from datetime import date
 from pathlib import Path
 
-from .providers import LocalFileMarketDataProvider, SampleMarketDataProvider
+from .providers import (
+    LocalFileMarketDataProvider,
+    ProviderConfigurationError,
+    SampleMarketDataProvider,
+    YFinanceMarketDataProvider,
+)
 from .reporting import print_console_summary, write_csv_report, write_json_report
 from .scanner import DeterministicScanner
 
@@ -17,25 +22,25 @@ def main(argv: list[str] | None = None) -> int:
         universe = load_universe(args.universe)
         analysis_date = args.as_of_date or date.today()
 
-        if args.provider == "sample":
-            provider = SampleMarketDataProvider(end_date=analysis_date)
-        else:
-            if args.data_dir is None:
-                parser.error("--data-dir is required when --provider local is used.")
-            provider = LocalFileMarketDataProvider(args.data_dir)
+        try:
+            provider = build_provider(args=args, analysis_date=analysis_date)
+        except ProviderConfigurationError as exc:
+            print(f"Provider configuration error: {exc}")
+            return 2
 
         scanner = DeterministicScanner(provider=provider, analysis_date=analysis_date)
-        results = scanner.scan(universe)
+        results = scanner.scan(universe, mode=args.mode)
         if args.limit:
             results = results[: args.limit]
 
         output_dir = args.output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
-        json_path = args.json_path or output_dir / "scan_report.json"
-        csv_path = args.csv_path or output_dir / "scan_report.csv"
+        default_stem = "outlier_scan_report" if args.mode == "outliers" else "scan_report"
+        json_path = args.json_path or output_dir / f"{default_stem}.json"
+        csv_path = args.csv_path or output_dir / f"{default_stem}.csv"
 
-        print_console_summary(results)
-        write_json_report(results, json_path)
+        print_console_summary(results, mode=args.mode)
+        write_json_report(results, json_path, mode=args.mode)
         write_csv_report(results, csv_path)
         print(f"\nJSON report: {json_path}")
         print(f"CSV report:  {csv_path}")
@@ -43,6 +48,16 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.error(f"Unknown command: {args.command}")
     return 2
+
+
+def build_provider(*, args: argparse.Namespace, analysis_date: date):
+    if args.provider == "sample":
+        return SampleMarketDataProvider(end_date=analysis_date)
+    if args.provider == "local":
+        if args.data_dir is None:
+            raise ProviderConfigurationError("--data-dir is required when --provider local is used.")
+        return LocalFileMarketDataProvider(args.data_dir)
+    return YFinanceMarketDataProvider(history_period=args.history_period)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,14 +68,25 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--universe", type=Path, required=True, help="Path to a newline-delimited ticker file.")
     scan.add_argument(
         "--provider",
-        choices=("sample", "local"),
+        choices=("sample", "local", "real"),
         default="sample",
-        help="Built-in sample data or a local file adapter.",
+        help="Use built-in sample data, a local file adapter, or a yfinance-backed real-data adapter.",
+    )
+    scan.add_argument(
+        "--mode",
+        choices=("standard", "outliers"),
+        default="standard",
+        help="Standard winner ranking or the outlier-winner ranking view.",
     )
     scan.add_argument(
         "--data-dir",
         type=Path,
         help="Local data directory containing prices/<TICKER>.csv and metadata.json.",
+    )
+    scan.add_argument(
+        "--history-period",
+        default="3y",
+        help="History period passed to the real provider (default: 3y).",
     )
     scan.add_argument(
         "--output-dir",
@@ -91,4 +117,3 @@ def load_universe(path: Path) -> list[str]:
 
 def _parse_date(raw: str) -> date:
     return date.fromisoformat(raw)
-

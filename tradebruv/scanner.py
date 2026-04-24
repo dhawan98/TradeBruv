@@ -32,6 +32,8 @@ class FeatureSnapshot:
     avg_volume20: float | None
     avg_volume50: float | None
     avg_dollar_volume20: float | None
+    return_1d: float | None
+    return_5d: float | None
     return_10d: float | None
     return_1m: float | None
     return_3m: float | None
@@ -45,21 +47,28 @@ class FeatureSnapshot:
     base_low: float | None
     base_tightness: float | None
     close_location: float
+    close_near_week_high: bool
     above_50: bool
     above_200: bool
     ma_stack_bullish: bool
     sma50_rising: bool
     sma200_rising: bool
     near_high: bool
+    price_near_multi_month_high: bool
     higher_highs_lows: bool
     volume_confirmation: bool
     breakout_volume_confirmation: bool
+    relative_volume_ratio: float | None
+    unusual_volume: bool
     breakout_confirmed: bool
+    breakout_retest: bool
     close_holds_breakout: bool
+    weak_breakout_close: bool
     clean_base: bool
     gap_and_fade: bool
     failed_breakout: bool
     overextended: bool
+    extreme_overextension: bool
     accumulation_days: int
     distribution_days: int
     lower_volume_pullbacks: bool
@@ -67,16 +76,23 @@ class FeatureSnapshot:
     prior_uptrend: bool
     correction_depth: float | None
     reclaimed_sma50: bool
+    rs_1d: float | None
+    rs_5d: float | None
     rs_1m: float | None
     rs_3m: float | None
     rs_6m: float | None
     rs_vs_sector_3m: float | None
     rs_improving: bool
+    rs_line_rising: bool
     holding_up_when_market_weak: bool
+    higher_lows_while_market_weak: bool
     sector_support: bool | None
+    strong_multitimeframe_trend: bool
     low_liquidity: bool
     falling_knife: bool
     broken_downtrend: bool
+    recent_ipo: bool
+    pump_risk: bool
 
 
 class DeterministicScanner:
@@ -85,15 +101,22 @@ class DeterministicScanner:
         self.analysis_date = analysis_date or date.today()
         self._cache: dict[str, SecurityData] = {}
 
-    def scan(self, tickers: Iterable[str]) -> list[ScannerResult]:
+    def scan(self, tickers: Iterable[str], mode: str = "standard") -> list[ScannerResult]:
         results: list[ScannerResult] = []
-        for ticker in tickers:
-            ticker = ticker.strip().upper()
+        for raw_ticker in tickers:
+            ticker = raw_ticker.strip().upper()
             if not ticker:
                 continue
-            security = self._get_data(ticker)
-            results.append(self._scan_security(security))
-        results.sort(key=lambda result: (-result.winner_score, result.risk_score, result.ticker))
+            try:
+                security = self._get_data(ticker)
+                results.append(self._scan_security(security))
+            except Exception as exc:
+                results.append(self._failure_result(ticker, exc))
+
+        if mode == "outliers":
+            results.sort(key=lambda result: (-result.outlier_score, result.risk_score, result.ticker))
+        else:
+            results.sort(key=lambda result: (-result.winner_score, result.risk_score, -result.outlier_score, result.ticker))
         return results
 
     def _get_data(self, ticker: str) -> SecurityData:
@@ -103,16 +126,12 @@ class DeterministicScanner:
 
     def _scan_security(self, security: SecurityData) -> ScannerResult:
         notes = list(security.data_notes)
+        self._append_availability_notes(notes, security)
+
         spy = self._safe_get("SPY", notes, "SPY benchmark unavailable.")
         qqq = self._safe_get("QQQ", notes, "QQQ benchmark unavailable.")
         sector_symbol = SECTOR_BENCHMARKS.get(security.sector or "")
         sector = self._safe_get(sector_symbol, notes, f"{security.sector} sector benchmark unavailable.") if sector_symbol else None
-        if not security.fundamentals:
-            notes.append("Fundamental support data unavailable.")
-        if not security.catalyst:
-            notes.append("Catalyst confirmation data unavailable.")
-        if not security.next_earnings_date:
-            notes.append("Next earnings date unavailable.")
 
         features = self._build_features(security, spy, qqq, sector)
 
@@ -121,7 +140,7 @@ class DeterministicScanner:
             "relative_strength": self._score_relative_strength(features),
             "volume_accumulation": self._score_volume(features),
             "fundamental_support": self._score_fundamentals(security),
-            "catalyst_attention": self._score_catalyst(security),
+            "catalyst_attention": self._score_catalyst(security, features),
         }
 
         strategy_alignment = self._strategy_alignment(features, security)
@@ -140,7 +159,7 @@ class DeterministicScanner:
             round(
                 clamp(
                     (winner_score * 0.45)
-                    + (max(strategy_alignment.values()) * 0.35)
+                    + (best_strategy_score * 0.35)
                     + ((100 - risk_score) * 0.20),
                     0,
                     100,
@@ -162,18 +181,52 @@ class DeterministicScanner:
             trade_plan=trade_plan,
         )
 
-        why_it_passed = bullish_signals[:5]
-        why_it_could_fail = bearish_signals[:5]
+        outlier_components = {
+            "explosive_price_strength": self._score_outlier_price_strength(features),
+            "relative_strength_acceleration": self._score_outlier_relative_strength(features),
+            "volume_attention_expansion": self._score_outlier_volume_attention(features, security),
+            "catalyst_repricing_support": self._score_outlier_catalyst(security, features),
+            "float_short_or_institutional_demand": self._score_outlier_demand(security, features),
+            "setup_cleanliness_risk_reward": self._score_outlier_setup(features, trade_plan),
+        }
+        outlier_score = int(sum(outlier_components.values()))
+        outlier_type, outlier_reason, big_winner_reasons = self._outlier_classification(
+            security=security,
+            features=features,
+            trade_plan=trade_plan,
+            outlier_score=outlier_score,
+            risk_score=risk_score,
+            status_label=status_label,
+        )
+        outlier_risk = self._outlier_risk_label(
+            outlier_type=outlier_type,
+            risk_score=risk_score,
+            features=features,
+            security=security,
+        )
+        chase_risk_warning = self._chase_risk_warning(features, security)
+        if chase_risk_warning and chase_risk_warning not in warnings:
+            warnings.append(chase_risk_warning)
+
+        why_it_passed = bullish_signals[:6]
+        why_it_could_fail = bearish_signals[:6]
         signals_used = why_it_passed + [
-            "Fundamental support applied as a secondary filter only.",
-            "Catalyst confirmation requires price and volume agreement.",
+            "Fundamental support is used only as a secondary confirmation layer.",
+            "Catalysts require price and volume confirmation to matter.",
+            "Outlier ranking is deterministic and does not predict probability of profit.",
         ]
         data_used = {
             "bars": len(security.bars),
+            "provider": security.provider_name,
             "sector_benchmark": sector_symbol or "unavailable",
             "fundamentals_available": security.fundamentals is not None,
             "catalyst_available": security.catalyst is not None,
             "earnings_available": security.next_earnings_date is not None,
+            "market_cap_available": security.market_cap is not None,
+            "short_interest_available": security.short_interest is not None,
+            "social_attention_available": security.social_attention is not None,
+            "options_placeholder_available": security.options_data is not None,
+            "outlier_components": outlier_components,
         }
 
         return ScannerResult(
@@ -191,15 +244,100 @@ class DeterministicScanner:
             confidence_percent=confidence_percent,
             holding_period=trade_plan.holding_period_estimate,
             component_scores=component_scores,
-            strategy_alignment={**strategy_alignment, "No Clean Strategy": 100 - best_strategy_score if strategy_label == "No Clean Strategy" else 0},
+            strategy_alignment={
+                **strategy_alignment,
+                "No Clean Strategy": 100 - best_strategy_score if strategy_label == "No Clean Strategy" else 0,
+            },
             trade_plan=trade_plan,
             why_it_passed=why_it_passed,
             why_it_could_fail=why_it_could_fail,
             warnings=warnings,
             signals_used=signals_used,
             data_availability_notes=notes,
+            outlier_score=outlier_score,
+            outlier_type=outlier_type,
+            outlier_risk=outlier_risk,
+            outlier_reason=outlier_reason,
+            why_it_could_be_a_big_winner=big_winner_reasons[:6],
+            chase_risk_warning=chase_risk_warning,
+            theme_tags=security.theme_tags,
+            catalyst_tags=security.catalyst_tags,
+            squeeze_watch=self._squeeze_watch_payload(security),
+            options_placeholders=self._options_payload(security),
+            provider_name=security.provider_name,
+            source_notes=security.source_notes,
             data_used=data_used,
         )
+
+    def _failure_result(self, ticker: str, error: Exception) -> ScannerResult:
+        failure_plan = TradePlan(
+            current_price=0.0,
+            entry_low=None,
+            entry_high=None,
+            invalidation_level=None,
+            stop_loss_reference=None,
+            tp1=None,
+            tp2=None,
+            reward_risk_estimate=None,
+            holding_period_estimate="unavailable",
+        )
+        message = str(error)
+        return ScannerResult(
+            ticker=ticker,
+            company_name="unavailable",
+            current_price=0.0,
+            strategy_label="No Clean Strategy",
+            status_label="Avoid",
+            winner_score=0,
+            bullish_score=0,
+            bearish_pressure_score=100,
+            risk_score=100,
+            setup_quality_score=0,
+            confidence_label="Very Low",
+            confidence_percent=0,
+            holding_period="unavailable",
+            component_scores={},
+            strategy_alignment={"No Clean Strategy": 100},
+            trade_plan=failure_plan,
+            why_it_passed=[],
+            why_it_could_fail=[f"Ticker data could not be loaded: {message}"],
+            warnings=[f"Data fetch failed for {ticker}: {message}"],
+            signals_used=["No deterministic scan was run because data loading failed."],
+            data_availability_notes=[f"Provider failure: {message}"],
+            outlier_score=0,
+            outlier_type="Avoid",
+            outlier_risk="Extreme",
+            outlier_reason="Data could not be loaded, so no outlier judgment was made.",
+            why_it_could_be_a_big_winner=[],
+            chase_risk_warning="Data unavailable.",
+            theme_tags=[],
+            catalyst_tags=[],
+            squeeze_watch=self._unavailable_squeeze_payload(),
+            options_placeholders=self._unavailable_options_payload(),
+            provider_name="unavailable",
+            source_notes=[],
+            data_used={"provider_error": message},
+        )
+
+    def _append_availability_notes(self, notes: list[str], security: SecurityData) -> None:
+        if not security.fundamentals:
+            notes.append("Fundamental support data unavailable.")
+        if not security.catalyst:
+            notes.append("Catalyst confirmation data unavailable.")
+        if not security.next_earnings_date:
+            notes.append("Next earnings date unavailable.")
+        if security.market_cap is None:
+            notes.append("Market cap unavailable.")
+        if not security.industry:
+            notes.append("Industry data unavailable.")
+        if not security.short_interest:
+            notes.append("Short interest data unavailable.")
+        if not security.social_attention:
+            notes.append("Social/news attention data unavailable.")
+        if not security.options_data:
+            notes.append("Options placeholder data unavailable.")
+        if not security.ipo_date:
+            notes.append("IPO date unavailable.")
 
     def _safe_get(self, ticker: str | None, notes: list[str], note: str) -> SecurityData | None:
         if not ticker:
@@ -230,19 +368,17 @@ class DeterministicScanner:
         sma200_prior = sma(closes[:-20], 200) if len(closes) >= 220 else None
         avg_volume20 = average(volumes[-20:])
         avg_volume50 = average(volumes[-50:])
-        avg_dollar_volume20 = average(
-            bar.close * bar.volume for bar in bars[-20:]
-        )
+        avg_dollar_volume20 = average(bar.close * bar.volume for bar in bars[-20:])
         high_52w = max(highs[-252:]) if len(highs) >= 252 else max(highs)
         low_3m = min(lows[-63:]) if len(lows) >= 63 else min(lows)
-        resistance_level = max(highs[-40:-5]) if len(highs) >= 45 else None
-        base_low = min(lows[-40:-5]) if len(lows) >= 45 else None
+        resistance_level = max(highs[-60:-5]) if len(highs) >= 65 else max(highs[:-5]) if len(highs) > 5 else None
+        base_low = min(lows[-60:-5]) if len(lows) >= 65 else min(lows[:-5]) if len(lows) > 5 else None
         tight_window = closes[-30:-5] if len(closes) >= 35 else closes[:-5]
         base_tightness = None
         if tight_window:
             tight_stddev = sample_stddev(tight_window)
             avg_close = average(tight_window)
-            if tight_stddev and avg_close:
+            if tight_stddev is not None and avg_close:
                 base_tightness = tight_stddev / avg_close
 
         accumulation_days = 0
@@ -273,16 +409,20 @@ class DeterministicScanner:
             and max(highs[-20:]) > max(highs[-40:-20])
             and min(lows[-20:]) > min(lows[-40:-20])
         )
+        relative_volume_ratio = (volumes[-1] / avg_volume50) if avg_volume50 else None
         volume_confirmation = bool(avg_volume20 and volumes[-1] >= avg_volume20 * 1.15)
-        breakout_volume_confirmation = bool(avg_volume50 and volumes[-1] >= avg_volume50 * 1.3)
-        breakout_confirmed = bool(
+        breakout_volume_confirmation = bool(avg_volume50 and volumes[-1] >= avg_volume50 * 1.35)
+        unusual_volume = bool(relative_volume_ratio and relative_volume_ratio >= 1.75)
+        breakout_confirmed = bool(resistance_level and current > resistance_level * 1.01 and breakout_volume_confirmation)
+        close_holds_breakout = bool(breakout_confirmed and current >= resistance_level * 1.005)
+        breakout_retest = bool(
             resistance_level
-            and current > resistance_level * 1.01
-            and breakout_volume_confirmation
+            and close_holds_breakout
+            and len(lows) >= 5
+            and min(lows[-5:]) <= resistance_level * 1.03
+            and current >= resistance_level
         )
-        close_holds_breakout = bool(
-            breakout_confirmed and current >= resistance_level * 1.005
-        )
+        weak_breakout_close = bool(breakout_confirmed and close_location(bars[-1]) < 0.55)
         gap_and_fade = bool(
             len(bars) >= 2
             and bars[-1].open > bars[-2].close * 1.06
@@ -294,9 +434,11 @@ class DeterministicScanner:
             and max(highs[-6:-1]) > resistance_level * 1.01
             and current < resistance_level
         )
-        overextended = bool(
-            (sma50 and current > sma50 * 1.14)
-            or (resistance_level and current > resistance_level * 1.09)
+        overextended = bool((sma50 and current > sma50 * 1.14) or (resistance_level and current > resistance_level * 1.09))
+        extreme_overextension = bool(
+            (sma20 and current > sma20 * 1.12)
+            or (sma50 and current > sma50 * 1.20)
+            or (pct_change(closes, 21) is not None and pct_change(closes, 21) > 0.35 and not breakout_retest)
         )
         correction_depth = None
         if len(highs) >= 63:
@@ -317,29 +459,36 @@ class DeterministicScanner:
             and current > sma50 * 1.01
             and volume_confirmation
         )
+        close_near_week_high = bool(len(highs) >= 5 and current >= max(highs[-5:]) * 0.985)
+        price_near_multi_month_high = bool(len(highs) >= 126 and current >= max(highs[-126:]) * 0.98)
 
-        benchmark_rs = self._relative_strength(closes, spy.bars if spy else None, qqq.bars if qqq else None)
-        sector_rs = self._relative_strength(closes, sector.bars if sector else None)
+        benchmark_rs = self._relative_strength(closes, spy.bars if spy else None, qqq.bars if qqq else None, periods=(1, 5, 21, 63, 126))
+        sector_rs = self._relative_strength(closes, sector.bars if sector else None, periods=(21, 63, 126))
         rs_improving = bool(
-            benchmark_rs[0] is not None
-            and benchmark_rs[1] is not None
-            and benchmark_rs[0] >= benchmark_rs[1] - 0.02
-            and benchmark_rs[0] > 0
+            benchmark_rs[2] is not None
+            and benchmark_rs[3] is not None
+            and benchmark_rs[2] >= benchmark_rs[3] - 0.01
+            and benchmark_rs[2] > 0
         )
+        rs_line_rising = self._rs_line_rising(closes, spy, qqq)
         holding_up_when_market_weak = self._holding_up_when_market_weak(closes, spy, qqq)
+        higher_lows_while_market_weak = self._higher_lows_while_market_weak(closes, lows, spy, qqq)
         sector_support = None
         if sector_rs[1] is not None:
             sector_support = sector_rs[1] >= 0
 
-        support_floor = max(
-            value for value in (sma50, base_low, min(lows[-20:]) if len(lows) >= 20 else None) if value is not None
-        )
-        support_holds = current >= support_floor * 1.02 if support_floor else False
-        lower_volume_pullbacks = bool(
-            up_day_volumes
-            and down_day_volumes
-            and average(down_day_volumes) < average(up_day_volumes)
-        )
+        support_candidates = [
+            value
+            for value in (
+                sma50,
+                base_low,
+                min(lows[-20:]) if len(lows) >= 20 else None,
+            )
+            if value is not None
+        ]
+        support_floor = max(support_candidates) if support_candidates else None
+        support_holds = bool(support_floor and current >= support_floor * 1.02)
+        lower_volume_pullbacks = bool(up_day_volumes and down_day_volumes and average(down_day_volumes) < average(up_day_volumes))
         falling_knife = bool(
             sma50
             and sma50_prior
@@ -349,16 +498,37 @@ class DeterministicScanner:
             and pct_change(closes, 21) <= -0.12
             and current <= low_3m * 1.05
         )
-        broken_downtrend = bool(
-            sma50
-            and sma200
-            and current < sma50
-            and sma50 < sma200
-            and not higher_highs_lows
-        )
+        broken_downtrend = bool(sma50 and sma200 and current < sma50 and sma50 < sma200 and not higher_highs_lows)
         low_liquidity = bool(
-            avg_dollar_volume20 is not None and avg_dollar_volume20 < 10_000_000
-        ) or bool(avg_volume20 is not None and avg_volume20 < 300_000) or current < 5
+            (avg_dollar_volume20 is not None and avg_dollar_volume20 < 10_000_000)
+            or (avg_volume20 is not None and avg_volume20 < 300_000)
+            or current < 5
+        )
+        strong_multitimeframe_trend = bool(
+            sma20
+            and sma50
+            and sma200
+            and current > sma20 > sma50 > sma200
+            and all(
+                value is not None and value > 0
+                for value in (
+                    pct_change(closes, 5),
+                    pct_change(closes, 21),
+                    pct_change(closes, 63),
+                )
+            )
+        )
+        recent_ipo = bool(
+            security.ipo_date
+            and (self.analysis_date - security.ipo_date).days <= 540
+        ) or bool(len(bars) < 252)
+        pump_risk = bool(
+            unusual_volume
+            and gap_and_fade
+            and security.social_attention
+            and security.social_attention.attention_velocity is not None
+            and security.social_attention.attention_velocity >= 1.2
+        )
 
         return FeatureSnapshot(
             current_price=current,
@@ -372,6 +542,8 @@ class DeterministicScanner:
             avg_volume20=avg_volume20,
             avg_volume50=avg_volume50,
             avg_dollar_volume20=avg_dollar_volume20,
+            return_1d=pct_change(closes, 1),
+            return_5d=pct_change(closes, 5),
             return_10d=pct_change(closes, 10),
             return_1m=pct_change(closes, 21),
             return_3m=pct_change(closes, 63),
@@ -385,17 +557,23 @@ class DeterministicScanner:
             base_low=base_low,
             base_tightness=base_tightness,
             close_location=close_location(bars[-1]),
+            close_near_week_high=close_near_week_high,
             above_50=bool(sma50 and current > sma50),
             above_200=bool(sma200 and current > sma200),
             ma_stack_bullish=bool(sma50 and sma200 and current > sma50 > sma200),
             sma50_rising=bool(sma50 and sma50_prior and sma50 > sma50_prior),
             sma200_rising=bool(sma200 and sma200_prior and sma200 > sma200_prior),
             near_high=bool(high_52w and current >= high_52w * 0.95),
+            price_near_multi_month_high=price_near_multi_month_high,
             higher_highs_lows=higher_highs_lows,
             volume_confirmation=volume_confirmation,
             breakout_volume_confirmation=breakout_volume_confirmation,
+            relative_volume_ratio=relative_volume_ratio,
+            unusual_volume=unusual_volume,
             breakout_confirmed=breakout_confirmed,
+            breakout_retest=breakout_retest,
             close_holds_breakout=close_holds_breakout,
+            weak_breakout_close=weak_breakout_close,
             clean_base=bool(
                 resistance_level
                 and base_low
@@ -406,6 +584,7 @@ class DeterministicScanner:
             gap_and_fade=gap_and_fade,
             failed_breakout=failed_breakout,
             overextended=overextended,
+            extreme_overextension=extreme_overextension,
             accumulation_days=accumulation_days,
             distribution_days=distribution_days,
             lower_volume_pullbacks=lower_volume_pullbacks,
@@ -413,16 +592,23 @@ class DeterministicScanner:
             prior_uptrend=prior_uptrend,
             correction_depth=correction_depth,
             reclaimed_sma50=reclaimed_sma50,
-            rs_1m=benchmark_rs[0],
-            rs_3m=benchmark_rs[1],
-            rs_6m=benchmark_rs[2],
+            rs_1d=benchmark_rs[0],
+            rs_5d=benchmark_rs[1],
+            rs_1m=benchmark_rs[2],
+            rs_3m=benchmark_rs[3],
+            rs_6m=benchmark_rs[4],
             rs_vs_sector_3m=sector_rs[1],
             rs_improving=rs_improving,
+            rs_line_rising=rs_line_rising,
             holding_up_when_market_weak=holding_up_when_market_weak,
+            higher_lows_while_market_weak=higher_lows_while_market_weak,
             sector_support=sector_support,
+            strong_multitimeframe_trend=strong_multitimeframe_trend,
             low_liquidity=low_liquidity,
             falling_knife=falling_knife,
             broken_downtrend=broken_downtrend,
+            recent_ipo=recent_ipo,
+            pump_risk=pump_risk,
         )
 
     def _relative_strength(
@@ -430,8 +616,8 @@ class DeterministicScanner:
         closes: list[float],
         benchmark_a: list | None = None,
         benchmark_b: list | None = None,
-    ) -> tuple[float | None, float | None, float | None]:
-        periods = (21, 63, 126)
+        periods: tuple[int, ...] = (21, 63, 126),
+    ) -> tuple[float | None, ...]:
         results: list[float | None] = []
         for period in periods:
             stock_return = pct_change(closes, period)
@@ -449,14 +635,32 @@ class DeterministicScanner:
                 results.append(None)
                 continue
             results.append(stock_return - (sum(benchmark_returns) / len(benchmark_returns)))
-        return tuple(results)  # type: ignore[return-value]
+        return tuple(results)
 
-    def _holding_up_when_market_weak(
-        self,
-        closes: list[float],
-        spy: SecurityData | None,
-        qqq: SecurityData | None,
-    ) -> bool:
+    def _rs_line_rising(self, closes: list[float], spy: SecurityData | None, qqq: SecurityData | None) -> bool:
+        comparisons: list[float] = []
+        if spy and len(spy.bars) >= 21:
+            comparisons.append([bar.close for bar in spy.bars][-21])
+        if qqq and len(qqq.bars) >= 21:
+            comparisons.append([bar.close for bar in qqq.bars][-21])
+        benchmark_closes = []
+        for benchmark in (spy, qqq):
+            if benchmark:
+                benchmark_closes.append([bar.close for bar in benchmark.bars])
+        if not benchmark_closes or len(closes) < 21:
+            return False
+        current_ratio = []
+        previous_ratio = []
+        for benchmark in benchmark_closes:
+            if len(benchmark) < 21:
+                continue
+            current_ratio.append(closes[-1] / benchmark[-1])
+            previous_ratio.append(closes[-21] / benchmark[-21])
+        if not current_ratio or not previous_ratio:
+            return False
+        return (sum(current_ratio) / len(current_ratio)) > (sum(previous_ratio) / len(previous_ratio)) * 1.02
+
+    def _holding_up_when_market_weak(self, closes: list[float], spy: SecurityData | None, qqq: SecurityData | None) -> bool:
         stock_return = pct_change(closes, 10)
         if stock_return is None:
             return False
@@ -469,6 +673,26 @@ class DeterministicScanner:
         if not benchmark_returns:
             return False
         return min(benchmark_returns) < 0 and stock_return >= max(benchmark_returns) + 0.02
+
+    def _higher_lows_while_market_weak(
+        self,
+        closes: list[float],
+        lows: list[float],
+        spy: SecurityData | None,
+        qqq: SecurityData | None,
+    ) -> bool:
+        if len(lows) < 40:
+            return False
+        stock_higher_low = min(lows[-20:]) > min(lows[-40:-20])
+        if not stock_higher_low:
+            return False
+        benchmark_returns = []
+        for benchmark in (spy, qqq):
+            if benchmark:
+                benchmark_return = pct_change([bar.close for bar in benchmark.bars], 20)
+                if benchmark_return is not None:
+                    benchmark_returns.append(benchmark_return)
+        return bool(benchmark_returns and min(benchmark_returns) < 0)
 
     def _score_price_leadership(self, features: FeatureSnapshot) -> int:
         score = 0
@@ -523,10 +747,7 @@ class DeterministicScanner:
             score += 4
         if fundamentals.eps_growth is not None and fundamentals.eps_growth >= 0.10:
             score += 4
-        if (
-            fundamentals.margin_change is not None
-            and fundamentals.margin_change >= 0
-        ) or fundamentals.profitability_positive:
+        if ((fundamentals.margin_change is not None and fundamentals.margin_change >= 0) or fundamentals.profitability_positive):
             score += 3
         if fundamentals.free_cash_flow_growth is not None and fundamentals.free_cash_flow_growth >= 0:
             score += 2
@@ -536,16 +757,16 @@ class DeterministicScanner:
             score += 1
         return min(score, 15)
 
-    def _score_catalyst(self, security: SecurityData) -> int:
+    def _score_catalyst(self, security: SecurityData, features: FeatureSnapshot) -> int:
         catalyst = security.catalyst
         if not catalyst or not catalyst.has_catalyst:
             return 0
         score = 0
         if catalyst.price_reaction_positive:
             score += 5
-        if catalyst.volume_confirmation:
+        if catalyst.volume_confirmation or features.unusual_volume:
             score += 4
-        if catalyst.holds_gains:
+        if catalyst.holds_gains or features.close_near_week_high:
             score += 4
         if not catalyst.hype_risk:
             score += 2
@@ -555,11 +776,11 @@ class DeterministicScanner:
         score = 0
         if features.clean_base or features.higher_highs_lows:
             score += 3
-        if features.breakout_confirmed or features.reclaimed_sma50:
+        if features.breakout_confirmed or features.reclaimed_sma50 or features.breakout_retest:
             score += 3
         if trade_plan.reward_risk_estimate is not None and trade_plan.reward_risk_estimate >= 2:
             score += 4
-        if not any((features.overextended, features.failed_breakout, features.falling_knife)):
+        if not any((features.overextended, features.failed_breakout, features.falling_knife, features.weak_breakout_close)):
             score += 3
         if trade_plan.invalidation_level is not None:
             score += 2
@@ -612,6 +833,8 @@ class DeterministicScanner:
                     features.close_holds_breakout,
                     not features.failed_breakout,
                     not features.gap_and_fade,
+                    not features.weak_breakout_close,
+                    features.breakout_retest if features.breakout_retest else None,
                 ]
             ),
             "Relative Strength Leader": self._condition_ratio(
@@ -621,7 +844,9 @@ class DeterministicScanner:
                     features.rs_6m is not None and features.rs_6m > 0,
                     features.rs_vs_sector_3m >= 0 if features.rs_vs_sector_3m is not None else None,
                     features.holding_up_when_market_weak,
-                    features.rs_improving,
+                    features.higher_lows_while_market_weak,
+                    features.rs_line_rising,
+                    features.strong_multitimeframe_trend,
                 ]
             ),
             "Long-Term Leader": self._condition_ratio(
@@ -654,11 +879,9 @@ class DeterministicScanner:
                     features.close_location >= 0.65,
                     features.support_holds,
                     features.distribution_days <= 2,
-                    not (
-                        security.fundamentals
-                        and security.fundamentals.recent_dilution
-                    ),
+                    not (security.fundamentals and security.fundamentals.recent_dilution),
                     catalyst_confirmed if security.catalyst else None,
+                    security.fundamentals.institutional_support if security.fundamentals else None,
                 ]
             ),
         }
@@ -684,20 +907,12 @@ class DeterministicScanner:
             ("Base or consolidation is reasonably clean.", 3, features.clean_base),
             ("The stock reclaimed the 50-day moving average with confirmation.", 3, features.reclaimed_sma50),
             ("Fundamental support is constructive.", 4, self._score_fundamentals(security) >= 8),
-            ("Catalyst is confirmed by price and volume.", 3, self._score_catalyst(security) >= 10),
+            ("Catalyst is confirmed by price and volume.", 3, self._score_catalyst(security, features) >= 10),
         ]
         return self._weighted_score(rules)
 
-    def _bearish_score(
-        self,
-        features: FeatureSnapshot,
-        security: SecurityData,
-        trade_plan: TradePlan,
-    ) -> tuple[int, list[str]]:
-        earnings_too_close = bool(
-            security.next_earnings_date
-            and (security.next_earnings_date - self.analysis_date).days <= 7
-        )
+    def _bearish_score(self, features: FeatureSnapshot, security: SecurityData, trade_plan: TradePlan) -> tuple[int, list[str]]:
+        earnings_too_close = bool(security.next_earnings_date and (security.next_earnings_date - self.analysis_date).days <= 7)
         poor_rr = trade_plan.reward_risk_estimate is None or trade_plan.reward_risk_estimate < 1.75
         rules = [
             ("Price is below a declining 50-day moving average.", 10, not features.above_50 and features.sma50_rising is False),
@@ -705,7 +920,9 @@ class DeterministicScanner:
             ("Heavy-volume selling is showing up in the tape.", 12, features.distribution_days >= 4),
             ("The breakout structure has failed.", 12, features.failed_breakout),
             ("The current move is overextended from support.", 9, features.overextended),
+            ("The move is extremely extended without consolidation.", 10, features.extreme_overextension),
             ("A gap-and-fade pattern weakens the setup.", 8, features.gap_and_fade),
+            ("The breakout closed weakly.", 8, features.weak_breakout_close),
             ("The stock is acting like a falling knife.", 14, features.falling_knife),
             ("Reward/risk is poor or unclear.", 10, poor_rr),
             ("Liquidity is too low for a clean setup.", 8, features.low_liquidity),
@@ -713,15 +930,11 @@ class DeterministicScanner:
             ("Recent dilution risk is present.", 5, bool(security.fundamentals and security.fundamentals.recent_dilution)),
             ("Sector relative strength is weak.", 5, features.sector_support is False),
             ("Headline attention is not confirmed by price action.", 8, bool(security.catalyst and security.catalyst.hype_risk)),
+            ("Price/volume action looks pump-like.", 8, features.pump_risk),
         ]
         return self._weighted_score(rules)
 
-    def _risk_score(
-        self,
-        features: FeatureSnapshot,
-        security: SecurityData,
-        trade_plan: TradePlan,
-    ) -> tuple[int, list[str]]:
+    def _risk_score(self, features: FeatureSnapshot, security: SecurityData, trade_plan: TradePlan) -> tuple[int, list[str]]:
         warnings: list[str] = []
         score = 0
 
@@ -731,22 +944,22 @@ class DeterministicScanner:
                 score += weight
                 warnings.append(warning)
 
-        earnings_too_close = bool(
-            security.next_earnings_date
-            and (security.next_earnings_date - self.analysis_date).days <= 7
-        )
+        earnings_too_close = bool(security.next_earnings_date and (security.next_earnings_date - self.analysis_date).days <= 7)
         poor_rr = trade_plan.reward_risk_estimate is None or trade_plan.reward_risk_estimate < 1.75
         flag(features.falling_knife, 20, "Falling knife behavior is present.")
         flag(features.failed_breakout, 16, "Recent breakout attempt failed.")
         flag(features.overextended, 12, "Move is extended away from the 50-day average.")
+        flag(features.extreme_overextension, 16, "Move is extremely extended and vulnerable to chase risk.")
         flag(features.low_liquidity, 14, "Liquidity is too low for a clean research candidate.")
         flag(features.distribution_days >= 4, 10, "Heavy-volume selling is active.")
         flag(earnings_too_close, 10, "Earnings are too close to the setup.")
         flag(bool(security.catalyst and security.catalyst.hype_risk), 8, "Headline attention looks hype-driven.")
+        flag(features.pump_risk, 12, "Price/volume behavior looks pump-like.")
         flag(bool(security.fundamentals and security.fundamentals.recent_dilution), 12, "Recent dilution/offering risk is present.")
         flag(features.sector_support is False, 6, "Sector backdrop is weak.")
         flag(trade_plan.invalidation_level is None, 8, "No clear invalidation level was found.")
         flag(poor_rr, 12, "Reward/risk is not attractive enough.")
+        flag(features.weak_breakout_close, 8, "Breakout day close was weak.")
         return int(clamp(score, 0, 100)), warnings
 
     def _weighted_score(self, rules: list[tuple[str, int, bool]]) -> tuple[int, list[str]]:
@@ -757,13 +970,7 @@ class DeterministicScanner:
             return 0, triggered
         return int(round((total / total_possible) * 100)), triggered
 
-    def _confidence(
-        self,
-        *,
-        bullish_signals: list[str],
-        bearish_signals: list[str],
-        notes: list[str],
-    ) -> tuple[int, str]:
+    def _confidence(self, *, bullish_signals: list[str], bearish_signals: list[str], notes: list[str]) -> tuple[int, str]:
         positive = len(bullish_signals)
         negative = len(bearish_signals)
         if positive + negative == 0:
@@ -804,6 +1011,7 @@ class DeterministicScanner:
             (
                 features.falling_knife,
                 features.failed_breakout,
+                features.broken_downtrend,
                 risk_score >= 70,
                 bearish_score >= 65,
                 winner_score < 25 and bearish_score >= 35,
@@ -898,9 +1106,7 @@ class DeterministicScanner:
         )
         nearest_resistance = resistance_candidates[0] if resistance_candidates else None
         conservative_target = entry_mid + (2.0 * risk_per_share)
-        if nearest_resistance is not None and (
-            strategy_label == "No Clean Strategy" or features.broken_downtrend or features.falling_knife
-        ):
+        if nearest_resistance is not None and (strategy_label == "No Clean Strategy" or features.broken_downtrend or features.falling_knife):
             conservative_target = min(conservative_target, nearest_resistance)
         elif nearest_resistance is not None:
             conservative_target = max(conservative_target, nearest_resistance)
@@ -919,3 +1125,308 @@ class DeterministicScanner:
             reward_risk_estimate=reward_risk,
             holding_period_estimate=holding_period,
         )
+
+    def _score_outlier_price_strength(self, features: FeatureSnapshot) -> int:
+        score = 0
+        if features.return_1d is not None and features.return_1d > 0.02:
+            score += 3
+        if features.return_5d is not None and features.return_5d > 0.06:
+            score += 5
+        if features.return_1m is not None and features.return_1m > 0.12:
+            score += 4
+        if features.return_3m is not None and features.return_3m > 0.25:
+            score += 4
+        if features.return_6m is not None and features.return_6m > 0.40:
+            score += 2
+        if features.near_high or features.breakout_confirmed or features.price_near_multi_month_high:
+            score += 2
+        return min(score, 20)
+
+    def _score_outlier_relative_strength(self, features: FeatureSnapshot) -> int:
+        score = 0
+        if features.rs_1d is not None and features.rs_1d > 0:
+            score += 3
+        if features.rs_5d is not None and features.rs_5d > 0:
+            score += 4
+        if features.rs_1m is not None and features.rs_1m > 0:
+            score += 4
+        if features.rs_3m is not None and features.rs_3m > 0:
+            score += 4
+        if features.rs_6m is not None and features.rs_6m > 0:
+            score += 2
+        if features.rs_line_rising:
+            score += 2
+        if features.holding_up_when_market_weak or features.higher_lows_while_market_weak:
+            score += 1
+        return min(score, 20)
+
+    def _score_outlier_volume_attention(self, features: FeatureSnapshot, security: SecurityData) -> int:
+        score = 0
+        if features.unusual_volume:
+            score += 6
+        elif features.volume_confirmation:
+            score += 3
+        if features.close_location >= 0.7:
+            score += 3
+        if features.close_near_week_high:
+            score += 3
+        if features.accumulation_days >= 3:
+            score += 3
+        if security.social_attention:
+            if security.social_attention.news_headline_count is not None and security.social_attention.news_headline_count >= 8:
+                score += 3
+            if security.social_attention.attention_velocity is not None and security.social_attention.attention_velocity >= 0.6:
+                score += 2
+        return min(score, 20)
+
+    def _score_outlier_catalyst(self, security: SecurityData, features: FeatureSnapshot) -> int:
+        catalyst = security.catalyst
+        if not catalyst:
+            return 0
+        score = 0
+        if catalyst.has_catalyst:
+            score += 4
+        if catalyst.price_reaction_positive or (features.return_5d is not None and features.return_5d > 0.05):
+            score += 4
+        if catalyst.volume_confirmation or features.unusual_volume:
+            score += 3
+        if catalyst.holds_gains or features.close_holds_breakout:
+            score += 2
+        if not catalyst.hype_risk:
+            score += 2
+        return min(score, 15)
+
+    def _score_outlier_demand(self, security: SecurityData, features: FeatureSnapshot) -> int:
+        score = 0
+        short_interest = security.short_interest
+        if short_interest:
+            if short_interest.short_interest_percent_float is not None and short_interest.short_interest_percent_float >= 0.15:
+                score += 4
+            if short_interest.days_to_cover is not None and short_interest.days_to_cover >= 4:
+                score += 2
+            if short_interest.institutional_activity_positive:
+                score += 2
+        if security.fundamentals and security.fundamentals.institutional_support:
+            score += 2
+        elif features.accumulation_days >= 3:
+            score += 2
+        return min(score, 10)
+
+    def _score_outlier_setup(self, features: FeatureSnapshot, trade_plan: TradePlan) -> int:
+        score = 0
+        if features.breakout_confirmed or features.breakout_retest:
+            score += 4
+        if features.clean_base or features.strong_multitimeframe_trend:
+            score += 3
+        if trade_plan.reward_risk_estimate is not None and trade_plan.reward_risk_estimate >= 2:
+            score += 4
+        if not any((features.falling_knife, features.failed_breakout, features.weak_breakout_close, features.extreme_overextension)):
+            score += 2
+        if trade_plan.invalidation_level is not None:
+            score += 2
+        return min(score, 15)
+
+    def _outlier_classification(
+        self,
+        *,
+        security: SecurityData,
+        features: FeatureSnapshot,
+        trade_plan: TradePlan,
+        outlier_score: int,
+        risk_score: int,
+        status_label: str,
+    ) -> tuple[str, str, list[str]]:
+        alignments = {
+            "Explosive Momentum": self._condition_ratio(
+                [
+                    features.return_5d is not None and features.return_5d > 0.06,
+                    features.return_1m is not None and features.return_1m > 0.12,
+                    features.return_3m is not None and features.return_3m > 0.25,
+                    features.near_high or features.breakout_confirmed,
+                    features.unusual_volume,
+                    features.close_location >= 0.7,
+                    not features.extreme_overextension,
+                ]
+            ),
+            "Breakout Repricing": self._condition_ratio(
+                [
+                    features.clean_base,
+                    features.breakout_confirmed,
+                    features.breakout_volume_confirmation,
+                    features.close_holds_breakout,
+                    features.breakout_retest if features.breakout_retest else None,
+                    not features.gap_and_fade,
+                    not features.weak_breakout_close,
+                ]
+            ),
+            "Short Squeeze Watch": self._condition_ratio(
+                [
+                    security.short_interest.short_interest_percent_float >= 0.15 if security.short_interest and security.short_interest.short_interest_percent_float is not None else None,
+                    security.short_interest.days_to_cover >= 4 if security.short_interest and security.short_interest.days_to_cover is not None else None,
+                    features.unusual_volume,
+                    features.breakout_confirmed or features.near_high,
+                    features.return_5d is not None and features.return_5d > 0.08,
+                    bool(security.social_attention and security.social_attention.attention_velocity is not None and security.social_attention.attention_velocity >= 0.8),
+                ]
+            ),
+            "IPO Leader": self._condition_ratio(
+                [
+                    features.recent_ipo,
+                    features.clean_base,
+                    features.breakout_confirmed or features.price_near_multi_month_high,
+                    security.fundamentals.revenue_growth > 0 if security.fundamentals and security.fundamentals.revenue_growth is not None else None,
+                    bool(security.theme_tags),
+                    not features.broken_downtrend,
+                ]
+            ),
+            "Long-Term Monster": self._condition_ratio(
+                [
+                    features.return_6m is not None and features.return_6m > 0.25,
+                    features.return_12m is not None and features.return_12m > 0.45,
+                    features.strong_multitimeframe_trend,
+                    self._score_fundamentals(security) >= 8,
+                    bool(security.theme_tags),
+                    features.price_near_multi_month_high or features.near_high,
+                    features.accumulation_days >= 3 or (security.fundamentals.institutional_support if security.fundamentals else False),
+                    not features.broken_downtrend,
+                ]
+            ),
+            "Theme/Narrative Leader": self._condition_ratio(
+                [
+                    bool(security.theme_tags),
+                    features.rs_1m is not None and features.rs_1m > 0,
+                    features.rs_3m is not None and features.rs_3m > 0,
+                    bool(security.catalyst_tags),
+                    features.volume_confirmation,
+                    features.close_near_week_high,
+                ]
+            ),
+            "Institutional Accumulation": self._condition_ratio(
+                [
+                    features.accumulation_days >= 3,
+                    features.lower_volume_pullbacks,
+                    features.support_holds,
+                    features.close_location >= 0.65,
+                    features.distribution_days <= 2,
+                    security.fundamentals.institutional_support if security.fundamentals else None,
+                ]
+            ),
+        }
+
+        if status_label == "Avoid" or outlier_score < 35:
+            return "Avoid", "The setup lacks enough confirmed outlier characteristics.", self._outlier_positive_reasons(features, security)
+        squeeze_bias = bool(
+            security.short_interest
+            and (
+                (security.short_interest.short_interest_percent_float is not None and security.short_interest.short_interest_percent_float >= 0.15)
+                or (security.short_interest.days_to_cover is not None and security.short_interest.days_to_cover >= 4)
+            )
+            and ("Short squeeze" in security.theme_tags or "Short squeeze conditions" in security.catalyst_tags)
+        )
+        if (alignments["Short Squeeze Watch"] >= 60 or squeeze_bias) and outlier_score >= 60:
+            return "Short Squeeze Watch", "Crowded short interest and volume expansion are creating a high-risk repricing setup.", self._outlier_positive_reasons(features, security)
+        if alignments["IPO Leader"] >= 70 and outlier_score >= 60:
+            return "IPO Leader", "A recent-public-name base is breaking higher with growth and narrative support.", self._outlier_positive_reasons(features, security)
+        if alignments["Long-Term Monster"] >= 70 and outlier_score >= 50:
+            return "Long-Term Monster", "Multi-quarter price leadership and fundamental support point to a potential compounder-style repricing.", self._outlier_positive_reasons(features, security)
+        if alignments["Breakout Repricing"] >= 70 and outlier_score >= 65:
+            return "Breakout Repricing", "A clean breakout with expansion volume and hold-above-pivot behavior is in force.", self._outlier_positive_reasons(features, security)
+        if alignments["Theme/Narrative Leader"] >= 70 and outlier_score >= 50:
+            return "Theme/Narrative Leader", "The stock is aligning with a live theme while price and volume confirm the narrative.", self._outlier_positive_reasons(features, security)
+        if alignments["Institutional Accumulation"] >= 70 and outlier_score >= 60:
+            return "Institutional Accumulation", "Repeated demand days and support holds suggest large-money sponsorship.", self._outlier_positive_reasons(features, security)
+        if alignments["Explosive Momentum"] >= 60 and outlier_score >= 60:
+            return "Explosive Momentum", "Unusual price strength and relative-strength acceleration are already visible in the tape.", self._outlier_positive_reasons(features, security)
+        return "Watch Only", "The stock shows some outlier ingredients, but confirmation is incomplete.", self._outlier_positive_reasons(features, security)
+
+    def _outlier_positive_reasons(self, features: FeatureSnapshot, security: SecurityData) -> list[str]:
+        reasons: list[str] = []
+        if features.return_5d is not None and features.return_5d > 0.06:
+            reasons.append("5-day performance is unusually strong.")
+        if features.rs_1m is not None and features.rs_1m > 0 and features.rs_3m is not None and features.rs_3m > 0:
+            reasons.append("The stock is outperforming SPY/QQQ across multiple windows.")
+        if features.breakout_confirmed:
+            reasons.append("Price has pushed through resistance with confirmation.")
+        if features.breakout_retest:
+            reasons.append("A breakout retest is holding above the pivot.")
+        if features.unusual_volume:
+            reasons.append("Relative volume is meaningfully above normal.")
+        if features.close_location >= 0.7 and features.close_near_week_high:
+            reasons.append("Closes are staying near the high of the day/week.")
+        if security.catalyst and security.catalyst.has_catalyst:
+            reasons.append("A catalyst exists and price/volume are validating it.")
+        if security.short_interest and security.short_interest.short_interest_percent_float is not None and security.short_interest.short_interest_percent_float >= 0.15:
+            reasons.append("High short interest creates squeeze/repricing fuel.")
+        if security.fundamentals and self._score_fundamentals(security) >= 8:
+            reasons.append("Fundamental support is constructive enough to back the move.")
+        if security.theme_tags:
+            reasons.append(f"Theme support is present: {', '.join(security.theme_tags[:3])}.")
+        return reasons
+
+    def _outlier_risk_label(self, *, outlier_type: str, risk_score: int, features: FeatureSnapshot, security: SecurityData) -> str:
+        if outlier_type == "Short Squeeze Watch":
+            if features.extreme_overextension or features.pump_risk or bool(security.catalyst and security.catalyst.hype_risk):
+                return "Extreme"
+            return "High"
+        if risk_score >= 65 or features.falling_knife:
+            return "Extreme"
+        if risk_score >= 40 or features.extreme_overextension or features.gap_and_fade:
+            return "High"
+        if risk_score >= 20:
+            return "Medium"
+        return "Low"
+
+    def _chase_risk_warning(self, features: FeatureSnapshot, security: SecurityData) -> str | None:
+        if features.extreme_overextension:
+            return "Chase risk is elevated because price is far extended from support."
+        if features.overextended and not features.breakout_retest:
+            return "Chase risk is elevated because the move has not consolidated yet."
+        if security.social_attention and security.social_attention.attention_velocity is not None and security.social_attention.attention_velocity >= 1.2 and features.unusual_volume:
+            return "Attention is spiking quickly, so chasing a headline move carries extra risk."
+        return None
+
+    def _squeeze_watch_payload(self, security: SecurityData) -> dict[str, object]:
+        if not security.short_interest:
+            return self._unavailable_squeeze_payload()
+        snapshot = security.short_interest
+        return {
+            "short_interest_percent_float": snapshot.short_interest_percent_float,
+            "days_to_cover": snapshot.days_to_cover,
+            "float_shares": snapshot.float_shares,
+            "borrow_cost": snapshot.borrow_cost,
+            "institutional_activity_positive": snapshot.institutional_activity_positive,
+            "insider_activity_positive": snapshot.insider_activity_positive,
+        }
+
+    def _options_payload(self, security: SecurityData) -> dict[str, object]:
+        if not security.options_data:
+            return self._unavailable_options_payload()
+        snapshot = security.options_data
+        return {
+            "options_interest_available": snapshot.options_interest_available,
+            "unusual_options_activity": snapshot.unusual_options_activity,
+            "options_daytrade_candidate": snapshot.options_daytrade_candidate,
+            "implied_volatility_warning": snapshot.implied_volatility_warning,
+            "earnings_iv_risk": snapshot.earnings_iv_risk,
+        }
+
+    @staticmethod
+    def _unavailable_squeeze_payload() -> dict[str, object]:
+        return {
+            "short_interest_percent_float": None,
+            "days_to_cover": None,
+            "float_shares": None,
+            "borrow_cost": None,
+            "institutional_activity_positive": None,
+            "insider_activity_positive": None,
+        }
+
+    @staticmethod
+    def _unavailable_options_payload() -> dict[str, object]:
+        return {
+            "options_interest_available": None,
+            "unusual_options_activity": None,
+            "options_daytrade_candidate": None,
+            "implied_volatility_warning": None,
+            "earnings_iv_risk": None,
+        }

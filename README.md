@@ -1,64 +1,115 @@
 # TradeBruv
 
-TradeBruv is a deterministic stock market scanner for personal research and trading workflow triage.
+TradeBruv is a deterministic stock scanner for personal research and trading workflow triage.
 
-This first version is intentionally rule-based:
-- No AI stock picker
-- No broker integration
-- No trade execution
-- No crypto
-- No options builder
-- No guaranteed-profit language
+The project is deliberately not an AI stock picker. AI is not making decisions here. The source of truth is a rule-based scanner that scores stocks using objective price, volume, relative-strength, risk, and supporting fundamental signals.
 
-The scanner ranks stocks for further research using objective technical signals, risk filters, and repeatable scoring. AI can be layered on later for explanations, but it is not required for this pass.
+## Roadmap
 
-## What It Does
+- Pass 1: deterministic scanner core
+- Pass 1.5: real data + outlier winner engine
+- Pass 2: dashboard
+- Pass 3: news/social + AI explanation layer
+- Pass 4: journal + backtest
+- Pass 5: optional day-trading/options module
 
-TradeBruv evaluates a watchlist against these deterministic strategy families:
-- Momentum Winner
-- Breakout Winner
-- Relative Strength Leader
-- Long-Term Leader
-- Confirmed Strength Reset
-- Institutional Accumulation
+## What Exists Now
 
-It also adds support checks for:
-- Fundamental / estimate revision support
-- Catalyst confirmation only when price and volume agree
+TradeBruv currently supports:
+- deterministic winner scoring
+- deterministic outlier-winner scoring
+- strategy labels and status labels
+- trade-plan levels
+- avoid/risk flags
+- JSON, CSV, and console output
+- sample data scans
+- local file scans
+- optional real-data scans through `yfinance` when available
 
-And it always runs an avoid/risk pass for:
-- Falling knife behavior
-- Failed breakouts
-- Heavy-volume selling
-- Overextension
-- Low liquidity
-- Earnings too close
-- Dilution risk when data is available
-- Hype without confirmation
-- Weak sector backdrop when available
+The scanner does **not** do:
+- broker integration
+- trade execution
+- crypto asset scanning
+- options strategy building
+- AI-driven buy/sell decisions
+- guaranteed-profit claims
+
+## Scanner Modes
+
+### Standard Mode
+
+Ranks stocks by `winner_score` and classifies them into:
+- `Strong Research Candidate`
+- `Trade Setup Forming`
+- `Active Setup`
+- `Watch Only`
+- `Avoid`
+
+### Outliers Mode
+
+Ranks stocks by `outlier_score` and classifies them into:
+- `Explosive Momentum`
+- `Breakout Repricing`
+- `Short Squeeze Watch`
+- `IPO Leader`
+- `Long-Term Monster`
+- `Theme/Narrative Leader`
+- `Institutional Accumulation`
+- `Watch Only`
+- `Avoid`
+
+`Short Squeeze Watch` is intentionally separated from normal leadership setups because it can be high-risk and unstable.
 
 ## Scores
 
-The scanner calculates deterministic 0-100 scores:
-- `winner_score`
+### Winner Score
+
+0-100 deterministic score built from:
+- price leadership: 20
+- relative strength: 20
+- volume / accumulation: 15
+- fundamental / revision support: 15
+- catalyst / attention: 15
+- setup cleanliness / risk-reward: 15
+
+Related fields:
 - `bullish_score`
 - `bearish_pressure_score`
 - `risk_score`
 - `setup_quality_score`
+- `confidence_percent`
 
-Winner score components:
-- Price leadership: 20
-- Relative strength: 20
-- Volume / accumulation: 15
-- Fundamental / revision support: 15
-- Catalyst / attention: 15
-- Risk / reward / setup cleanliness: 15
+`confidence_percent` is **not** probability of profit. It only reflects the degree of deterministic signal agreement and data completeness.
 
-`confidence_percent` and `confidence_label` describe rule agreement and setup quality only. They do **not** represent probability of profit.
+### Outlier Score
+
+0-100 deterministic score built from:
+- explosive price strength: 20
+- relative strength acceleration: 20
+- volume / attention expansion: 20
+- catalyst / repricing support: 15
+- float / short-squeeze or institutional-demand signal: 10
+- setup cleanliness / risk-reward: 15
+
+Related fields:
+- `outlier_type`
+- `outlier_risk`
+- `outlier_reason`
+- `chase_risk_warning`
+
+## Universe Files
+
+Included starter universes:
+- [sample_universe.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/sample_universe.txt)
+- [mega_cap_universe.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/mega_cap_universe.txt)
+- [momentum_universe.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/momentum_universe.txt)
+- [outlier_watchlist.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/outlier_watchlist.txt)
+
+These files are inputs only. The scanner does not hardcode any universe inside the ranking logic.
 
 ## Quick Start
 
-Run the built-in sample universe:
+### Sample Scan
 
 ```bash
 python3 -m tradebruv scan \
@@ -67,112 +118,169 @@ python3 -m tradebruv scan \
   --as-of-date 2026-04-24
 ```
 
-This prints a console summary and writes:
-- `outputs/scan_report.json`
-- `outputs/scan_report.csv`
-
-## Local Data Adapter
-
-If you want to scan your own local market data, use the `local` provider:
+### Sample Outlier Scan
 
 ```bash
 python3 -m tradebruv scan \
-  --universe path/to/universe.txt \
+  --universe config/sample_universe.txt \
+  --provider sample \
+  --mode outliers \
+  --as-of-date 2026-04-24
+```
+
+### Real Scan
+
+Install the optional dependency first:
+
+```bash
+python3 -m pip install '.[real]'
+```
+
+Then run:
+
+```bash
+python3 -m tradebruv scan \
+  --universe config/mega_cap_universe.txt \
+  --provider real
+```
+
+### Real Outlier Scan
+
+```bash
+python3 -m tradebruv scan \
+  --universe config/outlier_watchlist.txt \
+  --provider real \
+  --mode outliers
+```
+
+### Local Data Scan
+
+```bash
+python3 -m tradebruv scan \
+  --universe config/outlier_watchlist.txt \
   --provider local \
   --data-dir path/to/data
 ```
 
-Expected directory layout:
+Expected layout:
 
 ```text
 path/to/data/
   metadata.json
   prices/
-    AAPL.csv
-    MSFT.csv
     NVDA.csv
+    MSFT.csv
     SPY.csv
     QQQ.csv
     XLK.csv
 ```
 
-Each price CSV should contain:
+Each CSV:
 
 ```csv
 date,open,high,low,close,volume
 2026-01-02,100.0,101.5,99.4,101.1,5200000
 ```
 
-`metadata.json` is optional and keyed by ticker:
+`metadata.json` can optionally include:
+- company name
+- sector / industry
+- market cap
+- IPO date
+- fundamentals
+- catalyst tags
+- short-interest fields
+- social/news placeholder fields
+- options placeholder fields
 
-```json
-{
-  "NVDA": {
-    "company_name": "NVIDIA Corporation",
-    "sector": "Technology",
-    "next_earnings_date": "2026-05-21",
-    "data_notes": ["Analyst revisions unavailable."],
-    "fundamentals": {
-      "revenue_growth": 0.32,
-      "eps_growth": 0.41,
-      "margin_change": 0.03,
-      "free_cash_flow_growth": 0.18,
-      "analyst_revision_score": 0.5,
-      "guidance_improvement": true,
-      "profitability_positive": true,
-      "recent_dilution": false
-    },
-    "catalyst": {
-      "has_catalyst": true,
-      "description": "Raised guidance",
-      "price_reaction_positive": true,
-      "volume_confirmation": true,
-      "holds_gains": true,
-      "hype_risk": false
-    }
-  }
-}
-```
+If data is missing, the scanner keeps running and marks the field unavailable instead of hallucinating.
 
-If fundamentals, catalyst, sector, or earnings data are missing, the scanner keeps running and marks them as unavailable instead of hallucinating values.
+## Real Data Provider
+
+The optional real provider is currently a `yfinance` adapter. It aims to pull:
+- daily OHLCV history
+- company name
+- sector / industry
+- market cap
+- earnings date when available
+- basic growth / profitability / revision fields when available
+- short-interest fields when available
+- Yahoo news headline counts as a lightweight attention placeholder
+
+Known constraints:
+- `yfinance` can return partial metadata depending on the ticker
+- short-interest, earnings, and news coverage can be incomplete
+- Reddit/X/social data is not scraped directly yet
+- if `yfinance` is unavailable or a field is missing, the scanner degrades gracefully and records that gap
+
+## Social / News Placeholder
+
+This pass adds support for future attention inputs without making them mandatory. Current behavior:
+- local/manual metadata can inject placeholder attention fields
+- real scans can use Yahoo news headline counts if available
+- missing social/news fields are explicitly marked unavailable
+
+No social data is hallucinated.
+
+## Options Placeholder
+
+Options are not part of the main workflow in this pass. The scanner only reserves future-compatible fields:
+- `options_interest_available`
+- `unusual_options_activity`
+- `options_daytrade_candidate`
+- `implied_volatility_warning`
+- `earnings_iv_risk`
+
+These fields do **not** drive stock scoring in this version. No contract recommendations, strategy builders, Greeks, or execution flows are included.
+
+## Output
+
+Reports are written to `outputs/` by default:
+- `scan_report.json` / `scan_report.csv`
+- `outlier_scan_report.json` / `outlier_scan_report.csv`
+
+Each row includes:
+- ticker and company
+- current price
+- winner and outlier scores
+- strategy and outlier labels
+- risk and confidence labels
+- theme tags and catalyst tags
+- trade plan levels
+- squeeze-watch payload
+- options placeholder payload
+- why it passed
+- why it could be a big winner
+- why it could fail
+- warnings
+- source / provider notes
+- data availability notes
 
 ## Tests
 
-Run the test suite with:
+Run the full suite with:
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-The tests cover:
-- scoring logic
+Current test coverage includes:
+- original winner scoring behavior
 - rejection filters
 - status classification
-- trade plan generation
+- trade-plan generation
+- outlier score ranking
+- long-term monster detection
+- short squeeze watch classification with mocked data
+- unavailable social/news handling
+- options placeholder isolation from stock scoring
+- provider failure handling
 
-## Output Fields
+## Known Limitations
 
-Each result includes:
-- ticker and company name
-- current price
-- strategy label
-- status label
-- deterministic scores
-- holding period estimate
-- entry zone
-- invalidation level
-- stop-loss reference
-- TP1 and TP2
-- reward/risk estimate
-- why it passed
-- why it could fail
-- warnings
-- signals used
-- data availability notes
-
-## Notes
-
-- The default sample provider is for development and testing only.
-- The scanner is modular so new adapters can be added later without changing the core scoring engine.
-- AI is not required anywhere in this version.
+- sample data is synthetic and exists for deterministic development only
+- the real provider is free-data based and therefore not institution-grade
+- many advanced fields are optional and may be unavailable for some names
+- theme/catalyst tagging is deterministic but intentionally lightweight
+- no AI explanation layer is active yet
 

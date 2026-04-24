@@ -1,0 +1,11 @@
+# Large-cap stock universe
+AAPL
+MSFT
+NVDA
+META
+AMZN
+AVGO
+TSLA
+AMD
+MU
+

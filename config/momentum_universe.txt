@@ -1,0 +1,13 @@
+# Momentum-leaning stock universe
+NVDA
+PLTR
+MU
+AMD
+SMCI
+ARM
+CRWD
+NET
+VRT
+CELH
+CAVA
+
