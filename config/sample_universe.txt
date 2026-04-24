@@ -1,0 +1,8 @@
+# Sample universe for the built-in sample provider
+NVDA
+MSFT
+LLY
+PLTR
+ENPH
+RIVN
+
