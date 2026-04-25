@@ -174,8 +174,11 @@ def run_outlier_study(
 
     for replay_date in replay_dates:
         pit_provider = _CachedPointInTimeProvider(cache, replay_date)
-        row = DeterministicScanner(pit_provider, analysis_date=replay_date).scan([ticker], mode=mode)[0].to_dict()
-        security = pit_provider.get_security_data(ticker)
+        try:
+            security = pit_provider.get_security_data(ticker)
+            row = DeterministicScanner(pit_provider, analysis_date=replay_date).scan([ticker], mode=mode)[0].to_dict()
+        except ProviderFetchError:
+            continue
         bars = security.bars
         latest = bars[-1]
         avg_volume20 = _avg([bar.volume for bar in bars[-21:-1]])
