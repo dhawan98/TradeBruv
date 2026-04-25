@@ -88,6 +88,48 @@ class CatalystItem:
 
 
 @dataclass(frozen=True)
+class AlternativeDataItem:
+    ticker: str
+    source_type: str = "manual"
+    source_name: str | None = None
+    source_url: str | None = None
+    timestamp: str | None = None
+    actor_name: str | None = None
+    actor_role: str = "Unknown"
+    actor_type: str = "Unknown"
+    transaction_type: str = "Unknown"
+    shares: float | None = None
+    estimated_value: float | None = None
+    price: float | None = None
+    filing_date: str | None = None
+    transaction_date: str | None = None
+    disclosure_lag_days: int | None = None
+    confidence: float | None = None
+    notes: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ticker": self.ticker,
+            "source_type": self.source_type,
+            "source_name": self.source_name or "unavailable",
+            "source_url": self.source_url or "unavailable",
+            "timestamp": self.timestamp or "unavailable",
+            "actor_name": self.actor_name or "unavailable",
+            "actor_role": self.actor_role,
+            "actor_type": self.actor_type,
+            "transaction_type": self.transaction_type,
+            "shares": _format_number(self.shares),
+            "estimated_value": _format_number(self.estimated_value),
+            "price": _format_number(self.price),
+            "filing_date": self.filing_date or "unavailable",
+            "transaction_date": self.transaction_date or "unavailable",
+            "disclosure_lag_days": self.disclosure_lag_days if self.disclosure_lag_days is not None else "unavailable",
+            "confidence": _format_number(self.confidence),
+            "notes": self.notes or "unavailable",
+        }
+
+
+@dataclass(frozen=True)
 class ShortInterestSnapshot:
     short_interest_percent_float: float | None = None
     days_to_cover: float | None = None
@@ -132,6 +174,7 @@ class SecurityData:
     short_interest: ShortInterestSnapshot | None = None
     social_attention: SocialAttentionSnapshot | None = None
     catalyst_items: list[CatalystItem] = field(default_factory=list)
+    alternative_data_items: list[AlternativeDataItem] = field(default_factory=list)
     options_data: OptionsSnapshot | None = None
     theme_tags: list[str] = field(default_factory=list)
     catalyst_tags: list[str] = field(default_factory=list)
@@ -196,10 +239,12 @@ class ScannerResult:
     source_notes: list[str] = field(default_factory=list)
     data_used: dict[str, Any] = field(default_factory=dict)
     catalyst_intelligence: dict[str, Any] = field(default_factory=dict)
+    alternative_data: dict[str, Any] = field(default_factory=dict)
     ai_explanation: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         catalyst_intelligence = _default_catalyst_intelligence() | self.catalyst_intelligence
+        alternative_data = _default_alternative_data() | self.alternative_data
         ai_explanation = _default_ai_explanation() | self.ai_explanation
         return {
             "ticker": self.ticker,
@@ -264,6 +309,23 @@ class ScannerResult:
             "attention_spike": catalyst_intelligence["attention_spike"],
             "hype_risk": catalyst_intelligence["hype_risk"],
             "pump_risk": catalyst_intelligence["pump_risk"],
+            "alternative_data_items": alternative_data["items"],
+            "alternative_data_summary": alternative_data["summary"],
+            "alternative_data_quality": alternative_data["alternative_data_quality"],
+            "alternative_data_source_count": alternative_data["alternative_data_source_count"],
+            "insider_buy_count": alternative_data["insider_buy_count"],
+            "insider_sell_count": alternative_data["insider_sell_count"],
+            "net_insider_value": alternative_data["net_insider_value"],
+            "CEO_CFO_buy_flag": alternative_data["CEO_CFO_buy_flag"],
+            "cluster_buying_flag": alternative_data["cluster_buying_flag"],
+            "heavy_insider_selling_flag": alternative_data["heavy_insider_selling_flag"],
+            "politician_buy_count": alternative_data["politician_buy_count"],
+            "politician_sell_count": alternative_data["politician_sell_count"],
+            "net_politician_value": alternative_data["net_politician_value"],
+            "recent_politician_activity": alternative_data["recent_politician_activity"],
+            "disclosure_lag_warning": alternative_data["disclosure_lag_warning"],
+            "alternative_data_confirmed_by_price_volume": alternative_data["alternative_data_confirmed_by_price_volume"],
+            "alternative_data_warnings": alternative_data["warnings"],
             "ai_explanation": ai_explanation,
             "ai_explanation_available": ai_explanation["available"],
             "ai_explanation_provider": ai_explanation["provider"],
@@ -321,6 +383,28 @@ def _default_catalyst_intelligence() -> dict[str, Any]:
         "attention_spike": False,
         "hype_risk": False,
         "pump_risk": False,
+    }
+
+
+def _default_alternative_data() -> dict[str, Any]:
+    return {
+        "items": [],
+        "summary": "No insider, politician, or alternative-data evidence loaded.",
+        "alternative_data_quality": "Unavailable",
+        "alternative_data_source_count": 0,
+        "insider_buy_count": 0,
+        "insider_sell_count": 0,
+        "net_insider_value": 0,
+        "CEO_CFO_buy_flag": False,
+        "cluster_buying_flag": False,
+        "heavy_insider_selling_flag": False,
+        "politician_buy_count": 0,
+        "politician_sell_count": 0,
+        "net_politician_value": 0,
+        "recent_politician_activity": False,
+        "disclosure_lag_warning": "",
+        "alternative_data_confirmed_by_price_volume": False,
+        "warnings": [],
     }
 
 

@@ -53,6 +53,15 @@ export const api = {
     request<Record<string, unknown>>('/api/predictions/update', { method: 'POST', body: JSON.stringify(payload) }),
   caseStudy: (payload: Record<string, unknown>) =>
     request<Record<string, unknown>>('/api/case-study', { method: 'POST', body: JSON.stringify(payload) }),
+  doctorLatest: () => request<WorkflowReport>('/api/doctor/latest'),
+  runDoctor: (payload: Record<string, unknown>) =>
+    request<WorkflowReport>('/api/doctor/run', { method: 'POST', body: JSON.stringify(payload) }),
+  readinessLatest: () => request<WorkflowReport>('/api/readiness/latest'),
+  runReadiness: (payload: Record<string, unknown>) =>
+    request<WorkflowReport>('/api/readiness/run', { method: 'POST', body: JSON.stringify(payload) }),
+  signalAuditLatest: () => request<WorkflowReport>('/api/signal-audit/latest'),
+  runSignalAudit: (payload: Record<string, unknown>) =>
+    request<WorkflowReport>('/api/signal-audit/run', { method: 'POST', body: JSON.stringify(payload) }),
   journal: () => request<JournalPayload>('/api/journal'),
   addJournal: (payload: Record<string, unknown>) =>
     request<JournalPayload>('/api/journal', { method: 'POST', body: JSON.stringify(payload) }),
@@ -73,6 +82,8 @@ export type HealthPayload = {
 export type DataSourceRow = {
   name: string;
   category: string;
+  tier?: string;
+  recommended_priority?: number;
   configured: boolean;
   required: boolean;
   required_env_vars: string[];
@@ -82,6 +93,7 @@ export type DataSourceRow = {
   setup: string;
   url: string;
   notes: string;
+  quota_notes?: string;
   last_checked: string;
 };
 
@@ -116,6 +128,22 @@ export type ScannerRow = {
   warnings?: string[];
   why_it_passed?: string[];
   why_it_could_fail?: string[];
+  alternative_data_summary?: string;
+  alternative_data_quality?: string;
+  alternative_data_source_count?: number;
+  insider_buy_count?: number;
+  insider_sell_count?: number;
+  net_insider_value?: number;
+  CEO_CFO_buy_flag?: boolean;
+  cluster_buying_flag?: boolean;
+  heavy_insider_selling_flag?: boolean;
+  politician_buy_count?: number;
+  politician_sell_count?: number;
+  net_politician_value?: number;
+  recent_politician_activity?: boolean;
+  disclosure_lag_warning?: string;
+  alternative_data_confirmed_by_price_volume?: boolean;
+  alternative_data_warnings?: string[];
 };
 
 export type ScanPayload = {
@@ -135,3 +163,17 @@ export type PortfolioPayload = { positions: PositionRow[]; summary: Record<strin
 export type PredictionRow = { prediction_id?: string; ticker?: string; outcome_label?: string; final_combined_recommendation?: string; return_20d?: string };
 export type JournalPayload = { entries: Record<string, string>[]; stats: Record<string, unknown> };
 export type ArchiveReport = { path: string; name: string; modified_at: string };
+export type WorkflowCheck = { name?: string; status?: string; mode?: string; message?: string };
+export type WorkflowReport = {
+  available?: boolean;
+  kind?: string;
+  generated_at?: string;
+  status?: string;
+  message?: string;
+  summary?: Record<string, number>;
+  checks?: WorkflowCheck[];
+  conclusion?: string;
+  ready_for_paper_tracking?: boolean;
+  ready_for_manual_research_use?: boolean;
+  ready_for_real_money_reliance?: boolean;
+};

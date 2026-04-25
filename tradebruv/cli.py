@@ -7,6 +7,7 @@ from datetime import date
 from pathlib import Path
 
 from .ai_explanations import apply_ai_explanations, build_explanation_provider
+from .alternative_data import DEFAULT_ALTERNATIVE_DATA_PATH, AlternativeDataOverlayProvider, load_alternative_data_repository
 from .automation import (
     DEFAULT_DAILY_OUTPUT_DIR,
     DEFAULT_SCAN_ARCHIVE_ROOT,
@@ -21,6 +22,8 @@ from .automation import (
     write_daily_outputs,
 )
 from .catalysts import CatalystOverlayProvider, load_catalyst_repository
+from .doctor import run_doctor
+from .env import load_local_env
 from .journal import (
     DEFAULT_JOURNAL_PATH,
     add_journal_entry,
@@ -55,11 +58,14 @@ from .review import (
     write_review_csv,
     write_review_json,
 )
+from .readiness import run_readiness
 from .scanner import DeterministicScanner
+from .signal_quality import run_case_study, run_signal_audit
 from .validation_lab import DEFAULT_PREDICTIONS_PATH, load_predictions, save_predictions, update_prediction_outcomes, validation_metrics
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_local_env()
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -143,6 +149,51 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "predictions":
         return _handle_predictions(args)
 
+    if args.command == "doctor":
+        payload = run_doctor(live=args.live, ai=args.ai, ticker=args.ticker, output_dir=args.output_dir)
+        print(f"Doctor summary: {payload['summary']}")
+        print(f"Doctor JSON: {payload['json_path']}")
+        print(f"Doctor MD:   {payload['markdown_path']}")
+        return 0
+
+    if args.command == "readiness":
+        payload = run_readiness(
+            universe=args.universe,
+            provider=args.provider,
+            tickers=[ticker.strip().upper() for ticker in args.tickers.split(",") if ticker.strip()],
+            ai=args.ai,
+            output_dir=args.output_dir,
+        )
+        print(f"Readiness summary: {payload['summary']}")
+        print(f"Ready for paper tracking: {payload['ready_for_paper_tracking']}")
+        print(f"Ready for real-money reliance: {payload['ready_for_real_money_reliance']}")
+        print(f"Readiness JSON: {payload['json_path']}")
+        print(f"Readiness MD:   {payload['markdown_path']}")
+        return 0
+
+    if args.command == "signal-audit":
+        payload = run_signal_audit(
+            reports_dir=args.reports_dir,
+            baseline=[item.strip().upper() for item in args.baseline.split(",") if item.strip()],
+            random_baseline=args.random_baseline,
+            output_dir=args.output_dir,
+        )
+        print(f"Signal audit conclusion: {payload['conclusion']}")
+        print(f"Signal audit JSON: {payload['json_path']}")
+        print(f"Signal audit MD:   {payload['markdown_path']}")
+        return 0
+
+    if args.command == "case-study":
+        payload = run_case_study(
+            ticker=args.ticker,
+            signal_date=args.signal_date,
+            horizons=_parse_horizons(args.horizons),
+            output_dir=args.output_dir,
+        )
+        print(f"Case study JSON: {payload['json_path']}")
+        print(f"Case study MD:   {payload['markdown_path']}")
+        return 0
+
     parser.error(f"Unknown command: {args.command}")
     return 2
 
@@ -199,6 +250,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional CSV or JSON file with manual catalyst/news/social source items.",
     )
     scan.add_argument(
+        "--alternative-data-file",
+        type=Path,
+        default=DEFAULT_ALTERNATIVE_DATA_PATH,
+        help="Optional CSV or JSON file with verified insider/politician/alternative-data rows.",
+    )
+    scan.add_argument(
         "--ai-explanations",
         action="store_true",
         help="Attach optional AI-generated explanations when an OpenAI-compatible provider is configured.",
@@ -227,6 +284,7 @@ def build_parser() -> argparse.ArgumentParser:
     daily.add_argument("--archive-root", type=Path, default=DEFAULT_SCAN_ARCHIVE_ROOT)
     daily.add_argument("--state-path", type=Path, default=DEFAULT_WATCHLIST_STATE_PATH)
     daily.add_argument("--catalyst-file", type=Path)
+    daily.add_argument("--alternative-data-file", type=Path, default=DEFAULT_ALTERNATIVE_DATA_PATH)
     daily.add_argument("--ai-explanations", action="store_true")
     daily.add_argument("--mock-ai-explanations", action="store_true")
     daily.add_argument("--limit", type=int, default=0)
@@ -303,6 +361,31 @@ def build_parser() -> argparse.ArgumentParser:
     predictions_update.add_argument("--predictions-path", type=Path, default=DEFAULT_PREDICTIONS_PATH)
     predictions_summary = predictions_subparsers.add_parser("summary", help="Show validation metrics.")
     predictions_summary.add_argument("--predictions-path", type=Path, default=DEFAULT_PREDICTIONS_PATH)
+
+    doctor = subparsers.add_parser("doctor", help="Run safe local/API readiness checks without printing secrets.")
+    doctor.add_argument("--live", action="store_true", help="Run live provider checks where configured.")
+    doctor.add_argument("--ai", choices=("none", "openai", "gemini"), default="none", help="Optional AI live check target.")
+    doctor.add_argument("--ticker", default="NVDA", help="Ticker used for live provider probes.")
+    doctor.add_argument("--output-dir", type=Path, default=Path("outputs"))
+
+    readiness = subparsers.add_parser("readiness", help="Check whether TradeBruv is operational as a research/paper-tracking workflow.")
+    readiness.add_argument("--universe", type=Path, default=Path("config/outlier_watchlist.txt"))
+    readiness.add_argument("--provider", choices=("sample", "local", "real"), default="sample")
+    readiness.add_argument("--tickers", default="NVDA,PLTR,MU,RDDT,GME,CAR")
+    readiness.add_argument("--ai", choices=("mock", "openai", "gemini"), default="mock")
+    readiness.add_argument("--output-dir", type=Path, default=Path("outputs"))
+
+    signal_audit = subparsers.add_parser("signal-audit", help="Audit saved signals against baseline/random comparisons.")
+    signal_audit.add_argument("--reports-dir", type=Path, default=Path("reports/scans"))
+    signal_audit.add_argument("--baseline", default="SPY,QQQ")
+    signal_audit.add_argument("--random-baseline", action="store_true")
+    signal_audit.add_argument("--output-dir", type=Path, default=Path("outputs"))
+
+    case_study = subparsers.add_parser("case-study", help="Run a famous outlier case-study workflow.")
+    case_study.add_argument("--ticker", required=True)
+    case_study.add_argument("--signal-date", type=_parse_date, required=True)
+    case_study.add_argument("--horizons", default="5,10,20,60,120")
+    case_study.add_argument("--output-dir", type=Path, default=Path("outputs"))
     return parser
 
 
@@ -325,6 +408,12 @@ def _run_scan(*, args: argparse.Namespace, analysis_date: date):
             print(f"Catalyst warning: {warning}")
     if catalyst_repository.items_by_ticker:
         provider = CatalystOverlayProvider(provider, catalyst_repository)
+    alternative_repository = load_alternative_data_repository(args.alternative_data_file)
+    if alternative_repository.warnings:
+        for warning in alternative_repository.warnings:
+            print(f"Alternative data warning: {warning}")
+    if alternative_repository.items_by_ticker:
+        provider = AlternativeDataOverlayProvider(provider, alternative_repository)
 
     scanner = DeterministicScanner(provider=provider, analysis_date=analysis_date)
     results = scanner.scan(universe, mode=args.mode)

@@ -7,6 +7,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from .ai_guardrails import validate_ai_output
+
 
 AI_MODES = (
     "No AI",
@@ -180,7 +182,8 @@ def run_ai_committee(
             "missing_data": "List unavailable fields rather than inventing them.",
         },
     }
-    return chosen_provider.generate(payload)
+    output = chosen_provider.generate(payload)
+    return {**output, **validate_ai_output(output, scanner_row)}
 
 
 def combine_recommendations(rule_based: str, ai_output: dict[str, Any], scanner_row: dict[str, Any]) -> dict[str, Any]:
@@ -282,6 +285,23 @@ def _grounded_scanner_payload(row: dict[str, Any]) -> dict[str, Any]:
         "why_it_could_be_a_big_winner",
         "warnings",
         "data_availability_notes",
+        "alternative_data_summary",
+        "alternative_data_quality",
+        "alternative_data_source_count",
+        "insider_buy_count",
+        "insider_sell_count",
+        "net_insider_value",
+        "CEO_CFO_buy_flag",
+        "cluster_buying_flag",
+        "heavy_insider_selling_flag",
+        "politician_buy_count",
+        "politician_sell_count",
+        "net_politician_value",
+        "recent_politician_activity",
+        "disclosure_lag_warning",
+        "alternative_data_confirmed_by_price_volume",
+        "alternative_data_warnings",
+        "alternative_data_items",
     ]
     return {key: row.get(key) for key in keys}
 

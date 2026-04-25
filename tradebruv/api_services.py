@@ -8,6 +8,7 @@ from typing import Any
 
 from .automation import DEFAULT_DAILY_OUTPUT_DIR, DEFAULT_SCAN_ARCHIVE_ROOT
 from .cli import build_provider, load_universe
+from .alternative_data import DEFAULT_ALTERNATIVE_DATA_PATH, AlternativeDataOverlayProvider, load_alternative_data_repository
 from .dashboard_data import (
     build_dashboard_combined_recommendation,
     build_dashboard_data_source_status,
@@ -35,6 +36,9 @@ from .env import (
     read_env_template,
     update_local_env,
 )
+from .doctor import load_latest_doctor, run_doctor
+from .readiness import load_latest_readiness, run_readiness
+from .signal_quality import load_latest_signal_quality, run_case_study, run_signal_audit
 from .journal import DEFAULT_JOURNAL_PATH, add_journal_entry, journal_stats, update_journal_entry
 from .portfolio import DEFAULT_PORTFOLIO_PATH, delete_position, import_portfolio_csv, save_portfolio
 from .reporting import write_csv_report, write_json_report
@@ -110,6 +114,7 @@ def run_scan(payload: dict[str, Any]) -> dict[str, Any]:
         analysis_date=analysis_date,
         data_dir=Path(str(payload["data_dir"])) if payload.get("data_dir") else None,
         catalyst_file=Path(str(catalyst_file)) if catalyst_file else None,
+        alternative_data_file=Path(str(payload.get("alternative_data_file") or DEFAULT_ALTERNATIVE_DATA_PATH)),
         ai_explanations=bool(payload.get("ai_explanations", False)),
         mock_ai_explanations=bool(payload.get("mock_ai_explanations", False)),
     )
@@ -291,6 +296,9 @@ def predictions_summary() -> dict[str, Any]:
 
 def case_study(payload: dict[str, Any]) -> dict[str, Any]:
     signal_date = _parse_date(payload.get("signal_date")) or date(2021, 1, 4)
+    if payload.get("write_report"):
+        horizons = [int(item) for item in str(payload.get("horizons") or "5,10,20,60,120").split(",") if str(item).strip()]
+        return run_case_study(ticker=str(payload.get("ticker") or "NVDA").upper(), signal_date=signal_date, horizons=horizons)
     return run_dashboard_case_study(
         ticker=str(payload.get("ticker") or "NVDA").upper(),
         provider=_provider(payload),
@@ -320,11 +328,43 @@ def update_journal(entry_id: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def doctor_latest() -> dict[str, Any]:
-    return {"available": False, "status": "not_run", "message": "Live doctor/readiness testing is scheduled for the next pass."}
+    return load_latest_doctor()
 
 
 def readiness_latest() -> dict[str, Any]:
-    return {"available": False, "status": "not_run", "message": "No live API testing in Pass 7."}
+    return load_latest_readiness()
+
+
+def doctor_run(payload: dict[str, Any]) -> dict[str, Any]:
+    return run_doctor(
+        live=bool(payload.get("live", False)),
+        ai=str(payload.get("ai") or "none"),
+        ticker=str(payload.get("ticker") or "NVDA").upper(),
+    )
+
+
+def readiness_run(payload: dict[str, Any]) -> dict[str, Any]:
+    raw_tickers = str(payload.get("tickers") or "NVDA,PLTR,MU,RDDT,GME,CAR")
+    tickers = [ticker.strip().upper() for ticker in raw_tickers.split(",") if ticker.strip()]
+    return run_readiness(
+        universe=Path(str(payload.get("universe") or "config/outlier_watchlist.txt")),
+        provider=str(payload.get("provider") or "sample"),
+        tickers=tickers,
+        ai=str(payload.get("ai") or "mock"),
+    )
+
+
+def signal_audit_run(payload: dict[str, Any]) -> dict[str, Any]:
+    baseline = [item.strip().upper() for item in str(payload.get("baseline") or "SPY,QQQ").split(",") if item.strip()]
+    return run_signal_audit(
+        reports_dir=Path(str(payload.get("reports_dir") or "reports/scans")),
+        baseline=baseline,
+        random_baseline=bool(payload.get("random_baseline", True)),
+    )
+
+
+def signal_audit_latest() -> dict[str, Any]:
+    return load_latest_signal_quality()
 
 
 def _provider(payload: dict[str, Any]):
@@ -334,7 +374,12 @@ def _provider(payload: dict[str, Any]):
         data_dir=Path(str(payload["data_dir"])) if payload.get("data_dir") else None,
         history_period=str(payload.get("history_period") or "3y"),
     )
-    return build_provider(args=args, analysis_date=_parse_date(payload.get("as_of_date")) or date.today())
+    provider = build_provider(args=args, analysis_date=_parse_date(payload.get("as_of_date")) or date.today())
+    alternative_file = Path(str(payload.get("alternative_data_file") or DEFAULT_ALTERNATIVE_DATA_PATH))
+    repository = load_alternative_data_repository(alternative_file)
+    if repository.items_by_ticker:
+        provider = AlternativeDataOverlayProvider(provider, repository)
+    return provider
 
 
 def _safe_source_row(row: dict[str, Any]) -> dict[str, Any]:

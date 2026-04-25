@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 
@@ -26,6 +26,8 @@ vi.stubGlobal(
           {
             name: 'OpenAI',
             category: 'AI providers',
+            tier: 'AI',
+            recommended_priority: 1,
             configured: false,
             required: false,
             required_env_vars: ['OPENAI_API_KEY', 'OPENAI_MODEL'],
@@ -35,6 +37,24 @@ vi.stubGlobal(
             setup: 'Set OPENAI_API_KEY.',
             url: 'https://platform.openai.com/docs',
             notes: '',
+            quota_notes: '',
+            last_checked: 'not configured',
+          },
+          {
+            name: 'SEC EDGAR',
+            category: 'No key / free',
+            tier: 'No key / free',
+            recommended_priority: 5,
+            configured: false,
+            required: false,
+            required_env_vars: ['SEC_USER_AGENT'],
+            missing_env_vars_list: ['SEC_USER_AGENT'],
+            capabilities: 'Company filings; Form 4 discovery',
+            degraded_when_missing: 'SEC discovery unavailable.',
+            setup: 'Set SEC_USER_AGENT.',
+            url: 'https://www.sec.gov/',
+            notes: '',
+            quota_notes: 'Use gentle request rates.',
             last_checked: 'not configured',
           },
         ],
@@ -42,6 +62,11 @@ vi.stubGlobal(
         local_env_editor_enabled: false,
         local_env_warning: 'local only',
       },
+      '/api/doctor/latest': { available: false, message: 'Doctor has not run yet.' },
+      '/api/readiness/latest': { available: false, message: 'Readiness has not run yet.' },
+      '/api/signal-audit/latest': { available: false, message: 'Signal audit has not run yet.' },
+      '/api/predictions': [],
+      '/api/predictions/summary': {},
     };
     const key = Object.keys(payloads).find((path) => url.endsWith(path));
     return Promise.resolve(new Response(JSON.stringify(payloads[key ?? '/api/alerts']), { status: 200 }));
@@ -61,5 +86,14 @@ describe('App', () => {
   it('renders the stock picker empty state on the home screen', async () => {
     render(<App />);
     expect(await screen.findByText('No scan loaded')).toBeInTheDocument();
+  });
+
+  it('renders data-source setup and workflow panels', async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: /Data Sources/i }));
+    expect(await screen.findByText('Recommended Free-First Setup')).toBeInTheDocument();
+    expect(screen.getAllByText('SEC_USER_AGENT').length).toBeGreaterThan(0);
+    expect(screen.getByText('Doctor / API Testing')).toBeInTheDocument();
+    expect(screen.getByText('Run Readiness')).toBeInTheDocument();
   });
 });

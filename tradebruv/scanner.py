@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Iterable
 
+from .alternative_data import build_alternative_data_signal
 from .catalysts import build_catalyst_intelligence
 from .indicators import atr, average, clamp, close_location, pct_change, sample_stddev, sma
 from .models import ScannerResult, SecurityData, TradePlan
@@ -224,6 +225,14 @@ class DeterministicScanner:
         chase_risk_warning = self._chase_risk_warning(features, security)
         if chase_risk_warning and chase_risk_warning not in warnings:
             warnings.append(chase_risk_warning)
+        alternative_data, alternative_warnings = build_alternative_data_signal(
+            security=security,
+            features=features,
+            status_label=status_label,
+        )
+        for warning in alternative_warnings:
+            if warning not in warnings:
+                warnings.append(warning)
 
         why_it_passed = bullish_signals[:6]
         why_it_could_fail = bearish_signals[:6]
@@ -245,6 +254,8 @@ class DeterministicScanner:
             "options_placeholder_available": security.options_data is not None,
             "catalyst_data_available": catalyst_intelligence["catalyst_data_available"],
             "manual_catalyst_source_count": catalyst_intelligence["catalyst_source_count"],
+            "alternative_data_available": bool(alternative_data["alternative_data_source_count"]),
+            "alternative_data_source_count": alternative_data["alternative_data_source_count"],
             "outlier_components": outlier_components,
         }
 
@@ -287,6 +298,7 @@ class DeterministicScanner:
             source_notes=security.source_notes,
             data_used=data_used,
             catalyst_intelligence=catalyst_intelligence,
+            alternative_data=alternative_data,
         )
 
     def _failure_result(self, ticker: str, error: Exception) -> ScannerResult:
@@ -354,6 +366,8 @@ class DeterministicScanner:
             notes.append("Short interest data unavailable.")
         if not security.social_attention:
             notes.append("Social/news attention data unavailable.")
+        if not security.alternative_data_items:
+            notes.append("Insider/politician alternative data unavailable.")
         if not security.options_data:
             notes.append("Options placeholder data unavailable.")
         if not security.ipo_date:

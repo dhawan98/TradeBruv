@@ -2,6 +2,7 @@ import { FormEvent, useState } from 'react';
 import type React from 'react';
 import {
   AlertTriangle,
+  Activity,
   BookOpen,
   Brain,
   Database,
@@ -14,6 +15,7 @@ import {
   RefreshCcw,
   Search,
   ShieldAlert,
+  Sparkles,
   Wallet,
 } from 'lucide-react';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
@@ -48,11 +50,11 @@ const NAV: { key: PageKey; icon: React.ComponentType<{ size?: number }> }[] = [
 ];
 
 const GROUPS: Record<string, string[]> = {
-  'Market Data': ['Market data', 'Market data / News', 'Market data / Fundamentals'],
-  'News / Events': ['News/events'],
-  'Social / Attention': ['Social/attention'],
-  'AI Providers': ['AI providers'],
-  'Portfolio / Brokerage': ['Portfolio/brokerage'],
+  'No key / free': ['No key / free'],
+  'Free key': ['Free key'],
+  'Paid / optional': ['Paid / optional'],
+  AI: ['AI'],
+  'Future brokerage': ['Future brokerage'],
 };
 
 export function App() {
@@ -120,8 +122,10 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
   const latest = useAsync(api.latestReport, []);
   const alerts = useAsync(api.alerts, []);
   const sources = useAsync(api.dataSources, []);
+  const predictions = useAsync(api.predictions, []);
   const rows = latest.data?.results ?? [];
   const top = rows.filter((row) => row.status_label !== 'Avoid').slice(0, 5);
+  const openPredictions = (predictions.data ?? []).filter((row) => !row.outcome_label || row.outcome_label === 'Open');
 
   return (
     <Page title="Home" subtitle="Daily brief, open risks, and the next useful research action.">
@@ -131,6 +135,24 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
         <Metric label="Data sources" value={`${sources.data?.summary.optional_ready ?? 0} ready`} sub="Configured optional providers" />
         <Metric label="Regime" value={String(latest.data?.market_regime?.regime ?? 'Unavailable')} sub="From latest deterministic scan" />
       </div>
+      <div className="grid two">
+        <Panel title="Market Regime">
+          <DecisionCard
+            label={String(latest.data?.market_regime?.regime ?? 'Unavailable')}
+            status={latest.data?.available ? 'Latest scan loaded' : 'Run a scan to populate regime'}
+            risk={String(latest.data?.market_regime?.risk_level ?? 'Unknown')}
+            details={String(latest.data?.market_regime?.summary ?? 'Regime comes from Python scan outputs.')}
+          />
+        </Panel>
+        <Panel title="Quick Actions">
+          <div className="action-strip">
+            <button className="primary" onClick={() => setPage('Stock Picker')}><RefreshCcw size={16} /> Run Scan</button>
+            <button className="secondary" onClick={() => setPage('Deep Research')}><Search size={16} /> Deep Research Ticker</button>
+            <button className="secondary" onClick={() => setPage('Validation Lab')}><FlaskConical size={16} /> Review Predictions</button>
+          </div>
+          <WatchlistChangeCard label="Predictions needing review" value={String(openPredictions.length)} note="Forward tracking is the honest scorekeeper." />
+        </Panel>
+      </div>
       {top.length ? (
         <div className="grid two">
           <Panel title="Top Research Candidates">
@@ -138,6 +160,12 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
           </Panel>
           <Panel title="Open Alerts">
             <AlertList rows={(alerts.data ?? []).slice(0, 6)} />
+          </Panel>
+          <Panel title="Data Health">
+            <DataHealthCard ready={sources.data?.summary.optional_ready ?? 0} missing={sources.data?.summary.optional_missing ?? 0} requiredMissing={sources.data?.summary.required_missing ?? 0} />
+          </Panel>
+          <Panel title="Portfolio Review Prompts">
+            <p className="muted">Use Portfolio Analyst after each real scan to compare current holdings against refreshed deterministic signals.</p>
           </Panel>
         </div>
       ) : (
@@ -186,7 +214,9 @@ function StockPicker() {
         </button>
       </form>
       {error && <Notice tone="bad">{error}</Notice>}
-      {scan.length ? (
+      {loading ? (
+        <SkeletonGrid />
+      ) : scan.length ? (
         <div className="grid">
           <Panel title="Candidates">
             <CandidateList rows={scan.filter((row) => row.status_label !== 'Avoid').slice(0, 8)} />
@@ -297,6 +327,14 @@ function AICommittee() {
           <Panel title="Combined Recommendation">
             <KeyValue payload={combined ?? {}} />
           </Panel>
+          <Panel title="AI Guardrails">
+            <div className="metric-grid compact">
+              <Metric label="Output quality" value={String(committee.ai_output_quality_score ?? 'n/a')} sub="100 is cleanest" />
+              <Metric label="Grounding" value={String(committee.evidence_grounding_score ?? 'n/a')} sub="Evidence discipline" />
+              <Metric label="Unsupported claims" value={committee.unsupported_claims_detected ? 'Flagged' : 'Clear'} sub="Validator result" />
+            </div>
+            <SignalStack row={{ warnings: committee.ai_guardrail_warnings as string[] } as ScannerRow} />
+          </Panel>
           <Panel title="Analyst Views">
             <KeyValue payload={committee} />
           </Panel>
@@ -309,12 +347,34 @@ function AICommittee() {
 function ValidationLab() {
   const summary = useAsync(api.predictionsSummary, []);
   const predictions = useAsync(api.predictions, []);
+  const signalAudit = useAsync(api.signalAuditLatest, []);
+  const [auditLoading, setAuditLoading] = useState(false);
+
+  async function runAudit() {
+    setAuditLoading(true);
+    try {
+      signalAudit.setData(await api.runSignalAudit({ reports_dir: 'reports/scans', baseline: 'SPY,QQQ', random_baseline: true }));
+    } finally {
+      setAuditLoading(false);
+    }
+  }
+
   return (
     <Page title="Validation Lab" subtitle="Paper predictions, outcome updates, and famous outlier case studies.">
       <div className="metric-grid">
         <Metric label="Open" value={String((summary.data?.open_predictions as unknown[] | undefined)?.length ?? 0)} sub="Awaiting outcome" />
         <Metric label="Closed" value={String((summary.data?.closed_predictions as unknown[] | undefined)?.length ?? 0)} sub="Measured signals" />
       </div>
+      <Panel title="Signal Quality">
+        <div className="metric-grid compact">
+          <ValidationMetricCard label="Strategy vs baseline" value={signalAudit.data?.available ? 'Measured' : 'Not run'} />
+          <ValidationMetricCard label="Random baseline" value={signalAudit.data?.available ? 'Included' : 'Pending'} />
+          <ValidationMetricCard label="Evidence state" value={String(signalAudit.data?.conclusion ?? 'Not enough evidence yet')} />
+        </div>
+        <Notice tone="neutral">This audit measures signals against baselines and random samples. It does not prove profitability or prediction accuracy.</Notice>
+        <button className="secondary" onClick={runAudit} disabled={auditLoading}>{auditLoading ? 'Running' : 'Run Signal Audit'}</button>
+        <WorkflowReportView report={signalAudit.data} />
+      </Panel>
       <Panel title="Predictions">
         <DataTable rows={predictions.data ?? []} columns={['prediction_id', 'ticker', 'final_combined_recommendation', 'outcome_label', 'return_20d']} />
       </Panel>
@@ -346,8 +406,11 @@ function Journal() {
 
 function DataSources() {
   const sources = useAsync(api.dataSources, []);
+  const doctor = useAsync(api.doctorLatest, []);
+  const readiness = useAsync(api.readinessLatest, []);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [workflowLoading, setWorkflowLoading] = useState('');
   const rows = sources.data?.rows ?? [];
 
   async function createTemplate() {
@@ -357,6 +420,29 @@ function DataSources() {
       setMessage(result.message);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not create .env');
+    }
+  }
+
+  async function runWorkflow(kind: 'doctor' | 'doctor-live' | 'readiness' | 'readiness-openai' | 'readiness-gemini') {
+    setWorkflowLoading(kind);
+    setError('');
+    try {
+      if (kind === 'doctor') {
+        const report = await api.runDoctor({ live: false, ticker: 'NVDA' });
+        doctor.setData(report);
+      } else if (kind === 'doctor-live') {
+        const report = await api.runDoctor({ live: true, ticker: 'NVDA' });
+        doctor.setData(report);
+      } else {
+        const ai = kind === 'readiness-openai' ? 'openai' : kind === 'readiness-gemini' ? 'gemini' : 'mock';
+        const report = await api.runReadiness({ provider: 'sample', ai, tickers: 'NVDA,PLTR,MU,RDDT,GME,CAR' });
+        readiness.setData(report);
+      }
+      setMessage('Workflow completed. Restart the backend only after changing .env values.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Workflow failed');
+    } finally {
+      setWorkflowLoading('');
     }
   }
 
@@ -381,6 +467,18 @@ function DataSources() {
     <Page title="Data Sources" subtitle="Provider readiness, missing keys, degraded capabilities, and local .env setup.">
       {message && <Notice tone="good">{message}</Notice>}
       {error && <Notice tone="bad">{error}</Notice>}
+      <Panel title="Recommended Free-First Setup">
+        <div className="setup-grid">
+          <DataHealthCard ready={sources.data?.summary.optional_ready ?? 0} missing={sources.data?.summary.optional_missing ?? 0} requiredMissing={sources.data?.summary.required_missing ?? 0} />
+          <div>
+            <h3>Keys to add first</h3>
+            <div className="pill-row">
+              {['OPENAI_API_KEY', 'GEMINI_API_KEY', 'FINANCIAL_MODELING_PREP_API_KEY', 'FINNHUB_API_KEY', 'SEC_USER_AGENT'].map((key) => <ProviderBadge key={key}>{key}</ProviderBadge>)}
+            </div>
+            <p className="muted">yfinance, GDELT, manual catalysts, manual alternative data, and local portfolio CSV work without paid keys.</p>
+          </div>
+        </div>
+      </Panel>
       <div className="grid two">
         <Panel title="How to Add Keys Locally">
           <ol className="steps">
@@ -411,10 +509,29 @@ function DataSources() {
           )}
         </Panel>
       </div>
+      <div className="grid two">
+        <Panel title="Doctor / API Testing">
+          <div className="action-strip">
+            <button className="secondary" disabled={!!workflowLoading} onClick={() => runWorkflow('doctor')}>Run Doctor</button>
+            <button className="secondary" disabled={!!workflowLoading} onClick={() => runWorkflow('doctor-live')}>Run Live Doctor</button>
+          </div>
+          {workflowLoading.startsWith('doctor') && <SkeletonLine />}
+          <WorkflowReportView report={doctor.data} />
+        </Panel>
+        <Panel title="Readiness Workflow">
+          <div className="action-strip">
+            <button className="secondary" disabled={!!workflowLoading} onClick={() => runWorkflow('readiness')}>Run Readiness</button>
+            <button className="secondary" disabled={!!workflowLoading} onClick={() => runWorkflow('readiness-openai')}>With OpenAI</button>
+            <button className="secondary" disabled={!!workflowLoading} onClick={() => runWorkflow('readiness-gemini')}>With Gemini</button>
+          </div>
+          {workflowLoading.startsWith('readiness') && <SkeletonLine />}
+          <WorkflowReportView report={readiness.data} />
+        </Panel>
+      </div>
       {Object.entries(GROUPS).map(([group, categories]) => (
         <Panel title={group} key={group}>
           <div className="provider-grid">
-            {rows.filter((row) => categories.includes(row.category)).map((row) => (
+            {rows.filter((row) => categories.includes(row.tier ?? row.category)).sort((a, b) => (a.recommended_priority ?? 99) - (b.recommended_priority ?? 99)).map((row) => (
               <ProviderCard row={row} key={row.name} />
             ))}
           </div>
@@ -534,6 +651,7 @@ function ProviderCard({ row }: { row: DataSourceRow }) {
         <strong>{row.name}</strong>
         <Chip tone={row.configured ? 'good' : 'bad'}>{row.configured ? 'Configured' : 'Missing'}</Chip>
       </div>
+      <ProviderBadge>{row.tier ?? row.category}</ProviderBadge>
       <p>{row.capabilities}</p>
       <dl>
         <dt>Required env vars</dt>
@@ -546,6 +664,7 @@ function ProviderCard({ row }: { row: DataSourceRow }) {
         <dd>{row.last_checked}</dd>
       </dl>
       <p className="setup">{row.setup}</p>
+      {row.quota_notes && <p className="muted">{row.quota_notes}</p>}
       <a href={row.url} target="_blank" rel="noreferrer">Docs</a>
     </article>
   );
@@ -561,10 +680,11 @@ function CandidateList({ rows }: { rows: ScannerRow[] }) {
             <span>{row.company_name ?? row.outlier_type ?? 'Research candidate'}</span>
           </div>
           <div className="score-stack">
-            <Chip tone="good">W {row.winner_score ?? 0}</Chip>
-            <Chip tone={(row.risk_score ?? 0) >= 60 ? 'bad' : 'neutral'}>R {row.risk_score ?? 0}</Chip>
+            <ScoreBar label="Winner" value={Number(row.winner_score ?? 0)} />
+            <RiskBadge score={Number(row.risk_score ?? 0)} />
           </div>
-          <p>{row.status_label} · {row.outlier_type}</p>
+          <p><StatusPill status={row.status_label} /> {row.outlier_type}</p>
+          <SignalStack row={row} />
           {(row.warnings ?? []).slice(0, 2).map((warning) => <small className="risk" key={warning}><AlertTriangle size={13} /> {warning}</small>)}
           <div className="actions">
             <button className="ghost">Deep Research</button>
@@ -638,26 +758,196 @@ function ResearchView({ payload }: { payload: Record<string, unknown> }) {
   const decision = payload.decision_card as Record<string, unknown> | undefined;
   const scanner = payload.scanner_row as ScannerRow | undefined;
   return (
-    <div className="grid two">
-      <Panel title="Decision Card">
-        <KeyValue payload={decision ?? {}} />
-      </Panel>
-      <Panel title="Scores">
+    <div className="grid">
+      <Panel title="Hero Decision">
+        <DecisionCard
+          label={String(decision?.recommendation_label ?? scanner?.status_label ?? 'Data Insufficient')}
+          status={String(scanner?.strategy_label ?? scanner?.outlier_type ?? 'Rule-based research')}
+          risk={String(scanner?.risk_score ?? 'Unknown')}
+          details={String(decision?.rationale ?? scanner?.alternative_data_summary ?? 'Deterministic scanner output remains primary.')}
+        />
         <div className="metric-grid compact">
           <Metric label="Winner" value={String(scanner?.winner_score ?? payload.winner_score ?? 0)} sub="Rule score" />
           <Metric label="Outlier" value={String(scanner?.outlier_score ?? payload.outlier_score ?? 0)} sub="Outlier engine" />
           <Metric label="Risk" value={String(scanner?.risk_score ?? payload.risk_score ?? 0)} sub="Lower is better" />
         </div>
-        <KeyValue payload={{ entry: payload.entry_zone, invalidation: payload.invalidation, tp1: payload.tp1, tp2: payload.tp2 }} />
       </Panel>
-      <Panel title="Bull / Bear / Risks">
-        <KeyValue payload={{ bull_case: payload.bull_case, bear_case: payload.bear_case, key_risks: payload.key_risks }} />
-      </Panel>
-      <Panel title="Portfolio Context">
-        <KeyValue payload={{ portfolio_context: payload.portfolio_context, journal_history: payload.journal_history }} />
-      </Panel>
+      <div className="grid two">
+        <Panel title="Rule-Based Levels">
+          <KeyValue payload={{ entry: payload.entry_zone, invalidation: payload.invalidation, tp1: payload.tp1, tp2: payload.tp2 }} />
+        </Panel>
+        <Panel title="Why NOT to Buy">
+          <Notice tone="warn">
+            {listText(scanner?.why_it_could_fail ?? (payload.key_risks as unknown[] | undefined) ?? ['No explicit risk notes were returned. Refresh data before relying on the thesis.'])}
+          </Notice>
+          <KeyValue payload={{ invalidation: payload.invalidation, warnings: scanner?.warnings, missing_data: scanner?.alternative_data_warnings }} />
+        </Panel>
+        <Panel title="Bull Case">
+          <KeyValue payload={{ bull_case: payload.bull_case ?? scanner?.why_it_passed, big_winner_case: scanner?.why_it_passed }} />
+        </Panel>
+        <Panel title="Bear Case">
+          <KeyValue payload={{ bear_case: payload.bear_case ?? scanner?.why_it_could_fail, key_risks: payload.key_risks ?? scanner?.warnings }} />
+        </Panel>
+        <Panel title="Insider / Politician Activity">
+          <div className="alt-grid">
+            <InsiderActivityCard row={scanner} />
+            <PoliticianActivityCard row={scanner} />
+          </div>
+        </Panel>
+        <Panel title="Data Quality">
+          <KeyValue payload={{ alternative_data_quality: scanner?.alternative_data_quality, alternative_sources: scanner?.alternative_data_source_count, disclosure_lag: scanner?.disclosure_lag_warning, data_notes: scanner?.warnings }} />
+        </Panel>
+        <Panel title="Portfolio Context">
+          <KeyValue payload={{ portfolio_context: payload.portfolio_context, journal_history: payload.journal_history }} />
+        </Panel>
+        <Panel title="Validation History">
+          <p className="muted">Use Validation Lab to save this thesis and measure forward outcomes against SPY, QQQ, and random baselines.</p>
+        </Panel>
+      </div>
     </div>
   );
+}
+
+function DecisionCard({ label, status, risk, details }: { label: string; status: string; risk: string; details: string }) {
+  const riskNumber = Number(risk);
+  return (
+    <div className="decision-card">
+      <div>
+        <span className="eyebrow">Decision</span>
+        <h3>{label}</h3>
+        <p>{status}</p>
+      </div>
+      <ScoreRing value={Number.isFinite(riskNumber) ? Math.max(0, 100 - riskNumber) : 50} label="Risk-adjusted" />
+      <Notice tone={riskNumber >= 60 ? 'bad' : riskNumber >= 40 ? 'warn' : 'neutral'}>{details}</Notice>
+    </div>
+  );
+}
+
+function ScoreRing({ value, label }: { value: number; label: string }) {
+  const degrees = Math.max(0, Math.min(100, value)) * 3.6;
+  return (
+    <div className="score-ring" style={{ background: `conic-gradient(#74dac7 ${degrees}deg, #1e3043 0deg)` }}>
+      <div>
+        <strong>{Math.round(value)}</strong>
+        <span>{label}</span>
+      </div>
+    </div>
+  );
+}
+
+function ScoreBar({ label, value }: { label: string; value: number }) {
+  const clamped = Math.max(0, Math.min(100, value));
+  return (
+    <div className="score-bar">
+      <span>{label}</span>
+      <div><i style={{ width: `${clamped}%` }} /></div>
+      <strong>{Math.round(clamped)}</strong>
+    </div>
+  );
+}
+
+function RiskBadge({ score }: { score: number }) {
+  return <Chip tone={score >= 70 ? 'bad' : score >= 45 ? 'warn' : 'good'}>Risk {Math.round(score)}</Chip>;
+}
+
+function StatusPill({ status }: { status?: string }) {
+  const text = status ?? 'Unknown';
+  const tone = text.includes('Avoid') || text.includes('Sell') ? 'bad' : text.includes('Watch') || text.includes('Forming') ? 'warn' : 'good';
+  return <Chip tone={tone}>{text}</Chip>;
+}
+
+function SignalStack({ row }: { row: ScannerRow }) {
+  const chips: React.ReactNode[] = [];
+  if (row.CEO_CFO_buy_flag) chips.push(<AlternativeDataBadge key="ceo">CEO/CFO buy</AlternativeDataBadge>);
+  if (row.cluster_buying_flag) chips.push(<AlternativeDataBadge key="cluster">Cluster buying</AlternativeDataBadge>);
+  if (row.heavy_insider_selling_flag) chips.push(<Chip key="sell" tone="warn">Heavy insider selling</Chip>);
+  if (row.recent_politician_activity) chips.push(<AlternativeDataBadge key="politician">Politician activity</AlternativeDataBadge>);
+  if (row.alternative_data_confirmed_by_price_volume) chips.push(<Chip key="confirm" tone="good">Confirmed by price/volume</Chip>);
+  (row.alternative_data_warnings ?? row.warnings ?? []).slice(0, 2).forEach((warning) => chips.push(<Chip key={warning} tone="warn">{warning}</Chip>));
+  if (!chips.length) return <p className="muted">No verified alternative-data signals loaded.</p>;
+  return <div className="pill-row">{chips}</div>;
+}
+
+function AlternativeDataBadge({ children }: { children: React.ReactNode }) {
+  return <span className="alt-badge"><Sparkles size={13} /> {children}</span>;
+}
+
+function ProviderBadge({ children }: { children: React.ReactNode }) {
+  return <span className="provider-badge">{children}</span>;
+}
+
+function DataHealthCard({ ready, missing, requiredMissing }: { ready: number; missing: number; requiredMissing: number }) {
+  return (
+    <div className="health-card">
+      <Activity size={18} />
+      <div>
+        <strong>{ready} ready</strong>
+        <span>{missing} optional missing · {requiredMissing} required missing</span>
+      </div>
+    </div>
+  );
+}
+
+function WatchlistChangeCard({ label, value, note }: { label: string; value: string; note: string }) {
+  return (
+    <div className="watch-card">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <p>{note}</p>
+    </div>
+  );
+}
+
+function ValidationMetricCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="validation-card">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function InsiderActivityCard({ row }: { row?: ScannerRow }) {
+  return (
+    <div className="activity-card">
+      <h3>Insider Activity</h3>
+      <KeyValue payload={{ buys: row?.insider_buy_count ?? 0, sells: row?.insider_sell_count ?? 0, net_value: money(Number(row?.net_insider_value ?? 0)), CEO_CFO_buy: row?.CEO_CFO_buy_flag ? 'Yes' : 'No', quality: row?.alternative_data_quality ?? 'Unavailable' }} />
+    </div>
+  );
+}
+
+function PoliticianActivityCard({ row }: { row?: ScannerRow }) {
+  return (
+    <div className="activity-card">
+      <h3>Politician Activity</h3>
+      <KeyValue payload={{ buys: row?.politician_buy_count ?? 0, sells: row?.politician_sell_count ?? 0, net_value: money(Number(row?.net_politician_value ?? 0)), recent: row?.recent_politician_activity ? 'Yes' : 'No', disclosure_lag: row?.disclosure_lag_warning ?? 'No warning' }} />
+    </div>
+  );
+}
+
+function WorkflowReportView({ report }: { report: { available?: boolean; message?: string; summary?: Record<string, number>; checks?: { name?: string; status?: string; mode?: string; message?: string }[]; conclusion?: string } | null }) {
+  if (!report?.available) return <p className="muted">{report?.message ?? 'No report loaded yet.'}</p>;
+  return (
+    <div className="workflow-report">
+      <div className="pill-row">
+        {Object.entries(report.summary ?? {}).map(([key, value]) => <Chip key={key} tone={key === 'FAIL' && value ? 'bad' : key === 'WARN' && value ? 'warn' : 'neutral'}>{key}: {value}</Chip>)}
+      </div>
+      {report.conclusion && <p className="muted">{report.conclusion}</p>}
+      <DataTable rows={(report.checks ?? []).slice(0, 8) as Record<string, unknown>[]} columns={['status', 'name', 'mode', 'message']} />
+    </div>
+  );
+}
+
+function SkeletonGrid() {
+  return (
+    <div className="candidate-list">
+      {[0, 1, 2].map((item) => <div className="skeleton-card" key={item}><SkeletonLine /><SkeletonLine /><SkeletonLine /></div>)}
+    </div>
+  );
+}
+
+function SkeletonLine() {
+  return <div className="skeleton-line" />;
 }
 
 function KeyValue({ payload }: { payload: Record<string, unknown> }) {
@@ -694,9 +984,24 @@ function labelize(value: string) {
   return value.replaceAll('_', ' ').replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+function listText(value: unknown[] | string) {
+  if (Array.isArray(value)) return value.map((item) => String(item)).join(' | ');
+  return String(value);
+}
+
 function cell(value: unknown): string {
-  if (Array.isArray(value)) return value.map((item) => (typeof item === 'object' ? JSON.stringify(item) : String(item))).join(' | ');
-  if (typeof value === 'object' && value !== null) return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (typeof item === 'object' && item !== null) {
+          const record = item as Record<string, unknown>;
+          return String(record.label ?? record.ticker ?? record.name ?? record.summary ?? 'Structured item');
+        }
+        return String(item);
+      })
+      .join(' | ');
+  }
+  if (typeof value === 'object' && value !== null) return `${Object.keys(value as Record<string, unknown>).length} fields`;
   if (typeof value === 'number') return Number.isInteger(value) ? String(value) : value.toFixed(2);
   return String(value ?? '');
 }

@@ -13,6 +13,8 @@ The project is deliberately not an AI stock picker. AI is not making decisions h
 - Pass 4: historical review + strategy feedback + journal
 - Pass 5: daily scan automation, alerts, watchlist state, and daily summaries
 - Pass 6: personal portfolio-aware stock picker, analyst cockpit, AI committee, and validation lab
+- Pass 7: FastAPI backend, Vite/React primary UI, and safe local `.env` setup
+- Pass 8: premium cockpit polish, cheap/free-first data sources, insider/politician context, doctor/readiness checks, and signal quality audit
 
 Options/day-trading remains deferred. TradeBruv stays stock-first.
 
@@ -44,6 +46,14 @@ TradeBruv currently supports:
 - paper prediction tracking and forward validation metrics
 - famous outlier case-study mode for selected tickers
 - Data Sources / API Setup dashboard page with env-var readiness and degraded capability notes
+- premium dark-mode React cockpit with score cards, dense tables, risk panels, and workflow actions
+- cheap/free-first provider readiness for yfinance, SEC EDGAR, GDELT, FMP, Finnhub, Alpha Vantage, and NewsAPI
+- manual insider/politician/alternative-data CSV ingestion through [alternative_data_watchlist.csv](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/alternative_data_watchlist.csv)
+- SEC/GDELT/FMP provider adapters that degrade safely when missing config or live checks fail
+- doctor reports for imports, local directories, env status, yfinance, AI config, SEC/GDELT/FMP, backend, and frontend
+- readiness reports for scanner, Deep Research, AI Committee, portfolio analysis, validation dry-runs, alerts, and guardrails
+- Signal Quality Audit for saved reports, baseline comparison, random baseline comparison, and sample-size warnings
+- AI output guardrails for unsupported claims, invented URLs, order-placement language, and deterministic Avoid conflicts
 
 The scanner does **not** do:
 - broker integration
@@ -136,13 +146,15 @@ These files are inputs only. The scanner does not hardcode any universe inside t
 
 ## Quick Start
 
-## Pass 7 Primary UI and API
+## Pass 7/8 Primary UI and API
 
 TradeBruv now has two local interfaces:
 - Primary UI: Vite/React in [frontend/](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/frontend)
 - Fallback/dev UI: the existing Streamlit dashboard through `tradebruv-dashboard`
 
 The React UI is a cockpit for the existing Python logic. It calls the FastAPI backend and does not duplicate scanner, portfolio, research, AI committee, validation, alert, or journal scoring logic in TypeScript.
+
+Pass 8 makes the React UI the main daily cockpit: dark-mode first, left navigation, dense tables, compact score cards, risk warnings, “Why NOT to buy?” panels, insider/politician context, Data Sources doctor/readiness controls, and Signal Quality views. Raw JSON stays hidden unless a developer/debug panel is opened.
 
 ### Install Backend API Dependencies
 
@@ -211,7 +223,16 @@ Important rules:
 - Real keys should never be committed.
 - The backend never sends secret values to the frontend.
 - Data-source status only reports provider names, configured/missing status, missing env var names, capabilities, setup instructions, docs links, and last checked time.
-- Pass 7 does not live-test keys. The next pass will add doctor/readiness checks.
+- Doctor/readiness checks are explicit local actions. They never print full secret values.
+
+### Recommended Cheap/Free-First Setup
+
+Start here before considering paid feeds:
+1. No key: `yfinance` for OHLCV/metadata, GDELT for global news/narratives, and manual catalyst/alternative-data CSVs.
+2. Free config: `SEC_USER_AGENT` for SEC EDGAR company filings, facts, and Form 4 discovery.
+3. Free/cheap keys: `FINANCIAL_MODELING_PREP_API_KEY`, `FINNHUB_API_KEY`, `ALPHA_VANTAGE_API_KEY`, and `NEWSAPI_KEY`.
+4. AI keys: `OPENAI_API_KEY` and/or `GEMINI_API_KEY`.
+5. Skip paid feeds for now unless you really need them: `POLYGON_API_KEY`, `BENZINGA_API_KEY`, `QUIVER_API_KEY`, Reddit/X/StockTwits, Plaid, and SnapTrade.
 
 ### OpenAI
 
@@ -241,28 +262,37 @@ GEMINI_MODEL=gemini-1.5-flash
 Set only the providers you plan to use:
 
 ```bash
+SEC_USER_AGENT=TradeBruv local research your-email@example.com
+GDELT_ENABLED=true
+FINANCIAL_MODELING_PREP_API_KEY=
 POLYGON_API_KEY=
 FINNHUB_API_KEY=
 NEWSAPI_KEY=
 ALPHA_VANTAGE_API_KEY=
 TWELVE_DATA_API_KEY=
 BENZINGA_API_KEY=
+QUIVER_API_KEY=
+CAPITOL_TRADES_API_KEY=
 REDDIT_CLIENT_ID=
 REDDIT_CLIENT_SECRET=
 X_BEARER_TOKEN=
 STOCKTWITS_ACCESS_TOKEN=
 ```
 
+`SEC_USER_AGENT` should identify your local app/contact. SEC EDGAR is free, but responsible access still matters. GDELT does not require a key and is used as narrative context, not a standalone buy signal.
+
 ### Data Sources Page
 
 The React Data Sources page shows:
-- Market Data
-- News / Events
-- Social / Attention
-- AI Providers
-- Portfolio / Brokerage
+- No key / free
+- Free key
+- Paid / optional
+- AI
+- Future brokerage
 
 Each provider card shows configured/missing state, required env vars, missing env vars, capabilities unlocked, degraded behavior, setup instructions, docs link, and last checked time. It also has a “Create `.env` from template” action that copies `.env.example` to `.env` only if `.env` does not already exist.
+
+The page recommends first adding `OPENAI_API_KEY`, `GEMINI_API_KEY`, `FINANCIAL_MODELING_PREP_API_KEY`, `FINNHUB_API_KEY`, and `SEC_USER_AGENT`. It also shows what works with no keys, quota/limitation notes, Run Doctor, Run Live Doctor, and Run Readiness actions.
 
 ### Safe Local `.env` Editor
 
@@ -327,6 +357,37 @@ python3 -m tradebruv scan \
 ```
 
 The file may be `.csv` or `.json`. Missing files produce a warning and do not crash the scan. Bad rows are skipped with warnings. Duplicate source rows are deduplicated where possible.
+
+### Manual Insider / Politician / Alternative Data
+
+Pass 8 adds a verified manual alternative-data template:
+
+```text
+config/alternative_data_watchlist.csv
+```
+
+Fields include ticker, source type/name/url, timestamp, actor name/role/type, transaction type, shares, estimated value, price, filing date, transaction date, disclosure lag, confidence, and notes.
+
+Supported actor types include `CEO`, `CFO`, `Director`, `Officer`, `10% Owner`, `Senator`, `Representative`, `Politician`, `Institution`, and `Unknown`. Supported transaction types include `Buy`, `Sell`, `Option Exercise`, `Award`, `Gift`, `Disposal`, and `Unknown`.
+
+Interpretation rules:
+- CEO/CFO/director open-market buys are stronger than awards or option exercises.
+- Cluster insider buying is stronger than one small buy.
+- Heavy insider selling is risk/context, not an automatic sell.
+- Politician buying is attention/context, not an automatic buy.
+- Politician trades can be delayed; TradeBruv shows disclosure-lag warnings.
+- Alternative data can support catalyst/attention context only when price/volume confirms.
+- Alternative data alone never overrides a hard deterministic `Avoid`.
+
+Run a scan with an explicit alternative-data file:
+
+```bash
+python3 -m tradebruv scan \
+  --universe config/sample_universe.txt \
+  --provider sample \
+  --mode outliers \
+  --alternative-data-file config/alternative_data_watchlist.csv
+```
 
 ### Real Scan
 
@@ -460,6 +521,77 @@ Recommended actions are limited to:
 - `No Action`
 
 Use `daily_summary.md` as the quick daily brief. It is designed to be copied into notes, Slack, Discord, or email manually without adding credentials or paid notification dependencies.
+
+## Doctor, Readiness, and Signal Quality
+
+Doctor checks local health and optional live provider reachability. Without `--live`, it stays config-only where possible:
+
+```bash
+python3 -m tradebruv doctor
+python3 -m tradebruv doctor --live
+python3 -m tradebruv doctor --ai openai
+python3 -m tradebruv doctor --ai gemini
+python3 -m tradebruv doctor --ticker NVDA
+```
+
+Outputs:
+- `outputs/doctor_report.json`
+- `outputs/doctor_report.md`
+
+Readiness checks whether the system is operational as a stock picker/analyzer workflow. It runs scanner, outlier scan, Deep Research, mock AI Committee, optional configured AI, sample portfolio analysis, validation dry-run, alternative-data ingestion, alert dry-run, report completeness, and guardrail checks:
+
+```bash
+python3 -m tradebruv readiness \
+  --universe config/outlier_watchlist.txt \
+  --provider real \
+  --tickers NVDA,PLTR,MU,RDDT,GME,CAR
+```
+
+Optional AI modes:
+
+```bash
+python3 -m tradebruv readiness --provider real --ai openai
+python3 -m tradebruv readiness --provider real --ai gemini
+```
+
+Outputs:
+- `outputs/readiness_report.json`
+- `outputs/readiness_report.md`
+
+The readiness report explicitly distinguishes mock vs live checks and always marks TradeBruv as not ready for real-money reliance. It can be ready for manual research or paper tracking, but that is not the same as proof of profitability.
+
+Signal Quality Audit asks whether saved signals look useful or indistinguishable from baseline/random noise:
+
+```bash
+python3 -m tradebruv signal-audit \
+  --reports-dir reports/scans \
+  --baseline SPY,QQQ \
+  --random-baseline
+```
+
+Outputs:
+- `outputs/signal_quality_report.json`
+- `outputs/signal_quality_report.md`
+
+Case-study workflow:
+
+```bash
+python3 -m tradebruv case-study \
+  --ticker NVDA \
+  --signal-date 2024-01-15 \
+  --horizons 5,10,20,60,120
+```
+
+Signal audit reports average/median forward returns, win rate, rough confidence interval when possible, baseline excess return, random baseline comparison, drawdown-like adverse return, sample size, and warnings. It is evidence gathering, not proof. Small samples should be treated as “not enough evidence yet.”
+
+Recommended workflow:
+1. Add keys in `.env`.
+2. Run doctor.
+3. Run readiness.
+4. Run the real stock picker.
+5. Save predictions.
+6. Run signal audit weekly.
+7. Use TradeBruv only as research support until enough validation exists.
 
 ## Historical Review / Backtest Mode
 
@@ -643,6 +775,8 @@ Committee roles:
 - Final Decision Analyst
 
 AI output includes bull case, bear case, risk manager view, catalyst view, debate summary, final recommendation label, confidence, evidence used, missing data, events to watch, what would change the view, portfolio-specific action, and recommended next step.
+
+Pass 8 adds an AI output validator. It flags guaranteed/profit-certainty language, invented URLs, unsupported exact price claims, order-placement language, missing risk notes, missing invalidation notes, missing-data omissions, and AI recommendations that conflict with deterministic `Avoid`. The UI shows `ai_guardrail_warnings`, `ai_output_quality_score`, `evidence_grounding_score`, and `unsupported_claims_detected` beside the committee output.
 
 Guardrails:
 - AI must use only supplied scanner, portfolio, catalyst, and source fields
@@ -1087,6 +1221,7 @@ Each row includes:
 - source / provider notes
 - data availability notes
 - catalyst items, catalyst score, catalyst quality, catalyst type, source URLs/timestamps, social/news attention fields, hype/pump flags
+- insider/politician/alternative-data counts, net values, disclosure lag warnings, quality labels, and source counts
 - optional AI explanation payload and availability/provider fields
 
 ## Tests
@@ -1128,6 +1263,13 @@ Current test coverage includes:
 - AI committee mock debate and missing-key handling
 - data-source/API-key status detection and secret-leak guard
 - prediction record creation, forward outcome updates, validation metrics, and famous outlier case-study mode
+- cheap/free-first env vars and provider grouping
+- SEC/GDELT/FMP missing/configured behavior
+- doctor and readiness report creation without key leakage
+- alternative-data CSV parsing, CEO/CFO buys, cluster buying, heavy insider selling, stale politician disclosures, and Avoid override guardrails
+- signal audit/random baseline comparison
+- AI guardrail validator for bad/good outputs
+- frontend Data Sources doctor/readiness rendering and production build/lint
 
 ## Known Limitations
 
@@ -1149,4 +1291,5 @@ Current test coverage includes:
 - broker API integrations are not active; portfolio work is local CSV/manual entry only
 - no broker credential scraping, trade execution, order placement, social scraping, crypto scanning, or options/day-trading module is active
 - AI committee Claude/Gemini adapters are readiness stubs in this MVP; use mock or OpenAI-compatible mode for active output
+- Signal Quality Audit is measurement, not proof. It should say “not enough evidence yet” whenever sample size or data quality is weak.
 - Validation Lab results are paper validation and can suffer from small samples, provider gaps, survivorship bias, and non-point-in-time fundamentals/news

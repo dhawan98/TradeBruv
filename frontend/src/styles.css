@@ -1,7 +1,7 @@
 :root {
   color-scheme: dark;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #081019;
+  background: #070b11;
   color: #e7edf5;
 }
 
@@ -25,12 +25,14 @@ select {
   display: grid;
   grid-template-columns: 260px 1fr;
   min-height: 100vh;
-  background: #081019;
+  background:
+    radial-gradient(circle at top left, rgba(50, 91, 112, 0.18), transparent 30%),
+    linear-gradient(135deg, #070b11 0%, #0a111a 48%, #070b11 100%);
 }
 
 .sidebar {
   border-right: 1px solid #1b2a3a;
-  background: #0c1520;
+  background: rgba(9, 16, 25, 0.94);
   padding: 18px 14px;
 }
 
@@ -105,7 +107,8 @@ select {
   gap: 12px;
   overflow-x: auto;
   border-bottom: 1px solid #1b2a3a;
-  background: rgba(8, 16, 25, 0.94);
+  background: rgba(7, 11, 17, 0.92);
+  backdrop-filter: blur(14px);
   padding: 10px 24px;
 }
 
@@ -140,7 +143,8 @@ select {
 }
 
 .workspace {
-  padding: 28px;
+  padding: 24px;
+  max-width: 1540px;
 }
 
 .page-head {
@@ -189,10 +193,17 @@ h2 {
 .candidate-card,
 .provider-card,
 .empty-state,
-.notice {
+.notice,
+.decision-card,
+.health-card,
+.watch-card,
+.validation-card,
+.activity-card,
+.skeleton-card {
   border: 1px solid #213247;
   border-radius: 8px;
-  background: #0d1825;
+  background: linear-gradient(180deg, rgba(17, 29, 43, 0.96), rgba(10, 18, 28, 0.96));
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.18);
 }
 
 .panel {
@@ -265,7 +276,7 @@ h2 {
 .candidate-list,
 .provider-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(285px, 1fr));
   gap: 12px;
 }
 
@@ -280,6 +291,8 @@ h2 {
 
 .score-stack,
 .provider-title,
+.pill-row,
+.action-strip,
 .actions {
   display: flex;
   align-items: center;
@@ -288,7 +301,9 @@ h2 {
 }
 
 .score-stack,
-.actions {
+.actions,
+.pill-row,
+.action-strip {
   justify-content: flex-start;
   flex-wrap: wrap;
   margin-top: 10px;
@@ -329,6 +344,155 @@ h2 {
 .chip.neutral {
   background: #172537;
   color: #b8c8da;
+}
+
+.alt-badge,
+.provider-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  border: 1px solid #38546c;
+  border-radius: 999px;
+  background: #102033;
+  color: #a8d9ff;
+  padding: 3px 9px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.alt-badge {
+  border-color: #4a6b50;
+  background: #132a24;
+  color: #9ce0bd;
+}
+
+.decision-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 16px;
+}
+
+.decision-card h3 {
+  margin-bottom: 6px;
+  font-size: 26px;
+}
+
+.decision-card .notice {
+  grid-column: 1 / -1;
+  margin-bottom: 0;
+}
+
+.score-ring {
+  display: grid;
+  width: 106px;
+  height: 106px;
+  place-items: center;
+  border-radius: 50%;
+}
+
+.score-ring > div {
+  display: grid;
+  width: 76px;
+  height: 76px;
+  place-items: center;
+  border-radius: 50%;
+  background: #0b1420;
+  text-align: center;
+}
+
+.score-ring strong {
+  font-size: 24px;
+}
+
+.score-ring span {
+  color: #8fa4b8;
+  font-size: 11px;
+}
+
+.score-bar {
+  display: grid;
+  grid-template-columns: auto 76px auto;
+  gap: 8px;
+  align-items: center;
+  color: #93a7bc;
+  font-size: 12px;
+}
+
+.score-bar div {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #1e3043;
+}
+
+.score-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #73d6c5;
+}
+
+.health-card,
+.watch-card,
+.validation-card,
+.activity-card {
+  padding: 14px;
+}
+
+.health-card {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.health-card strong,
+.watch-card strong,
+.validation-card strong {
+  display: block;
+  font-size: 22px;
+}
+
+.health-card span,
+.watch-card span,
+.validation-card span {
+  color: #93a7bc;
+  font-size: 12px;
+}
+
+.setup-grid,
+.alt-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.6fr) 1fr;
+  gap: 14px;
+}
+
+.workflow-report {
+  display: grid;
+  gap: 12px;
+}
+
+.skeleton-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.skeleton-line {
+  width: 100%;
+  height: 14px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #142235, #23374c, #142235);
+  background-size: 220% 100%;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0% { background-position: 0% 50%; }
+  100% { background-position: -220% 50%; }
 }
 
 .notice {
@@ -475,7 +639,10 @@ code {
 
   .grid.two,
   .metric-grid,
-  .toolbar {
+  .toolbar,
+  .setup-grid,
+  .alt-grid,
+  .decision-card {
     grid-template-columns: 1fr;
   }
 }

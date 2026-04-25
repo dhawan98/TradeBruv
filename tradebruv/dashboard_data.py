@@ -11,6 +11,7 @@ from typing import Any, Iterable
 from .ai_explanations import apply_ai_explanations, build_explanation_provider
 from .ai_committee import combine_recommendations, run_ai_committee
 from .analysis import analyze_portfolio, build_portfolio_recommendation, deep_research
+from .alternative_data import DEFAULT_ALTERNATIVE_DATA_PATH, AlternativeDataOverlayProvider, load_alternative_data_repository
 from .automation import filter_alerts, summarize_watchlist_changes
 from .catalysts import CatalystOverlayProvider, load_catalyst_repository
 from .cli import build_provider, load_universe
@@ -77,6 +78,7 @@ def run_dashboard_scan(
     data_dir: Path | None = None,
     history_period: str = "3y",
     catalyst_file: Path | None = None,
+    alternative_data_file: Path | None = DEFAULT_ALTERNATIVE_DATA_PATH,
     ai_explanations: bool = False,
     mock_ai_explanations: bool = False,
 ) -> DashboardReport:
@@ -90,6 +92,9 @@ def run_dashboard_scan(
     catalyst_repository = load_catalyst_repository(catalyst_file)
     if catalyst_repository.items_by_ticker:
         provider = CatalystOverlayProvider(provider, catalyst_repository)
+    alternative_repository = load_alternative_data_repository(alternative_data_file)
+    if alternative_repository.items_by_ticker:
+        provider = AlternativeDataOverlayProvider(provider, alternative_repository)
     scanner = DeterministicScanner(provider=provider, analysis_date=as_of)
     results = scanner.scan(load_universe(universe_path), mode=mode)
     if ai_explanations:

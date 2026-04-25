@@ -150,9 +150,25 @@ def create_app() -> "FastAPI":
     def doctor_latest() -> dict[str, Any]:
         return services.doctor_latest()
 
+    @app.post("/api/doctor/run")
+    def doctor_run(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return services.doctor_run(payload or {})
+
     @app.get("/api/readiness/latest")
     def readiness_latest() -> dict[str, Any]:
         return services.readiness_latest()
+
+    @app.post("/api/readiness/run")
+    def readiness_run(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return services.readiness_run(payload or {})
+
+    @app.get("/api/signal-audit/latest")
+    def signal_audit_latest() -> dict[str, Any]:
+        return services.signal_audit_latest()
+
+    @app.post("/api/signal-audit/run")
+    def signal_audit_run(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return services.signal_audit_run(payload or {})
 
     return app
 
