@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .ai_guardrails import validate_ai_output
+from .data_sources import redact_secrets
 
 
 AI_MODES = (
@@ -34,14 +35,14 @@ class MockCommitteeProvider:
     def generate(self, prompt_payload: dict[str, Any]) -> dict[str, Any]:
         scanner = prompt_payload.get("scanner_row", {})
         portfolio = prompt_payload.get("portfolio_context") or {}
-        warnings = scanner.get("warnings", [])[:4]
-        passed = scanner.get("why_it_passed", [])[:4]
+        warnings = (scanner.get("warnings") or [])[:4]
+        passed = (scanner.get("why_it_passed") or [])[:4]
         label = _mock_ai_label(scanner, portfolio)
         return {
             "available": True,
             "provider": self.name,
             "bull_case": passed or ["No clear bull case was available in the deterministic payload."],
-            "bear_case": scanner.get("why_it_could_fail", [])[:4] or warnings or ["No clear bear case was available."],
+            "bear_case": (scanner.get("why_it_could_fail") or [])[:4] or warnings or ["No clear bear case was available."],
             "risk_manager_view": _risk_view(scanner, portfolio),
             "catalyst_view": _catalyst_view(scanner),
             "debate_summary": _debate_summary(scanner, label),
@@ -136,7 +137,77 @@ class OpenAICompatibleCommitteeProvider:
             content = payload.get("choices", [{}])[0].get("message", {}).get("content", "{}")
             generated = json.loads(content)
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError) as exc:
-            return unavailable_committee_payload(f"AI committee unavailable: {exc}", provider=self.name)
+            return unavailable_committee_payload(f"AI committee unavailable: {redact_secrets(exc)}", provider=self.name)
+        return sanitize_committee_output(generated, prompt_payload, provider=self.name)
+
+
+@dataclass
+class GeminiCommitteeProvider:
+    api_key: str
+    model: str
+    name: str = "gemini"
+    timeout_seconds: int = 30
+
+    def generate(self, prompt_payload: dict[str, Any]) -> dict[str, Any]:
+        prompt = {
+            "required_keys": [
+                "bull_case",
+                "bear_case",
+                "risk_manager_view",
+                "catalyst_view",
+                "debate_summary",
+                "final_recommendation_label",
+                "confidence_label",
+                "evidence_used",
+                "missing_data",
+                "events_to_watch",
+                "what_would_change_my_mind",
+                "portfolio_specific_action",
+                "recommended_next_step",
+            ],
+            "allowed_recommendations": [
+                "Strong Buy Candidate",
+                "Buy Candidate",
+                "Hold / Watch",
+                "Wait for Better Entry",
+                "Avoid",
+                "Sell / Exit Candidate",
+                "Data Insufficient",
+            ],
+            "rules": [
+                "Use only scanner_row and portfolio_context.",
+                "Do not invent prices, news, sources, filings, or portfolio positions.",
+                "Do not place trades or promise profit.",
+                "Return JSON only.",
+            ],
+            "payload": prompt_payload,
+        }
+        request_payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": json.dumps(prompt, indent=2)}],
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.1,
+                "responseMimeType": "application/json",
+            },
+        }
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(request_payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            text = payload.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "{}")
+            generated = json.loads(_strip_json_fences(text))
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError) as exc:
+            return unavailable_committee_payload(f"Gemini committee unavailable: {redact_secrets(exc)}", provider=self.name)
         return sanitize_committee_output(generated, prompt_payload, provider=self.name)
 
 
@@ -159,9 +230,10 @@ def build_committee_provider(mode: str, *, mock: bool = False) -> CommitteeProvi
             return UnavailableCommitteeProvider("anthropic", "ANTHROPIC_API_KEY is not configured.")
         return UnavailableCommitteeProvider("anthropic", "Claude adapter is detected but not enabled in this MVP; use OpenAI-compatible or mock mode.")
     if mode == "Gemini only":
-        if not os.getenv("GEMINI_API_KEY"):
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
             return UnavailableCommitteeProvider("gemini", "GEMINI_API_KEY is not configured.")
-        return UnavailableCommitteeProvider("gemini", "Gemini adapter is detected but not enabled in this MVP; use OpenAI-compatible or mock mode.")
+        return GeminiCommitteeProvider(api_key=api_key, model=os.getenv("GEMINI_MODEL") or "gemini-1.5-flash")
     return UnavailableCommitteeProvider("unknown", f"Unknown AI mode: {mode}")
 
 
@@ -234,6 +306,15 @@ def sanitize_committee_output(generated: dict[str, Any], prompt_payload: dict[st
         "safety_notes": _safety_notes(),
     }
     return output
+
+
+def _strip_json_fences(text: str) -> str:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`").strip()
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:].strip()
+    return cleaned
 
 
 def unavailable_committee_payload(reason: str, *, provider: str = "unavailable") -> dict[str, Any]:
@@ -328,7 +409,7 @@ def _risk_view(scanner: dict[str, Any], portfolio: dict[str, Any]) -> str:
         points.append(f"Invalidation is {scanner.get('invalidation_level')}.")
     if portfolio.get("position_weight_pct", 0):
         points.append(f"Portfolio weight is {portfolio.get('position_weight_pct')}%.")
-    points.extend(scanner.get("warnings", [])[:2])
+    points.extend((scanner.get("warnings") or [])[:2])
     return " ".join(str(point) for point in points)
 
 
@@ -368,7 +449,7 @@ def _missing_data(scanner: dict[str, Any]) -> list[str]:
     for key in ("current_price", "winner_score", "risk_score", "setup_quality_score"):
         if scanner.get(key) in (None, "", "unavailable"):
             missing.append(key)
-    missing.extend(str(note) for note in scanner.get("data_availability_notes", []) if "unavailable" in str(note).lower())
+    missing.extend(str(note) for note in (scanner.get("data_availability_notes") or []) if "unavailable" in str(note).lower())
     return missing
 
 
@@ -378,7 +459,7 @@ def _events_to_watch(scanner: dict[str, Any]) -> list[str]:
         events.append(f"Invalidation: {scanner.get('invalidation_level')}")
     if scanner.get("tp1") not in (None, "", "unavailable"):
         events.append(f"TP1: {scanner.get('tp1')}")
-    events.extend(scanner.get("warnings", [])[:3])
+    events.extend((scanner.get("warnings") or [])[:3])
     return events or ["Refresh source data and watch for verified catalyst changes."]
 
 

@@ -6,10 +6,13 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import gzip
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from .data_sources import redact_secrets
 
 
 DEFAULT_CACHE_DIR = Path(os.getenv("TRADEBRUV_DATA_DIR", "data")) / "provider_cache"
@@ -64,8 +67,8 @@ def sec_edgar_status(*, live: bool = False, ticker: str = "NVDA", cache_dir: Pat
         status = "PASS" if matches else "WARN"
         message = "SEC company ticker lookup reached successfully." if matches else "SEC reachable, but ticker was not found in company_tickers.json."
         return _check("SEC EDGAR", status, "live", True, message, ("filings", "company facts", "Form 4 discovery"), details)
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-        return _check("SEC EDGAR", "FAIL", "live", True, f"SEC EDGAR check failed: {exc}", ("filings", "company facts", "Form 4 discovery"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+        return _check("SEC EDGAR", "FAIL", "live", True, f"SEC EDGAR check failed: {redact_secrets(exc)}", ("filings", "company facts", "Form 4 discovery"))
 
 
 def gdelt_status(*, live: bool = False, ticker: str = "NVDA", cache_dir: Path = DEFAULT_CACHE_DIR) -> ProviderCheck:
@@ -96,8 +99,8 @@ def gdelt_status(*, live: bool = False, ticker: str = "NVDA", cache_dir: Path = 
             ("news/event search", "narrative monitoring"),
             {"article_count": len(articles), "sample_urls": [article.get("url") for article in articles[:3] if article.get("url")]},
         )
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-        return _check("GDELT", "WARN", "live", True, f"GDELT check failed gracefully: {exc}", ("news/event search", "narrative monitoring"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+        return _check("GDELT", "WARN", "live", True, f"GDELT check failed gracefully: {redact_secrets(exc)}", ("news/event search", "narrative monitoring"))
 
 
 def fmp_status(*, live: bool = False, ticker: str = "NVDA", cache_dir: Path = DEFAULT_CACHE_DIR) -> ProviderCheck:
@@ -120,8 +123,32 @@ def fmp_status(*, live: bool = False, ticker: str = "NVDA", cache_dir: Path = DE
             ("fundamentals", "ratios", "statements"),
             {"ticker": ticker.upper(), "rows": count},
         )
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-        return _check("Financial Modeling Prep", "FAIL", "live", True, f"FMP check failed: {exc}", ("fundamentals", "ratios", "statements"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+        return _check("Financial Modeling Prep", "FAIL", "live", True, f"FMP check failed: {redact_secrets(exc)}", ("fundamentals", "ratios", "statements"))
+
+
+def finnhub_status(*, live: bool = False, ticker: str = "NVDA", cache_dir: Path = DEFAULT_CACHE_DIR) -> ProviderCheck:
+    api_key = os.getenv("FINNHUB_API_KEY", "").strip()
+    if not api_key:
+        return _check("Finnhub", "WARN", "config-only", False, "FINNHUB_API_KEY is missing.", ("company profile", "company news"))
+    if not live:
+        return _check("Finnhub", "PASS", "config-only", True, "FINNHUB_API_KEY configured; live quota test skipped.", ("company profile", "company news"))
+    query = urllib.parse.urlencode({"symbol": ticker.upper(), "token": api_key})
+    url = f"https://finnhub.io/api/v1/stock/profile2?{query}"
+    try:
+        payload = _cached_get_json(f"finnhub_profile_{ticker.upper()}", url, headers={"User-Agent": "TradeBruv local research"}, cache_dir=cache_dir)
+        has_profile = isinstance(payload, dict) and bool(payload.get("ticker") or payload.get("name"))
+        return _check(
+            "Finnhub",
+            "PASS" if has_profile else "WARN",
+            "live",
+            True,
+            "Finnhub profile endpoint returned company data." if has_profile else "Finnhub was reachable, but no company profile row was returned.",
+            ("company profile", "company news"),
+            {"ticker": ticker.upper(), "profile_available": has_profile},
+        )
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+        return _check("Finnhub", "FAIL", "live", True, f"Finnhub check failed: {redact_secrets(exc)}", ("company profile", "company news"))
 
 
 def quiver_status() -> ProviderCheck:
@@ -141,6 +168,7 @@ def cheap_provider_statuses(*, live: bool = False, ticker: str = "NVDA") -> list
         sec_edgar_status(live=live, ticker=ticker).to_dict(),
         gdelt_status(live=live, ticker=ticker).to_dict(),
         fmp_status(live=live, ticker=ticker).to_dict(),
+        finnhub_status(live=live, ticker=ticker).to_dict(),
         quiver_status().to_dict(),
     ]
 
@@ -173,7 +201,10 @@ def _cached_get_json(cache_key: str, url: str, *, headers: dict[str, str], cache
         return json.loads(cache_file.read_text(encoding="utf-8"))
     request = urllib.request.Request(url, headers=headers, method="GET")
     with urllib.request.urlopen(request, timeout=15) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+        raw = response.read()
+        if response.headers.get("Content-Encoding", "").lower() == "gzip" or raw.startswith(b"\x1f\x8b"):
+            raw = gzip.decompress(raw)
+        payload = json.loads(raw.decode("utf-8"))
     cache_file.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return payload
 

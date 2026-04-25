@@ -59,6 +59,8 @@ export const api = {
   readinessLatest: () => request<WorkflowReport>('/api/readiness/latest'),
   runReadiness: (payload: Record<string, unknown>) =>
     request<WorkflowReport>('/api/readiness/run', { method: 'POST', body: JSON.stringify(payload) }),
+  appStatusLatest: () => request<AppStatusReport>('/api/app-status/latest'),
+  runAppStatus: () => request<AppStatusReport>('/api/app-status/run', { method: 'POST', body: '{}' }),
   signalAuditLatest: () => request<WorkflowReport>('/api/signal-audit/latest'),
   runSignalAudit: (payload: Record<string, unknown>) =>
     request<WorkflowReport>('/api/signal-audit/run', { method: 'POST', body: JSON.stringify(payload) }),
@@ -160,7 +162,17 @@ export type ResearchPayload = Record<string, unknown> & { scanner_row?: ScannerR
 export type AlertRow = { ticker?: string; severity?: string; alert_type?: string; explanation?: string; recommended_action_label?: string };
 export type PositionRow = { ticker: string; company_name?: string; market_value?: number; position_weight_pct?: number; unrealized_gain_loss_pct?: number; decision_status?: string };
 export type PortfolioPayload = { positions: PositionRow[]; summary: Record<string, number | string | unknown[]> };
-export type PredictionRow = { prediction_id?: string; ticker?: string; outcome_label?: string; final_combined_recommendation?: string; return_20d?: string };
+export type PredictionRow = {
+  prediction_id?: string;
+  ticker?: string;
+  outcome_label?: string;
+  final_combined_recommendation?: string;
+  return_20d?: string;
+  next_review_date?: string;
+  hit_TP1?: string;
+  hit_TP2?: string;
+  hit_invalidation?: string;
+};
 export type JournalPayload = { entries: Record<string, string>[]; stats: Record<string, unknown> };
 export type ArchiveReport = { path: string; name: string; modified_at: string };
 export type WorkflowCheck = { name?: string; status?: string; mode?: string; message?: string };
@@ -176,4 +188,15 @@ export type WorkflowReport = {
   ready_for_paper_tracking?: boolean;
   ready_for_manual_research_use?: boolean;
   ready_for_real_money_reliance?: boolean;
+};
+export type AppStatusReport = {
+  available?: boolean;
+  markdown?: string;
+  working_features?: string[];
+  degraded_or_missing_features?: string[];
+  live_tested_providers?: string[];
+  mock_only_providers?: string[];
+  openai_works?: boolean;
+  gemini_works?: boolean;
+  validation_sample_enough?: boolean;
 };

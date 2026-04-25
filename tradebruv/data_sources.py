@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -450,6 +451,20 @@ def secret_values_present_in_text(text: str, env: dict[str, str] | None = None) 
             if value and len(value) >= 8 and value in text:
                 leaked.append(name)
     return sorted(dict.fromkeys(leaked))
+
+
+def redact_secrets(text: Any, env: dict[str, str] | None = None) -> str:
+    """Return text with configured secret values and common key query params redacted."""
+    env_map = os.environ if env is None else env
+    safe = str(text)
+    for spec in DATA_SOURCE_SPECS:
+        for name in spec.env_vars:
+            value = env_map.get(name)
+            if value and len(value) >= 8:
+                safe = safe.replace(value, "[REDACTED]")
+    safe = re.sub(r"([?&](?:apikey|api_key|key|token)=)[^&\s)]+", r"\1[REDACTED]", safe, flags=re.IGNORECASE)
+    safe = re.sub(r"(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}", r"\1[REDACTED]", safe, flags=re.IGNORECASE)
+    return safe
 
 
 def _degraded_message(spec: DataSourceSpec, configured: bool) -> str:

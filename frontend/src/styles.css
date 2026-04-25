@@ -232,7 +232,9 @@ h2 {
 
 .field input,
 .field select,
-.env-form input {
+.env-form input,
+.paper-form input,
+.paper-form select {
   width: 100%;
   min-height: 38px;
   border: 1px solid #2b4057;
@@ -618,6 +620,61 @@ th {
   padding: 14px;
 }
 
+.paper-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 10px;
+  align-items: end;
+  margin-top: 12px;
+  border-top: 1px solid #213247;
+  padding-top: 12px;
+}
+
+.paper-form > strong,
+.paper-form .notice {
+  grid-column: 1 / -1;
+}
+
+.paper-form.compact {
+  grid-template-columns: 1fr;
+}
+
+.command-snippet {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 10px 0;
+  border: 1px solid #24364a;
+  border-radius: 8px;
+  background: #07111c;
+  padding: 8px;
+}
+
+.command-snippet code {
+  overflow: auto;
+  white-space: nowrap;
+}
+
+.markdown-report {
+  display: grid;
+  gap: 6px;
+  max-height: 520px;
+  overflow: auto;
+}
+
+.markdown-report h3,
+.markdown-report h4,
+.markdown-report p {
+  margin-bottom: 2px;
+}
+
+.report-bullet {
+  border-left: 2px solid #294963;
+  padding-left: 10px;
+  color: #c5d3e3;
+}
+
 code {
   color: #8adccb;
 }
@@ -642,7 +699,8 @@ code {
   .toolbar,
   .setup-grid,
   .alt-grid,
-  .decision-card {
+  .decision-card,
+  .paper-form {
     grid-template-columns: 1fr;
   }
 }

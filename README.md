@@ -15,6 +15,7 @@ The project is deliberately not an AI stock picker. AI is not making decisions h
 - Pass 6: personal portfolio-aware stock picker, analyst cockpit, AI committee, and validation lab
 - Pass 7: FastAPI backend, Vite/React primary UI, and safe local `.env` setup
 - Pass 8: premium cockpit polish, cheap/free-first data sources, insider/politician context, doctor/readiness checks, and signal quality audit
+- Pass 9: live-key smoke hardening, real provider degradation, Gemini adapter, app status reporting, and paper-tracking workflow
 
 Options/day-trading remains deferred. TradeBruv stays stock-first.
 
@@ -50,10 +51,14 @@ TradeBruv currently supports:
 - cheap/free-first provider readiness for yfinance, SEC EDGAR, GDELT, FMP, Finnhub, Alpha Vantage, and NewsAPI
 - manual insider/politician/alternative-data CSV ingestion through [alternative_data_watchlist.csv](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/alternative_data_watchlist.csv)
 - SEC/GDELT/FMP provider adapters that degrade safely when missing config or live checks fail
-- doctor reports for imports, local directories, env status, yfinance, AI config, SEC/GDELT/FMP, backend, and frontend
-- readiness reports for scanner, Deep Research, AI Committee, portfolio analysis, validation dry-runs, alerts, and guardrails
+- SEC/GDELT/FMP/Finnhub provider checks that degrade safely when missing config or live checks fail
+- doctor reports for imports, local directories, env status, yfinance, AI config, SEC/GDELT/FMP/Finnhub, backend, and frontend
+- readiness reports for scanner, Deep Research, AI Committee, provider live/mock state, portfolio analysis, validation dry-runs, alerts, missing data, and guardrails
 - Signal Quality Audit for saved reports, baseline comparison, random baseline comparison, and sample-size warnings
 - AI output guardrails for unsupported claims, invented URLs, order-placement language, and deterministic Avoid conflicts
+- real Gemini and OpenAI-compatible AI committee adapters when keys are configured
+- app status report at `outputs/app_status_report.md`
+- Start Paper Tracking forms from Stock Picker and Deep Research, with thesis, invalidation, TP1/TP2, horizon, snapshot, and next review date
 
 The scanner does **not** do:
 - broker integration
@@ -256,6 +261,8 @@ TRADEBRUV_LLM_BASE_URL=https://openrouter.ai/api/v1
 GEMINI_API_KEY=your_key_here
 GEMINI_MODEL=gemini-1.5-flash
 ```
+
+Gemini is a real live adapter when `GEMINI_API_KEY` is present. If the key, model, quota, or network is unavailable, TradeBruv marks the committee unavailable/degraded and keeps deterministic rules plus mock AI available. Gemini output still runs through the same guardrail validator.
 
 ### Market, News, and Social Keys
 
@@ -534,9 +541,24 @@ python3 -m tradebruv doctor --ai gemini
 python3 -m tradebruv doctor --ticker NVDA
 ```
 
+Live AI checks:
+
+```bash
+python3 -m tradebruv doctor --live --ai openai --ticker NVDA
+python3 -m tradebruv doctor --live --ai gemini --ticker NVDA
+```
+
 Outputs:
 - `outputs/doctor_report.json`
 - `outputs/doctor_report.md`
+
+Interpretation:
+- `PASS`: the local/config/live check completed.
+- `WARN`: optional provider missing, degraded, rate-limited, unreachable, or skipped without blocking the app.
+- `FAIL`: a requested check failed; the report should continue so other providers can still be inspected.
+- `SKIPPED`: a live/API path was not requested or not configured.
+
+Doctor should never print full API keys. If a provider error includes a URL or token-like value, TradeBruv redacts configured secrets before writing reports.
 
 Readiness checks whether the system is operational as a stock picker/analyzer workflow. It runs scanner, outlier scan, Deep Research, mock AI Committee, optional configured AI, sample portfolio analysis, validation dry-run, alternative-data ingestion, alert dry-run, report completeness, and guardrail checks:
 
@@ -544,7 +566,7 @@ Readiness checks whether the system is operational as a stock picker/analyzer wo
 python3 -m tradebruv readiness \
   --universe config/outlier_watchlist.txt \
   --provider real \
-  --tickers NVDA,PLTR,MU,RDDT,GME,CAR
+  --tickers NVDA,PLTR,MU,RDDT,GME,CAR,SMCI,COIN,HOOD,ARM,CAVA,AAPL,MSFT,LLY,TSLA
 ```
 
 Optional AI modes:
@@ -558,7 +580,28 @@ Outputs:
 - `outputs/readiness_report.json`
 - `outputs/readiness_report.md`
 
-The readiness report explicitly distinguishes mock vs live checks and always marks TradeBruv as not ready for real-money reliance. It can be ready for manual research or paper tracking, but that is not the same as proof of profitability.
+The readiness report explicitly says:
+- ready for manual research: yes/no
+- ready for paper tracking: yes/no
+- ready for real-money reliance: always no until future validation proves otherwise
+- what data is missing
+- which providers were live vs mock/config-only
+- whether AI outputs passed guardrails
+- whether Deep Research and portfolio-aware analysis worked
+- whether the signal audit has enough samples
+
+Readiness warnings are not automatically blockers. Missing optional providers should be fixed only if you need the capability they unlock.
+
+Write the app status report:
+
+```bash
+python3 -m tradebruv app-status
+```
+
+Output:
+- `outputs/app_status_report.md`
+
+The Reports page shows this report. It summarizes working features, degraded/missing features, live-tested providers, mock-only providers, OpenAI/Gemini status, frontend/API status, validation sample sufficiency, and recommended next actions.
 
 Signal Quality Audit asks whether saved signals look useful or indistinguishable from baseline/random noise:
 
@@ -586,12 +629,45 @@ Signal audit reports average/median forward returns, win rate, rough confidence 
 
 Recommended workflow:
 1. Add keys in `.env`.
-2. Run doctor.
-3. Run readiness.
+2. Run live doctor.
+3. Run readiness with the real provider and mock/OpenAI/Gemini as needed.
 4. Run the real stock picker.
-5. Save predictions.
-6. Run signal audit weekly.
-7. Use TradeBruv only as research support until enough validation exists.
+5. Use Start Paper Tracking to save the ticker, thesis, invalidation, TP1/TP2, expected horizon, and recommendation snapshot.
+6. Update outcomes at 1D/5D/10D/20D checkpoints from Validation Lab.
+7. Run signal audit weekly.
+8. Use TradeBruv only as research support until enough validation exists.
+
+## Paper Tracking Workflow
+
+Paper tracking is the default evidence loop. It does not place orders.
+
+From Stock Picker or Deep Research:
+- select the ticker/setup
+- choose expected horizon (`1D`, `5D`, `10D`, or `20D`)
+- save thesis
+- save invalidation
+- save TP1/TP2
+- save the deterministic/AI recommendation snapshot
+- review the generated next review date
+
+Validation Lab shows:
+- predictions needing outcome updates
+- predictions with missing outcomes
+- predictions that hit TP1/TP2/invalidation
+- open and closed validation records
+
+Enough validation means at least 30 closed forward paper predictions before tuning rules or trusting labels more heavily. More is better, especially across different regimes. Small samples should be treated as directional notes, not evidence of accuracy.
+
+## Reporting Provider Issues
+
+When a provider fails:
+- copy the provider name, `WARN`/`FAIL` status, and readable cause from doctor/readiness
+- do not paste API keys or full URLs containing keys
+- note whether the backend had been restarted after editing `.env`
+- note whether the failure was config-only, live, quota/rate-limit, timeout, DNS/network, or bad response
+- rerun with mock/sample mode to confirm the core app still works
+
+Real-money use is not recommended yet because TradeBruv has not accumulated enough forward validation evidence, live provider coverage can degrade, AI outputs are advisory only, and deterministic labels are research triage rather than probability forecasts.
 
 ## Historical Review / Backtest Mode
 

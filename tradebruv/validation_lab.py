@@ -37,9 +37,11 @@ PREDICTION_FIELDS = [
     "TP1",
     "TP2",
     "expected_holding_period",
+    "next_review_date",
     "events_to_watch",
     "data_quality",
     "evidence_snapshot",
+    "recommendation_snapshot",
     "owned_at_signal",
     "portfolio_weight_at_signal",
     "return_1d",
@@ -66,8 +68,12 @@ def create_prediction_record(
     ai_committee_recommendation: str = "Data Insufficient",
     final_combined_recommendation: str | None = None,
     thesis: str = "",
+    invalidation: float | str | None = None,
+    tp1: float | str | None = None,
+    tp2: float | str | None = None,
     expected_holding_period: str | None = None,
     events_to_watch: Iterable[str] | None = None,
+    recommendation_snapshot: dict[str, Any] | str | None = None,
     owned_at_signal: bool = False,
     portfolio_weight_at_signal: float | str = "",
     created_at: str | None = None,
@@ -91,13 +97,15 @@ def create_prediction_record(
         "outlier_type": scanner_row.get("outlier_type", ""),
         "catalyst_quality": scanner_row.get("catalyst_quality", ""),
         "thesis": thesis,
-        "invalidation": scanner_row.get("invalidation_level", ""),
-        "TP1": scanner_row.get("tp1", ""),
-        "TP2": scanner_row.get("tp2", ""),
+        "invalidation": invalidation if invalidation not in (None, "") else scanner_row.get("invalidation_level", ""),
+        "TP1": tp1 if tp1 not in (None, "") else scanner_row.get("tp1", ""),
+        "TP2": tp2 if tp2 not in (None, "") else scanner_row.get("tp2", ""),
         "expected_holding_period": expected_holding_period or scanner_row.get("holding_period", ""),
+        "next_review_date": _next_review_date(created, expected_holding_period or scanner_row.get("holding_period", "")),
         "events_to_watch": " | ".join(events_to_watch or []),
         "data_quality": _data_quality(scanner_row),
         "evidence_snapshot": json.dumps(_evidence_snapshot(scanner_row), sort_keys=True),
+        "recommendation_snapshot": _snapshot_text(recommendation_snapshot),
         "owned_at_signal": str(bool(owned_at_signal)),
         "portfolio_weight_at_signal": portfolio_weight_at_signal,
         "return_1d": "",
@@ -116,6 +124,28 @@ def create_prediction_record(
         "last_updated_at": "",
     }
     return record
+
+
+def _snapshot_text(value: dict[str, Any] | str | None) -> str:
+    if isinstance(value, dict):
+        return json.dumps(value, sort_keys=True)
+    return str(value or "")
+
+
+def _next_review_date(created_at: str, expected_holding_period: str | None) -> str:
+    signal_date = _parse_date(created_at) or date.today()
+    text = str(expected_holding_period or "").lower()
+    if "20" in text:
+        days = 20
+    elif "10" in text:
+        days = 10
+    elif "5" in text:
+        days = 5
+    elif "1" in text and "d" in text:
+        days = 1
+    else:
+        days = 5
+    return signal_date.fromordinal(signal_date.toordinal() + days).isoformat()
 
 
 def load_predictions(path: Path = DEFAULT_PREDICTIONS_PATH) -> list[dict[str, Any]]:
@@ -215,10 +245,24 @@ def validation_metrics(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "by_risk_bucket": _bucket_metrics(_with_risk_bucket(rows), "risk_bucket"),
         "best_examples": sorted(rows, key=lambda row: _to_float(row.get("return_20d")), reverse=True)[:5],
         "worst_examples": sorted(rows, key=lambda row: _to_float(row.get("return_20d")))[:5],
-        "recent_predictions_needing_update": [row for row in rows if not row.get("last_updated_at") or row.get("outcome_label") == "Still Open"],
+        "recent_predictions_needing_update": _predictions_needing_update(rows),
+        "predictions_with_missing_outcome": [row for row in rows if row.get("outcome_label") in {"", "Still Open", "Data Unavailable"}],
+        "predictions_with_hit_levels": [row for row in rows if row.get("hit_TP1") == "True" or row.get("hit_TP2") == "True" or row.get("hit_invalidation") == "True"],
         "sample_size_warning": "Small sample: do not tune rules from this yet." if len(closed) < 30 else "",
         "safety": "Paper validation only. Avoid look-ahead bias and do not treat this as proof.",
     }
+
+
+def _predictions_needing_update(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    today = date.today()
+    needing = []
+    for row in rows:
+        if row.get("outcome_label") not in {"", "Still Open", "Data Unavailable"}:
+            continue
+        next_review = _parse_date(row.get("next_review_date"))
+        if not row.get("last_updated_at") or next_review is None or next_review <= today:
+            needing.append(row)
+    return needing
 
 
 def famous_outlier_case_study(

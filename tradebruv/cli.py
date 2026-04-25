@@ -7,6 +7,7 @@ from datetime import date
 from pathlib import Path
 
 from .ai_explanations import apply_ai_explanations, build_explanation_provider
+from .app_status import build_app_status_report
 from .alternative_data import DEFAULT_ALTERNATIVE_DATA_PATH, AlternativeDataOverlayProvider, load_alternative_data_repository
 from .automation import (
     DEFAULT_DAILY_OUTPUT_DIR,
@@ -181,6 +182,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Signal audit conclusion: {payload['conclusion']}")
         print(f"Signal audit JSON: {payload['json_path']}")
         print(f"Signal audit MD:   {payload['markdown_path']}")
+        return 0
+
+    if args.command == "app-status":
+        payload = build_app_status_report(output_dir=args.output_dir)
+        print(f"App status JSON: {payload['json_path']}")
+        print(f"App status MD:   {payload['markdown_path']}")
         return 0
 
     if args.command == "case-study":
@@ -380,6 +387,9 @@ def build_parser() -> argparse.ArgumentParser:
     signal_audit.add_argument("--baseline", default="SPY,QQQ")
     signal_audit.add_argument("--random-baseline", action="store_true")
     signal_audit.add_argument("--output-dir", type=Path, default=Path("outputs"))
+
+    app_status = subparsers.add_parser("app-status", help="Write outputs/app_status_report.md summarizing actual app readiness.")
+    app_status.add_argument("--output-dir", type=Path, default=Path("outputs"))
 
     case_study = subparsers.add_parser("case-study", help="Run a famous outlier case-study workflow.")
     case_study.add_argument("--ticker", required=True)

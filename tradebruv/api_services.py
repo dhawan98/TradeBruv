@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from .automation import DEFAULT_DAILY_OUTPUT_DIR, DEFAULT_SCAN_ARCHIVE_ROOT
+from .app_status import build_app_status_report, load_latest_app_status
 from .cli import build_provider, load_universe
 from .alternative_data import DEFAULT_ALTERNATIVE_DATA_PATH, AlternativeDataOverlayProvider, load_alternative_data_repository
 from .dashboard_data import (
@@ -271,7 +272,12 @@ def add_prediction_endpoint(payload: dict[str, Any]) -> dict[str, Any]:
             ai_committee_recommendation=str(payload.get("ai_committee_recommendation") or "Data Insufficient"),
             final_combined_recommendation=payload.get("final_combined_recommendation"),
             thesis=str(payload.get("thesis") or ""),
+            invalidation=payload.get("invalidation"),
+            tp1=payload.get("TP1") or payload.get("tp1"),
+            tp2=payload.get("TP2") or payload.get("tp2"),
+            expected_holding_period=str(payload.get("expected_holding_period") or ""),
             events_to_watch=payload.get("events_to_watch") or [],
+            recommendation_snapshot=payload.get("recommendation_snapshot"),
             owned_at_signal=bool(payload.get("owned_at_signal", False)),
             portfolio_weight_at_signal=payload.get("portfolio_weight_at_signal", ""),
         )
@@ -333,6 +339,14 @@ def doctor_latest() -> dict[str, Any]:
 
 def readiness_latest() -> dict[str, Any]:
     return load_latest_readiness()
+
+
+def app_status_latest() -> dict[str, Any]:
+    return load_latest_app_status()
+
+
+def app_status_run() -> dict[str, Any]:
+    return build_app_status_report()
 
 
 def doctor_run(payload: dict[str, Any]) -> dict[str, Any]:

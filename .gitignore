@@ -9,3 +9,5 @@ build/
 .env.*.local
 frontend/node_modules/
 frontend/dist/
+data/predictions.csv
+data/provider_cache/

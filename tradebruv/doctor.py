@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .data_sources import build_data_source_status, secret_values_present_in_text
+from .data_sources import build_data_source_status, redact_secrets, secret_values_present_in_text
 from .env import load_local_env
 from .external_sources import cheap_provider_statuses
 from .providers import ProviderConfigurationError, YFinanceMarketDataProvider
@@ -53,6 +53,7 @@ def run_doctor(*, live: bool = False, ai: str = "none", ticker: str = "NVDA", ou
     text = json.dumps(report, indent=2, sort_keys=True)
     leaked = secret_values_present_in_text(text)
     if leaked:
+        report = json.loads(redact_secrets(text))
         report["secret_leak_check"] = "FAIL"
         report["secret_leak_env_vars"] = leaked
     json_path = output_dir / "doctor_report.json"
@@ -113,12 +114,12 @@ def _check_yfinance(*, live: bool, ticker: str) -> dict[str, Any]:
         return _row("yfinance ticker fetch", "SKIPPED", "config-only", "Live yfinance fetch skipped; run doctor --live to test it.")
     try:
         provider = YFinanceMarketDataProvider(history_period="6mo")
-        security = provider.get_security(ticker.upper())
-        price = security.current_price
+        security = provider.get_security_data(ticker.upper())
+        price = security.bars[-1].close if security.bars else None
         status = "PASS" if price and price > 0 else "WARN"
         return _row("yfinance ticker fetch", status, "live", f"Fetched {ticker.upper()} with current_price={price or 'unavailable'}.", {"ticker": ticker.upper(), "price_available": bool(price)})
     except (ProviderConfigurationError, Exception) as exc:  # noqa: BLE001 - doctor must continue
-        return _row("yfinance ticker fetch", "FAIL", "live", f"yfinance fetch failed: {exc}")
+        return _row("yfinance ticker fetch", "FAIL", "live", f"yfinance fetch failed: {redact_secrets(exc)}")
 
 
 def _check_ai(*, ai: str, live: bool) -> list[dict[str, Any]]:
@@ -155,7 +156,7 @@ def _openai_live_check() -> dict[str, Any]:
             ok = response.status < 400
         return _row("OpenAI one-shot structured response", "PASS" if ok else "WARN", "live", "OpenAI live structured response check completed.")
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-        return _row("OpenAI one-shot structured response", "FAIL", "live", f"OpenAI live check failed: {exc}")
+        return _row("OpenAI one-shot structured response", "FAIL", "live", f"OpenAI live check failed: {redact_secrets(exc)}")
 
 
 def _gemini_live_check() -> dict[str, Any]:
@@ -168,7 +169,7 @@ def _gemini_live_check() -> dict[str, Any]:
             ok = response.status < 400
         return _row("Gemini one-shot structured response", "PASS" if ok else "WARN", "live", "Gemini live response check completed.")
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-        return _row("Gemini one-shot structured response", "FAIL", "live", f"Gemini live check failed: {exc}")
+        return _row("Gemini one-shot structured response", "FAIL", "live", f"Gemini live check failed: {redact_secrets(exc)}")
 
 
 def _check_http(name: str, url: str, *, live: bool) -> dict[str, Any]:
@@ -179,7 +180,7 @@ def _check_http(name: str, url: str, *, live: bool) -> dict[str, Any]:
             ok = response.status < 400
         return _row(name, "PASS" if ok else "WARN", "local", f"{url} returned HTTP {response.status}.")
     except (urllib.error.URLError, TimeoutError) as exc:
-        return _row(name, "WARN", "local", f"{url} was not reachable: {exc}")
+        return _row(name, "WARN", "local", f"{url} was not reachable: {redact_secrets(exc)}")
 
 
 def _check_data_sources() -> dict[str, Any]:

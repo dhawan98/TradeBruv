@@ -19,7 +19,7 @@ import {
   Wallet,
 } from 'lucide-react';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { api, AlertRow, DataSourceRow, HealthPayload, PortfolioPayload, ScannerRow } from './api';
+import { api, AlertRow, DataSourceRow, HealthPayload, PortfolioPayload, PredictionRow, ScannerRow } from './api';
 import { useAsync } from './hooks';
 
 type PageKey =
@@ -125,15 +125,16 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
   const predictions = useAsync(api.predictions, []);
   const rows = latest.data?.results ?? [];
   const top = rows.filter((row) => row.status_label !== 'Avoid').slice(0, 5);
-  const openPredictions = (predictions.data ?? []).filter((row) => !row.outcome_label || row.outcome_label === 'Open');
+  const openPredictions = (predictions.data ?? []).filter((row) => !row.outcome_label || ['Open', 'Still Open', 'Data Unavailable'].includes(row.outcome_label));
+  const duePredictions = openPredictions.filter((row) => !row.next_review_date || row.next_review_date <= new Date().toISOString().slice(0, 10));
 
   return (
     <Page title="Home" subtitle="Daily brief, open risks, and the next useful research action.">
       <div className="metric-grid">
         <Metric label="Candidates" value={String(top.length)} sub="Non-avoid names in latest scan" />
         <Metric label="Open alerts" value={String(alerts.data?.length ?? 0)} sub="Daily workflow prompts" />
+        <Metric label="Due reviews" value={String(duePredictions.length)} sub="Paper predictions needing update" />
         <Metric label="Data sources" value={`${sources.data?.summary.optional_ready ?? 0} ready`} sub="Configured optional providers" />
-        <Metric label="Regime" value={String(latest.data?.market_regime?.regime ?? 'Unavailable')} sub="From latest deterministic scan" />
       </div>
       <div className="grid two">
         <Panel title="Market Regime">
@@ -150,7 +151,7 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
             <button className="secondary" onClick={() => setPage('Deep Research')}><Search size={16} /> Deep Research Ticker</button>
             <button className="secondary" onClick={() => setPage('Validation Lab')}><FlaskConical size={16} /> Review Predictions</button>
           </div>
-          <WatchlistChangeCard label="Predictions needing review" value={String(openPredictions.length)} note="Forward tracking is the honest scorekeeper." />
+          <WatchlistChangeCard label="Predictions needing review" value={String(duePredictions.length)} note="Forward tracking is the honest scorekeeper." />
         </Panel>
       </div>
       {top.length ? (
@@ -207,13 +208,14 @@ function StockPicker() {
       <form className="toolbar" onSubmit={submit}>
         <Select name="provider" label="Provider" options={['sample', 'local', 'real']} />
         <Select name="mode" label="Mode" options={['outliers', 'standard']} />
-        <Field name="universe_path" label="Universe" defaultValue="config/sample_universe.txt" />
+        <Field name="universe_path" label="Universe" defaultValue="config/outlier_watchlist.txt" />
         <Field name="as_of_date" label="As of" defaultValue="2026-04-24" />
         <button className="primary" disabled={loading}>
           <RefreshCcw size={16} /> {loading ? 'Running' : 'Run Scan'}
         </button>
       </form>
       {error && <Notice tone="bad">{error}</Notice>}
+      {loading && <Notice tone="neutral">Running the scanner can take a bit with the real provider. Results will appear here without changing your data.</Notice>}
       {loading ? (
         <SkeletonGrid />
       ) : scan.length ? (
@@ -240,15 +242,19 @@ function StockPicker() {
 function DeepResearch() {
   const [research, setResearch] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     setError('');
+    setLoading(true);
     try {
       setResearch(await api.deepResearch({ ticker: form.get('ticker'), provider: form.get('provider') }));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Deep research failed');
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -257,9 +263,10 @@ function DeepResearch() {
       <form className="toolbar" onSubmit={submit}>
         <Field name="ticker" label="Ticker" defaultValue="NVDA" />
         <Select name="provider" label="Provider" options={['sample', 'local', 'real']} />
-        <button className="primary"><Search size={16} /> Research</button>
+        <button className="primary" disabled={loading}><Search size={16} /> {loading ? 'Researching' : 'Research'}</button>
       </form>
       {error && <Notice tone="bad">{error}</Notice>}
+      {loading && <SkeletonGrid />}
       {research && <ResearchView payload={research} />}
     </Page>
   );
@@ -302,26 +309,32 @@ function PortfolioAnalyst() {
 function AICommittee() {
   const [payload, setPayload] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     setError('');
+    setLoading(true);
     try {
-      setPayload(await api.aiCommittee({ ticker: form.get('ticker'), mode: form.get('mode'), provider: 'sample' }));
+      setPayload(await api.aiCommittee({ ticker: form.get('ticker'), mode: form.get('mode'), provider: form.get('provider') }));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'AI committee failed');
+    } finally {
+      setLoading(false);
     }
   }
   const committee = payload?.committee as Record<string, unknown> | undefined;
   const combined = payload?.combined as Record<string, unknown> | undefined;
   return (
-    <Page title="AI Committee" subtitle="Rule-first committee view. Mock mode works offline; live providers are not tested in this pass.">
+    <Page title="AI Committee" subtitle="Rule-first committee view. AI is shown beside deterministic rules and cannot replace them.">
       <form className="toolbar" onSubmit={submit}>
         <Field name="ticker" label="Ticker" defaultValue="NVDA" />
+        <Select name="provider" label="Data Provider" options={['sample', 'real', 'local']} />
         <Select name="mode" label="Mode" options={['No AI', 'Mock AI for testing', 'OpenAI only', 'Gemini only']} />
-        <button className="primary"><Brain size={16} /> Run Committee</button>
+        <button className="primary" disabled={loading}><Brain size={16} /> {loading ? 'Running' : 'Run Committee'}</button>
       </form>
       {error && <Notice tone="bad">{error}</Notice>}
+      {loading && <SkeletonLine />}
       {committee && (
         <div className="grid two">
           <Panel title="Combined Recommendation">
@@ -349,6 +362,7 @@ function ValidationLab() {
   const predictions = useAsync(api.predictions, []);
   const signalAudit = useAsync(api.signalAuditLatest, []);
   const [auditLoading, setAuditLoading] = useState(false);
+  const [updateLoading, setUpdateLoading] = useState(false);
 
   async function runAudit() {
     setAuditLoading(true);
@@ -359,12 +373,36 @@ function ValidationLab() {
     }
   }
 
+  async function updateOutcomes() {
+    setUpdateLoading(true);
+    try {
+      const payload = await api.updatePredictions({ provider: 'real' });
+      summary.setData(payload.summary as Record<string, unknown>);
+      predictions.setData(payload.predictions as PredictionRow[]);
+    } finally {
+      setUpdateLoading(false);
+    }
+  }
+
+  const due = (summary.data?.recent_predictions_needing_update as Record<string, unknown>[] | undefined) ?? [];
+  const hitLevels = (summary.data?.predictions_with_hit_levels as Record<string, unknown>[] | undefined) ?? [];
+  const missingOutcomes = (summary.data?.predictions_with_missing_outcome as Record<string, unknown>[] | undefined) ?? [];
+
   return (
     <Page title="Validation Lab" subtitle="Paper predictions, outcome updates, and famous outlier case studies.">
       <div className="metric-grid">
         <Metric label="Open" value={String((summary.data?.open_predictions as unknown[] | undefined)?.length ?? 0)} sub="Awaiting outcome" />
         <Metric label="Closed" value={String((summary.data?.closed_predictions as unknown[] | undefined)?.length ?? 0)} sub="Measured signals" />
+        <Metric label="Due" value={String(due.length)} sub="Needs 1D/5D/10D/20D check" />
+        <Metric label="Hit levels" value={String(hitLevels.length)} sub="TP or invalidation touched" />
       </div>
+      <Panel title="Paper Tracking Queue">
+        <div className="action-strip">
+          <button className="secondary" onClick={updateOutcomes} disabled={updateLoading}>{updateLoading ? 'Updating' : 'Update Outcomes With Real Provider'}</button>
+        </div>
+        <DataTable rows={due} columns={['prediction_id', 'ticker', 'next_review_date', 'outcome_label', 'return_1d', 'return_5d', 'return_10d', 'return_20d']} />
+        {missingOutcomes.length > 0 && <Notice tone="warn">{missingOutcomes.length} prediction(s) still need a clean outcome.</Notice>}
+      </Panel>
       <Panel title="Signal Quality">
         <div className="metric-grid compact">
           <ValidationMetricCard label="Strategy vs baseline" value={signalAudit.data?.available ? 'Measured' : 'Not run'} />
@@ -376,7 +414,7 @@ function ValidationLab() {
         <WorkflowReportView report={signalAudit.data} />
       </Panel>
       <Panel title="Predictions">
-        <DataTable rows={predictions.data ?? []} columns={['prediction_id', 'ticker', 'final_combined_recommendation', 'outcome_label', 'return_20d']} />
+        <DataTable rows={predictions.data ?? []} columns={['prediction_id', 'ticker', 'final_combined_recommendation', 'next_review_date', 'outcome_label', 'return_20d']} />
       </Panel>
     </Page>
   );
@@ -435,7 +473,7 @@ function DataSources() {
         doctor.setData(report);
       } else {
         const ai = kind === 'readiness-openai' ? 'openai' : kind === 'readiness-gemini' ? 'gemini' : 'mock';
-        const report = await api.runReadiness({ provider: 'sample', ai, tickers: 'NVDA,PLTR,MU,RDDT,GME,CAR' });
+        const report = await api.runReadiness({ provider: 'real', ai, tickers: 'NVDA,PLTR,MU,RDDT,GME,CAR,SMCI,COIN,HOOD,ARM,CAVA,AAPL,MSFT,LLY,TSLA' });
         readiness.setData(report);
       }
       setMessage('Workflow completed. Restart the backend only after changing .env values.');
@@ -486,6 +524,8 @@ function DataSources() {
             <li>Fill only the providers you want, such as <code>OPENAI_API_KEY</code> or <code>GEMINI_API_KEY</code>.</li>
             <li>Restart the FastAPI backend.</li>
           </ol>
+          <CommandSnippet text="python3 -m tradebruv doctor --live --ai openai --ticker NVDA" />
+          <CommandSnippet text="python3 -m tradebruv readiness --universe config/outlier_watchlist.txt --provider real --tickers NVDA,PLTR,MU,RDDT,GME,CAR,SMCI,COIN,HOOD,ARM,CAVA,AAPL,MSFT,LLY,TSLA --ai mock" />
           <button className="secondary" onClick={createTemplate}>Create .env from template</button>
         </Panel>
         <Panel title="Safe Local .env Editor">
@@ -552,9 +592,25 @@ function DataSources() {
 function Reports() {
   const latest = useAsync(api.latestReport, []);
   const archive = useAsync(api.reportsArchive, []);
+  const appStatus = useAsync(api.appStatusLatest, []);
   const [debug, setDebug] = useState(false);
+  const [statusLoading, setStatusLoading] = useState(false);
+  async function refreshStatus() {
+    setStatusLoading(true);
+    try {
+      appStatus.setData(await api.runAppStatus());
+    } finally {
+      setStatusLoading(false);
+    }
+  }
   return (
     <Page title="Reports" subtitle="Latest scan, archive index, daily summary, alerts, and optional debug payloads.">
+      <Panel title="App Status Report">
+        <div className="action-strip">
+          <button className="secondary" onClick={refreshStatus} disabled={statusLoading}>{statusLoading ? 'Writing' : 'Refresh App Status'}</button>
+        </div>
+        <MarkdownReport text={appStatus.data?.markdown ?? 'No app status report loaded yet.'} />
+      </Panel>
       <div className="grid two">
         <Panel title="Latest Scan">
           <ScannerTable rows={latest.data?.results ?? []} />
@@ -686,11 +742,7 @@ function CandidateList({ rows }: { rows: ScannerRow[] }) {
           <p><StatusPill status={row.status_label} /> {row.outlier_type}</p>
           <SignalStack row={row} />
           {(row.warnings ?? []).slice(0, 2).map((warning) => <small className="risk" key={warning}><AlertTriangle size={13} /> {warning}</small>)}
-          <div className="actions">
-            <button className="ghost">Deep Research</button>
-            <button className="ghost">Journal</button>
-            <button className="ghost">Prediction</button>
-          </div>
+          <PaperTrackingForm scannerRow={row} compact />
         </article>
       ))}
     </div>
@@ -802,9 +854,67 @@ function ResearchView({ payload }: { payload: Record<string, unknown> }) {
         </Panel>
         <Panel title="Validation History">
           <p className="muted">Use Validation Lab to save this thesis and measure forward outcomes against SPY, QQQ, and random baselines.</p>
+          {scanner && <PaperTrackingForm scannerRow={scanner} />}
         </Panel>
       </div>
     </div>
+  );
+}
+
+function PaperTrackingForm({ scannerRow, compact = false }: { scannerRow: ScannerRow; compact?: boolean }) {
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    setSaving(true);
+    setMessage('');
+    setError('');
+    try {
+      const prediction = await api.addPrediction({
+        scanner_row: scannerRow,
+        rule_based_recommendation: scannerRow.status_label ?? 'Data Insufficient',
+        ai_committee_recommendation: form.get('ai_committee_recommendation') || 'Data Insufficient',
+        final_combined_recommendation: scannerRow.status_label ?? 'Data Insufficient',
+        thesis: form.get('thesis'),
+        invalidation: form.get('invalidation'),
+        tp1: form.get('tp1'),
+        tp2: form.get('tp2'),
+        expected_holding_period: form.get('expected_holding_period'),
+        events_to_watch: [form.get('events_to_watch')].filter(Boolean),
+        recommendation_snapshot: {
+          deterministic: scannerRow.status_label ?? 'Data Insufficient',
+          ticker: scannerRow.ticker,
+          winner_score: scannerRow.winner_score,
+          outlier_score: scannerRow.outlier_score,
+          risk_score: scannerRow.risk_score,
+        },
+      });
+      setMessage(`Saved ${prediction.prediction_id}. Next review: ${prediction.next_review_date ?? 'pending'}.`);
+      event.currentTarget.reset();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save prediction');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form className={compact ? 'paper-form compact' : 'paper-form'} onSubmit={submit}>
+      <strong>Start Paper Tracking</strong>
+      <Select name="expected_holding_period" label="Horizon" options={['5D', '10D', '20D', '1D']} />
+      <Field name="thesis" label="Thesis" defaultValue={scannerRow.why_it_passed?.[0] ?? ''} />
+      <Field name="invalidation" label="Invalidation" defaultValue={String(scannerRow.invalidation_level ?? '')} />
+      <Field name="tp1" label="TP1" defaultValue={String(scannerRow.tp1 ?? '')} />
+      <Field name="tp2" label="TP2" defaultValue={String(scannerRow.tp2 ?? '')} />
+      {!compact && <Field name="events_to_watch" label="Events to watch" defaultValue={scannerRow.why_it_could_fail?.[0] ?? ''} />}
+      <input type="hidden" name="ai_committee_recommendation" value="Data Insufficient" />
+      <button className="primary" disabled={saving}>{saving ? 'Saving' : 'Save Prediction'}</button>
+      {message && <Notice tone="good">{message}</Notice>}
+      {error && <Notice tone="bad">{error}</Notice>}
+    </form>
   );
 }
 
@@ -934,6 +1044,32 @@ function WorkflowReportView({ report }: { report: { available?: boolean; message
       </div>
       {report.conclusion && <p className="muted">{report.conclusion}</p>}
       <DataTable rows={(report.checks ?? []).slice(0, 8) as Record<string, unknown>[]} columns={['status', 'name', 'mode', 'message']} />
+    </div>
+  );
+}
+
+function CommandSnippet({ text }: { text: string }) {
+  async function copy() {
+    await navigator.clipboard?.writeText(text);
+  }
+  return (
+    <div className="command-snippet">
+      <code>{text}</code>
+      <button className="ghost" type="button" onClick={copy}>Copy</button>
+    </div>
+  );
+}
+
+function MarkdownReport({ text }: { text: string }) {
+  const lines = text.split('\n').filter(Boolean);
+  return (
+    <div className="markdown-report">
+      {lines.map((line, index) => {
+        if (line.startsWith('# ')) return <h3 key={index}>{line.replace(/^# /, '')}</h3>;
+        if (line.startsWith('## ')) return <h4 key={index}>{line.replace(/^## /, '')}</h4>;
+        if (line.startsWith('- ')) return <p key={index} className="report-bullet">{line.replace(/^- /, '')}</p>;
+        return <p key={index}>{line}</p>;
+      })}
     </div>
   );
 }

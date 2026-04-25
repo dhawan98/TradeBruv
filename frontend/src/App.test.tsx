@@ -67,6 +67,29 @@ vi.stubGlobal(
       '/api/signal-audit/latest': { available: false, message: 'Signal audit has not run yet.' },
       '/api/predictions': [],
       '/api/predictions/summary': {},
+      '/api/app-status/latest': { available: true, markdown: '# TradeBruv App Status Report\n- OpenAI works: false' },
+      '/api/scan': {
+        generated_at: '2026-04-24T00:00:00Z',
+        provider: 'sample',
+        mode: 'outliers',
+        results: [
+          {
+            ticker: 'NVDA',
+            company_name: 'NVIDIA',
+            status_label: 'Hold / Watch',
+            winner_score: 70,
+            outlier_score: 65,
+            risk_score: 35,
+            why_it_passed: ['Strong setup'],
+            why_it_could_fail: ['Invalidation risk'],
+            invalidation_level: 90,
+            tp1: 110,
+            tp2: 120,
+          },
+        ],
+        market_regime: {},
+        summary: {},
+      },
     };
     const key = Object.keys(payloads).find((path) => url.endsWith(path));
     return Promise.resolve(new Response(JSON.stringify(payloads[key ?? '/api/alerts']), { status: 200 }));
@@ -95,5 +118,20 @@ describe('App', () => {
     expect(screen.getAllByText('SEC_USER_AGENT').length).toBeGreaterThan(0);
     expect(screen.getByText('Doctor / API Testing')).toBeInTheDocument();
     expect(screen.getByText('Run Readiness')).toBeInTheDocument();
+  });
+
+  it('shows paper tracking workflow after a scan', async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: /Stock Picker/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Run Scan/i }));
+    expect(await screen.findByText('Start Paper Tracking')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Save Prediction/i })).toBeInTheDocument();
+  });
+
+  it('renders the app status report', async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: /Reports/i }));
+    expect(await screen.findByText('App Status Report')).toBeInTheDocument();
+    expect(screen.getByText(/OpenAI works/i)).toBeInTheDocument();
   });
 });
