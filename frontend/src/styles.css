@@ -295,7 +295,8 @@ h2 {
 .provider-title,
 .pill-row,
 .action-strip,
-.actions {
+.actions,
+.tabs {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -305,10 +306,30 @@ h2 {
 .score-stack,
 .actions,
 .pill-row,
-.action-strip {
+.action-strip,
+.tabs {
   justify-content: flex-start;
   flex-wrap: wrap;
   margin-top: 10px;
+}
+
+.tabs {
+  margin-bottom: 16px;
+  border-bottom: 1px solid #1d2d3f;
+}
+
+.tabs button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #91a3b7;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.tabs button.active {
+  border-color: #75d8c7;
+  color: #f4f8fc;
 }
 
 .risk {
@@ -609,6 +630,37 @@ th {
 
 .chart {
   min-height: 280px;
+}
+
+.chart.tall {
+  min-height: 360px;
+}
+
+.replay-toolbar {
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+}
+
+.brief-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.brief-grid > div {
+  border: 1px solid #24364a;
+  border-radius: 8px;
+  background: #0a1420;
+  padding: 12px;
+}
+
+.velocity-card .score-ring {
+  width: 82px;
+  height: 82px;
+}
+
+.velocity-card .score-ring > div {
+  width: 60px;
+  height: 60px;
 }
 
 .debug-json {

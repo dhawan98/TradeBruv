@@ -16,6 +16,7 @@ The project is deliberately not an AI stock picker. AI is not making decisions h
 - Pass 7: FastAPI backend, Vite/React primary UI, and safe local `.env` setup
 - Pass 8: premium cockpit polish, cheap/free-first data sources, insider/politician context, doctor/readiness checks, and signal quality audit
 - Pass 9: live-key smoke hardening, real provider degradation, Gemini adapter, app status reporting, and paper-tracking workflow
+- Pass 10: no-lookahead historical replay, famous outlier studies, velocity scanner, proof/evidence report, and TradingView-style React cockpit pages
 
 Options/day-trading remains deferred. TradeBruv stays stock-first.
 
@@ -55,6 +56,11 @@ TradeBruv currently supports:
 - doctor reports for imports, local directories, env status, yfinance, AI config, SEC/GDELT/FMP/Finnhub, backend, and frontend
 - readiness reports for scanner, Deep Research, AI Committee, provider live/mock state, portfolio analysis, validation dry-runs, alerts, missing data, and guardrails
 - Signal Quality Audit for saved reports, baseline comparison, random baseline comparison, and sample-size warnings
+- no-lookahead historical replay using OHLCV truncated at each replay date
+- high-velocity trigger scanner mode for high-volume stock research candidates
+- famous outlier case studies for GME, CAR, NVDA, PLTR, MU, SMCI, COIN, HOOD, ARM, CAVA, RDDT, and TSLA
+- proof/evidence report that separates historical evidence from forward paper validation
+- React Replay Lab, Velocity Scanner, Outlier Case Study, and Proof Report viewer
 - AI output guardrails for unsupported claims, invented URLs, order-placement language, and deterministic Avoid conflicts
 - real Gemini and OpenAI-compatible AI committee adapters when keys are configured
 - app status report at `outputs/app_status_report.md`
@@ -101,6 +107,31 @@ Ranks stocks by `outlier_score` and classifies them into:
 - `Avoid`
 
 `Short Squeeze Watch` is intentionally separated from normal leadership setups because it can be high-risk and unstable.
+
+### Velocity Mode
+
+Velocity mode is for high-volume, quick-moving stock research candidates. It is not an options module, day-trading system, broker integration, or order-placement workflow.
+
+Labels include:
+- `High Volume Breakout`
+- `Relative Volume Explosion`
+- `Gap and Hold`
+- `Squeeze Watch`
+- `News + Volume Confirmed`
+- `Momentum Continuation`
+- `Failed Spike / Avoid`
+- `Pump Risk / Avoid`
+
+Velocity fields include `velocity_score`, `velocity_type`, `velocity_risk`, `trigger_reason`, `chase_warning`, `quick_trade_watch_label`, `velocity_invalidation`, `velocity_tp1`, `velocity_tp2`, and `expected_horizon`.
+
+Run it with:
+
+```bash
+python3 -m tradebruv scan \
+  --universe config/outlier_watchlist.txt \
+  --provider real \
+  --mode velocity
+```
 
 ## Scores
 
@@ -1346,6 +1377,92 @@ Current test coverage includes:
 - signal audit/random baseline comparison
 - AI guardrail validator for bad/good outputs
 - frontend Data Sources doctor/readiness rendering and production build/lint
+
+## Historical Replay, Case Studies, And Evidence
+
+Paper tracking, historical replay, and proof/evidence reports answer different questions:
+- Paper tracking measures signals you saved going forward after the decision date.
+- Historical replay simulates scanner runs on past dates using OHLCV truncated at each replay date.
+- The proof report aggregates historical evidence, famous outlier studies, velocity replay, baselines, and what remains unproven.
+
+Run historical replay:
+
+```bash
+python3 -m tradebruv replay \
+  --universe config/outlier_watchlist.txt \
+  --provider real \
+  --start-date 2020-01-01 \
+  --end-date 2026-04-24 \
+  --frequency weekly \
+  --mode outliers \
+  --horizons 1,5,10,20,60,120
+```
+
+Daily top-N replay:
+
+```bash
+python3 -m tradebruv replay \
+  --universe config/outlier_watchlist.txt \
+  --provider real \
+  --start-date 2020-01-01 \
+  --end-date 2026-04-24 \
+  --frequency daily \
+  --mode outliers \
+  --top-n 20
+```
+
+Run famous outlier studies:
+
+```bash
+python3 -m tradebruv outlier-study --ticker GME --start-date 2020-08-01 --end-date 2021-02-15
+python3 -m tradebruv outlier-study --preset famous --provider real
+```
+
+Run the proof/evidence report:
+
+```bash
+python3 -m tradebruv proof-report \
+  --universe config/outlier_watchlist.txt \
+  --provider real \
+  --start-date 2020-01-01 \
+  --end-date 2026-04-24 \
+  --include-famous-outliers \
+  --include-velocity \
+  --baseline SPY,QQQ \
+  --random-baseline
+```
+
+Outputs:
+- `outputs/replay/replay_results.json`
+- `outputs/replay/replay_results.csv`
+- `outputs/replay/replay_summary.json`
+- `outputs/replay/replay_summary.md`
+- `outputs/replay/velocity_replay_summary.md`
+- `outputs/case_studies/*_case_study.json`
+- `outputs/case_studies/*_case_study.md`
+- `outputs/case_studies/famous_outliers_summary.json`
+- `outputs/case_studies/famous_outliers_summary.md`
+- `outputs/case_studies/velocity_famous_outliers.md`
+- `outputs/proof/proof_report.json`
+- `outputs/proof/proof_report.md`
+
+Replay is not perfect proof. It uses point-in-time OHLCV bars, but free providers usually do not provide true point-in-time fundamentals, news, short interest, social attention, or historical metadata snapshots. TradeBruv strips those non-point-in-time fields during replay unless a proper historical source is supplied. This avoids obvious look-ahead, but survivorship bias, universe selection, provider gaps, and missing delisted names can still distort results.
+
+Interpretation:
+- `caught`: scanner triggered before or during a major forward move.
+- `late`: scanner triggered after much of the move was already visible.
+- `missed`: no qualifying trigger appeared inside the study window.
+- `inconclusive`: signal existed, but forward outcome was not clearly strong enough.
+- False positives are triggered names with poor forward returns or invalidation before meaningful upside.
+- Avoid signals are useful only if measured honestly against later returns and invalidation behavior.
+
+Use evidence before real money by keeping real-money reliance false, collecting forward paper predictions, separating velocity from long-term setups, and refusing to hide weak or bad buckets.
+
+Frontend pages:
+- `Replay Lab`: run/load replay, baseline comparisons, strategy buckets, and sample-size warnings.
+- `Velocity Scanner`: high-volume trigger candidates, score cards, gap/hold/fade labels, horizon, and pump-risk warnings.
+- `Outlier Case Study`: ticker study, score-over-time chart, price-over-time chart, trigger timeline, caught/missed/late verdict.
+- `Validation Lab`: paper tracking stays separate from historical replay, with Proof Report under Signal Quality.
 
 ## Known Limitations
 

@@ -103,6 +103,16 @@ def write_csv_report(results: list[ScannerResult], path: str | Path) -> Path:
         "ai_explanation_available",
         "ai_explanation_provider",
         "ai_explanation",
+        "velocity_score",
+        "velocity_type",
+        "velocity_risk",
+        "trigger_reason",
+        "chase_warning",
+        "quick_trade_watch_label",
+        "velocity_invalidation",
+        "velocity_tp1",
+        "velocity_tp2",
+        "expected_horizon",
     ]
     with output_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -189,6 +199,16 @@ def write_csv_report(results: list[ScannerResult], path: str | Path) -> Path:
                     "ai_explanation_available": row["ai_explanation_available"],
                     "ai_explanation_provider": row["ai_explanation_provider"],
                     "ai_explanation": json.dumps(row["ai_explanation"]),
+                    "velocity_score": row["velocity_score"],
+                    "velocity_type": row["velocity_type"],
+                    "velocity_risk": row["velocity_risk"],
+                    "trigger_reason": row["trigger_reason"],
+                    "chase_warning": row["chase_warning"],
+                    "quick_trade_watch_label": row["quick_trade_watch_label"],
+                    "velocity_invalidation": row["velocity_invalidation"],
+                    "velocity_tp1": row["velocity_tp1"],
+                    "velocity_tp2": row["velocity_tp2"],
+                    "expected_horizon": row["expected_horizon"],
                 }
             )
     return output_path
@@ -197,6 +217,31 @@ def write_csv_report(results: list[ScannerResult], path: str | Path) -> Path:
 def print_console_summary(results: list[ScannerResult], mode: str = "standard") -> None:
     if not results:
         print("No results to display.")
+        return
+
+    if mode == "velocity":
+        header = (
+            f"{'Ticker':<8}"
+            f"{'Velocity Type':<28}"
+            f"{'Velocity':>9}"
+            f"{'Risk':>10}"
+            f"{'Horizon':>10}"
+            f"{'Status':>25}"
+        )
+        print(header)
+        print("-" * len(header))
+        for result in results:
+            print(
+                f"{result.ticker:<8}"
+                f"{result.velocity_type[:27]:<28}"
+                f"{result.velocity_score:>9}"
+                f"{result.velocity_risk:>10}"
+                f"{result.expected_horizon:>10}"
+                f"{result.quick_trade_watch_label[:24]:>25}"
+            )
+            print(f"  Trigger: {result.trigger_reason}")
+            if result.chase_warning and result.chase_warning != "unavailable":
+                print(f"  Warning: {result.chase_warning}")
         return
 
     if mode == "outliers":

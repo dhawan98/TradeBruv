@@ -241,6 +241,16 @@ class ScannerResult:
     catalyst_intelligence: dict[str, Any] = field(default_factory=dict)
     alternative_data: dict[str, Any] = field(default_factory=dict)
     ai_explanation: dict[str, Any] = field(default_factory=dict)
+    velocity_score: int = 0
+    velocity_type: str = "Not Velocity Setup"
+    velocity_risk: str = "Medium"
+    trigger_reason: str = "No high-velocity trigger confirmed."
+    chase_warning: str = "unavailable"
+    quick_trade_watch_label: str = "No quick-watch label"
+    velocity_invalidation: float | None = None
+    velocity_tp1: float | None = None
+    velocity_tp2: float | None = None
+    expected_horizon: str = "unavailable"
 
     def to_dict(self) -> dict[str, Any]:
         catalyst_intelligence = _default_catalyst_intelligence() | self.catalyst_intelligence
@@ -329,6 +339,16 @@ class ScannerResult:
             "ai_explanation": ai_explanation,
             "ai_explanation_available": ai_explanation["available"],
             "ai_explanation_provider": ai_explanation["provider"],
+            "velocity_score": self.velocity_score,
+            "velocity_type": self.velocity_type,
+            "velocity_risk": self.velocity_risk,
+            "trigger_reason": self.trigger_reason,
+            "chase_warning": self.chase_warning,
+            "quick_trade_watch_label": self.quick_trade_watch_label,
+            "velocity_invalidation": _format_number(self.velocity_invalidation),
+            "velocity_tp1": _format_number(self.velocity_tp1),
+            "velocity_tp2": _format_number(self.velocity_tp2),
+            "expected_horizon": self.expected_horizon,
         }
 
 

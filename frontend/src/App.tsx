@@ -18,14 +18,17 @@ import {
   Sparkles,
   Wallet,
 } from 'lucide-react';
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { api, AlertRow, DataSourceRow, HealthPayload, PortfolioPayload, PredictionRow, ScannerRow } from './api';
+import { Bar, BarChart, CartesianGrid, Line, LineChart as ReLineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { api, AlertRow, DataSourceRow, HealthPayload, PortfolioPayload, PredictionRow, ProofReport, ReplayPayload, ScannerRow } from './api';
 import { useAsync } from './hooks';
 
 type PageKey =
   | 'Home'
   | 'Stock Picker'
+  | 'Velocity Scanner'
   | 'Deep Research'
+  | 'Replay Lab'
+  | 'Outlier Case Study'
   | 'Portfolio'
   | 'Portfolio Analyst'
   | 'AI Committee'
@@ -38,7 +41,10 @@ type PageKey =
 const NAV: { key: PageKey; icon: React.ComponentType<{ size?: number }> }[] = [
   { key: 'Home', icon: Home },
   { key: 'Stock Picker', icon: Search },
+  { key: 'Velocity Scanner', icon: Activity },
   { key: 'Deep Research', icon: BookOpen },
+  { key: 'Replay Lab', icon: LineChart },
+  { key: 'Outlier Case Study', icon: Sparkles },
   { key: 'Portfolio', icon: Wallet },
   { key: 'Portfolio Analyst', icon: LineChart },
   { key: 'AI Committee', icon: Brain },
@@ -86,7 +92,10 @@ export function App() {
         <section className="workspace">
           {page === 'Home' && <HomePage setPage={setPage} />}
           {page === 'Stock Picker' && <StockPicker />}
+          {page === 'Velocity Scanner' && <VelocityScanner />}
           {page === 'Deep Research' && <DeepResearch />}
+          {page === 'Replay Lab' && <ReplayLab />}
+          {page === 'Outlier Case Study' && <OutlierCaseStudy />}
           {page === 'Portfolio' && <Portfolio />}
           {page === 'Portfolio Analyst' && <PortfolioAnalyst />}
           {page === 'AI Committee' && <AICommittee />}
@@ -180,6 +189,7 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
 
 function StockPicker() {
   const [scan, setScan] = useState<ScannerRow[]>([]);
+  const [tab, setTab] = useState<'Outliers' | 'Velocity' | 'Long-Term' | 'Avoid'>('Outliers');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -207,7 +217,7 @@ function StockPicker() {
     <Page title="Stock Picker" subtitle="Run the Python scanner and review candidates without duplicating scoring in React.">
       <form className="toolbar" onSubmit={submit}>
         <Select name="provider" label="Provider" options={['sample', 'local', 'real']} />
-        <Select name="mode" label="Mode" options={['outliers', 'standard']} />
+        <Select name="mode" label="Mode" options={['outliers', 'velocity', 'standard']} />
         <Field name="universe_path" label="Universe" defaultValue="config/outlier_watchlist.txt" />
         <Field name="as_of_date" label="As of" defaultValue="2026-04-24" />
         <button className="primary" disabled={loading}>
@@ -216,17 +226,27 @@ function StockPicker() {
       </form>
       {error && <Notice tone="bad">{error}</Notice>}
       {loading && <Notice tone="neutral">Running the scanner can take a bit with the real provider. Results will appear here without changing your data.</Notice>}
+      {scan.length > 0 && (
+        <div className="tabs">
+          {(['Outliers', 'Velocity', 'Long-Term', 'Avoid'] as const).map((item) => (
+            <button className={tab === item ? 'active' : ''} key={item} onClick={() => setTab(item)}>{item}</button>
+          ))}
+        </div>
+      )}
       {loading ? (
         <SkeletonGrid />
       ) : scan.length ? (
         <div className="grid">
-          <Panel title="Candidates">
-            <CandidateList rows={scan.filter((row) => row.status_label !== 'Avoid').slice(0, 8)} />
+          <Panel title={`${tab} Candidates`}>
+            <CandidateList rows={filterStockRows(scan, tab).slice(0, 8)} />
+          </Panel>
+          <Panel title="Why This Is Actionable">
+            <SignalBrief rows={filterStockRows(scan, tab)} />
           </Panel>
           <Panel title="Scanner Table">
-            <ScannerTable rows={scan} />
+            <ScannerTable rows={filterStockRows(scan, tab)} />
           </Panel>
-          <Panel title="Avoid Panel">
+          <Panel title="What Invalidates This Fast">
             <ScannerTable rows={scan.filter((row) => row.status_label === 'Avoid')} />
           </Panel>
         </div>
@@ -234,6 +254,170 @@ function StockPicker() {
         <EmptyState title="Ready for a deterministic scan" action="Run sample outlier scan">
           Sample mode does not need external keys and is safe for local UI checks.
         </EmptyState>
+      )}
+    </Page>
+  );
+}
+
+function VelocityScanner() {
+  const [payload, setPayload] = useState<ScannerRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    setLoading(true);
+    setError('');
+    try {
+      const result = await api.scan({
+        provider: form.get('provider'),
+        mode: 'velocity',
+        universe_path: form.get('universe_path'),
+        as_of_date: form.get('as_of_date'),
+      });
+      setPayload(result.results);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Velocity scan failed');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const candidates = payload.filter((row) => row.velocity_type !== 'No High-Velocity Trigger');
+  return (
+    <Page title="Velocity Scanner" subtitle="High-volume and quick-moving research candidates. No day-trading, options, execution, or buy-now language.">
+      <form className="toolbar" onSubmit={submit}>
+        <Select name="provider" label="Provider" options={['sample', 'local', 'real']} />
+        <Field name="universe_path" label="Universe" defaultValue="config/outlier_watchlist.txt" />
+        <Field name="as_of_date" label="As of" defaultValue="2026-04-24" />
+        <button className="primary" disabled={loading}><Activity size={16} /> {loading ? 'Scanning' : 'Run Velocity Scan'}</button>
+      </form>
+      {error && <Notice tone="bad">{error}</Notice>}
+      <div className="metric-grid">
+        <Metric label="Velocity names" value={String(candidates.length)} sub="Triggered or watchlisted" />
+        <Metric label="Avoid spikes" value={String(payload.filter((row) => String(row.velocity_type).includes('Avoid')).length)} sub="Failed spike / pump risk" />
+        <Metric label="Top score" value={String(Math.max(0, ...payload.map((row) => Number(row.velocity_score ?? 0))))} sub="Deterministic velocity score" />
+        <Metric label="Source" value="Python" sub="React only presents results" />
+      </div>
+      {loading ? <SkeletonGrid /> : (
+        <div className="grid">
+          <Panel title="Velocity Score Cards">
+            <div className="candidate-list">
+              {candidates.slice(0, 12).map((row) => <VelocityCard row={row} key={row.ticker} />)}
+            </div>
+          </Panel>
+          <Panel title="Velocity Table">
+            <DataTable rows={payload as Record<string, unknown>[]} columns={['ticker', 'velocity_score', 'velocity_type', 'velocity_risk', 'quick_trade_watch_label', 'expected_horizon', 'trigger_reason', 'chase_warning']} />
+          </Panel>
+        </div>
+      )}
+    </Page>
+  );
+}
+
+function ReplayLab() {
+  const latest = useAsync(() => api.latestReplay('outliers'), []);
+  const [payload, setPayload] = useState<ReplayPayload | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    setLoading(true);
+    setError('');
+    try {
+      const result = await api.runReplay({
+        provider: form.get('provider'),
+        universe: form.get('universe'),
+        start_date: form.get('start_date'),
+        end_date: form.get('end_date'),
+        frequency: form.get('frequency'),
+        mode: form.get('mode'),
+        top_n: Number(form.get('top_n') || 20),
+      });
+      setPayload(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Replay failed');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const report = payload ?? latest.data;
+  return (
+    <Page title="Replay Lab" subtitle="No-lookahead historical replay with SPY/QQQ and random baseline comparisons.">
+      <form className="toolbar replay-toolbar" onSubmit={submit}>
+        <Select name="provider" label="Provider" options={['sample', 'local', 'real']} />
+        <Select name="mode" label="Mode" options={['outliers', 'velocity']} />
+        <Select name="frequency" label="Frequency" options={['weekly', 'daily']} />
+        <Field name="universe" label="Universe" defaultValue="config/outlier_watchlist.txt" />
+        <Field name="start_date" label="Start" defaultValue="2020-01-01" />
+        <Field name="end_date" label="End" defaultValue="2026-04-24" />
+        <Field name="top_n" label="Top N" defaultValue="20" />
+        <button className="primary" disabled={loading}><RefreshCcw size={16} /> {loading ? 'Running' : 'Run Replay'}</button>
+      </form>
+      {error && <Notice tone="bad">{error}</Notice>}
+      <ReplaySummary report={report} />
+    </Page>
+  );
+}
+
+function OutlierCaseStudy() {
+  const [study, setStudy] = useState<Record<string, unknown> | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    setLoading(true);
+    setError('');
+    try {
+      setStudy(await api.runOutlierStudy({
+        provider: form.get('provider'),
+        ticker: form.get('ticker'),
+        start_date: form.get('start_date'),
+        end_date: form.get('end_date'),
+        mode: form.get('mode'),
+      }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Case study failed');
+    } finally {
+      setLoading(false);
+    }
+  }
+  const timeline = (study?.score_progression as Record<string, unknown>[] | undefined) ?? [];
+  return (
+    <Page title="Outlier Case Study" subtitle="Replay famous moves and judge caught, late, missed, or inconclusive with point-in-time limits visible.">
+      <form className="toolbar" onSubmit={submit}>
+        <Select name="provider" label="Provider" options={['sample', 'local', 'real']} />
+        <Select name="mode" label="Mode" options={['outliers', 'velocity']} />
+        <Field name="ticker" label="Ticker" defaultValue="GME" />
+        <Field name="start_date" label="Start" defaultValue="2020-08-01" />
+        <Field name="end_date" label="End" defaultValue="2021-02-15" />
+        <button className="primary" disabled={loading}><Sparkles size={16} /> {loading ? 'Running' : 'Run Study'}</button>
+      </form>
+      {error && <Notice tone="bad">{error}</Notice>}
+      {study && (
+        <div className="grid">
+          <div className="metric-grid">
+            <Metric label="Verdict" value={String(study.did_it_catch_move ?? 'n/a')} sub={String(study.was_it_early_or_late ?? 'Timing unavailable')} />
+            <Metric label="First trigger" value={String(study.first_trigger_date ?? 'n/a')} sub={String(study.first_trigger_type ?? '')} />
+            <Metric label="Max score" value={String(study.max_outlier_score ?? 'n/a')} sub={String(study.date_of_max_score ?? '')} />
+            <Metric label="Forward MFE" value={String(study.max_forward_return_after_trigger ?? 'n/a')} sub="After first trigger" />
+          </div>
+          <Panel title="Score And Price Progression">
+            <DualLineChart data={timeline} />
+          </Panel>
+          <Panel title="Trigger Timeline">
+            <DataTable rows={timeline.filter((row) => row.triggered) as Record<string, unknown>[]} columns={['date', 'price', 'outlier_score', 'velocity_score', 'status_label', 'outlier_type', 'velocity_type', 'relative_volume']} />
+          </Panel>
+          <Panel title="Narrative">
+            <Notice tone="neutral">{String(study.narrative ?? study.point_in_time_limitations ?? '')}</Notice>
+          </Panel>
+        </div>
       )}
     </Page>
   );
@@ -361,7 +545,9 @@ function ValidationLab() {
   const summary = useAsync(api.predictionsSummary, []);
   const predictions = useAsync(api.predictions, []);
   const signalAudit = useAsync(api.signalAuditLatest, []);
+  const proof = useAsync(api.latestProofReport, []);
   const [auditLoading, setAuditLoading] = useState(false);
+  const [proofLoading, setProofLoading] = useState(false);
   const [updateLoading, setUpdateLoading] = useState(false);
 
   async function runAudit() {
@@ -381,6 +567,24 @@ function ValidationLab() {
       predictions.setData(payload.predictions as PredictionRow[]);
     } finally {
       setUpdateLoading(false);
+    }
+  }
+
+  async function runProof() {
+    setProofLoading(true);
+    try {
+      proof.setData(await api.runProofReport({
+        provider: 'sample',
+        universe: 'config/outlier_watchlist.txt',
+        start_date: '2020-01-01',
+        end_date: '2026-04-24',
+        include_famous_outliers: true,
+        include_velocity: true,
+        baseline: 'SPY,QQQ',
+        random_baseline: true,
+      }));
+    } finally {
+      setProofLoading(false);
     }
   }
 
@@ -412,6 +616,12 @@ function ValidationLab() {
         <Notice tone="neutral">This audit measures signals against baselines and random samples. It does not prove profitability or prediction accuracy.</Notice>
         <button className="secondary" onClick={runAudit} disabled={auditLoading}>{auditLoading ? 'Running' : 'Run Signal Audit'}</button>
         <WorkflowReportView report={signalAudit.data} />
+      </Panel>
+      <Panel title="Proof Report">
+        <div className="action-strip">
+          <button className="secondary" onClick={runProof} disabled={proofLoading}>{proofLoading ? 'Running' : 'Run Evidence Report'}</button>
+        </div>
+        <ProofReportView report={proof.data} />
       </Panel>
       <Panel title="Predictions">
         <DataTable rows={predictions.data ?? []} columns={['prediction_id', 'ticker', 'final_combined_recommendation', 'next_review_date', 'outcome_label', 'return_20d']} />
@@ -769,6 +979,98 @@ function AlertList({ rows }: { rows: AlertRow[] }) {
   );
 }
 
+function filterStockRows(rows: ScannerRow[], tab: 'Outliers' | 'Velocity' | 'Long-Term' | 'Avoid') {
+  if (tab === 'Avoid') return rows.filter((row) => row.status_label === 'Avoid' || String(row.outlier_type).includes('Avoid'));
+  if (tab === 'Velocity') return rows.filter((row) => Number(row.velocity_score ?? 0) >= 35 && !String(row.velocity_type).includes('No High'));
+  if (tab === 'Long-Term') return rows.filter((row) => row.strategy_label === 'Long-Term Leader' || row.outlier_type === 'Long-Term Monster');
+  return rows.filter((row) => row.status_label !== 'Avoid');
+}
+
+function SignalBrief({ rows }: { rows: ScannerRow[] }) {
+  const row = rows[0];
+  if (!row) return <p className="muted">No row selected for this mode.</p>;
+  return (
+    <div className="brief-grid">
+      <div>
+        <span className="eyebrow">Actionable because</span>
+        <p>{row.why_it_passed?.[0] ?? row.trigger_reason ?? row.outlier_reason ?? 'The deterministic scanner has not produced a clean reason yet.'}</p>
+      </div>
+      <div>
+        <span className="eyebrow">Invalidates fast</span>
+        <p>{row.why_it_could_fail?.[0] ?? row.chase_warning ?? `Invalidation: ${row.invalidation_level ?? row.velocity_invalidation ?? 'unavailable'}`}</p>
+      </div>
+    </div>
+  );
+}
+
+function VelocityCard({ row }: { row: ScannerRow }) {
+  return (
+    <article className="candidate-card velocity-card">
+      <div className="provider-title">
+        <div>
+          <h3>{row.ticker}</h3>
+          <span>{row.velocity_type}</span>
+        </div>
+        <ScoreRing value={Number(row.velocity_score ?? 0)} label="Velocity" />
+      </div>
+      <div className="pill-row">
+        <Chip tone={String(row.velocity_type).includes('Avoid') ? 'bad' : 'good'}>{row.quick_trade_watch_label ?? 'Watch Only'}</Chip>
+        <Chip tone={row.velocity_risk === 'Extreme' || row.velocity_risk === 'High' ? 'warn' : 'neutral'}>{row.expected_horizon ?? 'n/a'}</Chip>
+      </div>
+      <p>{row.trigger_reason}</p>
+      <Notice tone={String(row.chase_warning).includes('No special') ? 'neutral' : 'warn'}>{row.chase_warning ?? 'Use invalidation discipline.'}</Notice>
+      <KeyValue payload={{ invalidation: row.velocity_invalidation, TP1: row.velocity_tp1, TP2: row.velocity_tp2 }} />
+    </article>
+  );
+}
+
+function ReplaySummary({ report }: { report: ReplayPayload | null }) {
+  const summary = report?.summary ?? {};
+  const strategy = (summary.strategy_performance as Record<string, unknown>[] | undefined) ?? [];
+  const returns = summary.average_forward_return_by_horizon as Record<string, unknown> | undefined;
+  const chartData = Object.entries(returns ?? {}).map(([horizon, value]) => ({ horizon, value: Number(value ?? 0) }));
+  return (
+    <div className="grid">
+      <Notice tone="neutral">{report?.point_in_time_limitations ?? 'No replay loaded yet. Sample replay is safest for a quick UI check.'}</Notice>
+      <div className="metric-grid">
+        <Metric label="Replay dates" value={String(summary.total_replay_dates ?? 0)} sub="Historical runs" />
+        <Metric label="Candidates" value={String(summary.total_candidates ?? 0)} sub="Selected rows" />
+        <Metric label="False positives" value={String(summary.false_positive_rate ?? 'n/a')} sub="20D <= 0 or invalidated" />
+        <Metric label="Evidence" value={String(summary.sample_size_warning ? 'Small sample' : 'Measured')} sub="Needs forward confirmation" />
+      </div>
+      <div className="grid two">
+        <Panel title="Forward Returns">
+          <MiniBarChart data={chartData} />
+        </Panel>
+        <Panel title="Baseline Comparison">
+          <KeyValue payload={(summary.excess_return_vs_baselines as Record<string, unknown> | undefined) ?? {}} />
+        </Panel>
+      </div>
+      <Panel title="Performance By Strategy">
+        <DataTable rows={strategy} columns={['strategy_label', 'sample_size', 'average', 'median', 'win_rate', 'false_positive_rate']} />
+      </Panel>
+      <Panel title="Recent Replay Rows">
+        <DataTable rows={(report?.results ?? []).slice(0, 30)} columns={['replay_date', 'ticker', 'status_label', 'outlier_type', 'outlier_score', 'velocity_type', 'velocity_score', 'risk_score']} />
+      </Panel>
+    </div>
+  );
+}
+
+function ProofReportView({ report }: { report: ProofReport | null }) {
+  if (!report) return <p className="muted">No proof report loaded.</p>;
+  return (
+    <div className="grid">
+      <div className="metric-grid compact">
+        <Metric label="Evidence strength" value={String(report.evidence_strength ?? 'Not enough evidence')} sub="Historical only" />
+        <Metric label="Real-money reliance" value={report.real_money_reliance ? 'Yes' : 'No'} sub="Must remain false" />
+        <Metric label="Velocity" value={report.velocity_replay ? 'Included' : 'Not included'} sub="High-volume triggers" />
+      </div>
+      <Notice tone="neutral">{report.language_note ?? 'Use evidence language. Do not treat this as proof of future results.'}</Notice>
+      <KeyValue payload={report.answers ?? {}} />
+    </div>
+  );
+}
+
 function DataTable({ rows, columns }: { rows: Record<string, unknown>[]; columns: string[] }) {
   if (!rows.length) return <p className="muted">No rows available.</p>;
   return (
@@ -801,6 +1103,43 @@ function Chart({ data }: { data: { ticker: string; weight: number }[] }) {
           <Tooltip contentStyle={{ background: '#101722', border: '1px solid #27364a', color: '#e8eef7' }} />
           <Bar dataKey="weight" fill="#4fb3a3" radius={[4, 4, 0, 0]} />
         </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function MiniBarChart({ data }: { data: { horizon: string; value: number }[] }) {
+  if (!data.length) return <p className="muted">No replay return data.</p>;
+  return (
+    <div className="chart">
+      <ResponsiveContainer width="100%" height={260}>
+        <BarChart data={data}>
+          <CartesianGrid stroke="#243244" />
+          <XAxis dataKey="horizon" stroke="#9fb0c4" />
+          <YAxis stroke="#9fb0c4" />
+          <Tooltip contentStyle={{ background: '#101722', border: '1px solid #27364a', color: '#e8eef7' }} />
+          <Bar dataKey="value" fill="#75d8c7" radius={[4, 4, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function DualLineChart({ data }: { data: Record<string, unknown>[] }) {
+  if (!data.length) return <p className="muted">No case-study timeline.</p>;
+  return (
+    <div className="chart tall">
+      <ResponsiveContainer width="100%" height={340}>
+        <ReLineChart data={data}>
+          <CartesianGrid stroke="#243244" />
+          <XAxis dataKey="date" stroke="#9fb0c4" minTickGap={28} />
+          <YAxis yAxisId="left" stroke="#75d8c7" />
+          <YAxis yAxisId="right" orientation="right" stroke="#f1bf69" />
+          <Tooltip contentStyle={{ background: '#101722', border: '1px solid #27364a', color: '#e8eef7' }} />
+          <Line yAxisId="left" type="monotone" dataKey="price" stroke="#75d8c7" dot={false} strokeWidth={2} />
+          <Line yAxisId="right" type="monotone" dataKey="outlier_score" stroke="#f1bf69" dot={false} strokeWidth={2} />
+          <Line yAxisId="right" type="monotone" dataKey="velocity_score" stroke="#a9b8ff" dot={false} strokeWidth={2} />
+        </ReLineChart>
       </ResponsiveContainer>
     </div>
   );

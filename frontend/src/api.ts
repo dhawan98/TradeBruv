@@ -53,6 +53,14 @@ export const api = {
     request<Record<string, unknown>>('/api/predictions/update', { method: 'POST', body: JSON.stringify(payload) }),
   caseStudy: (payload: Record<string, unknown>) =>
     request<Record<string, unknown>>('/api/case-study', { method: 'POST', body: JSON.stringify(payload) }),
+  runReplay: (payload: Record<string, unknown>) =>
+    request<ReplayPayload>('/api/replay/run', { method: 'POST', body: JSON.stringify(payload) }),
+  latestReplay: (mode = 'outliers') => request<ReplayPayload>(`/api/replay/latest?mode=${encodeURIComponent(mode)}`),
+  runOutlierStudy: (payload: Record<string, unknown>) =>
+    request<Record<string, unknown>>('/api/outlier-study/run', { method: 'POST', body: JSON.stringify(payload) }),
+  runProofReport: (payload: Record<string, unknown>) =>
+    request<ProofReport>('/api/proof-report/run', { method: 'POST', body: JSON.stringify(payload) }),
+  latestProofReport: () => request<ProofReport>('/api/proof-report/latest'),
   doctorLatest: () => request<WorkflowReport>('/api/doctor/latest'),
   runDoctor: (payload: Record<string, unknown>) =>
     request<WorkflowReport>('/api/doctor/run', { method: 'POST', body: JSON.stringify(payload) }),
@@ -120,6 +128,7 @@ export type ScannerRow = {
   status_label?: string;
   outlier_type?: string;
   outlier_risk?: string;
+  outlier_reason?: string;
   strategy_label?: string;
   confidence_label?: string;
   entry_zone?: string;
@@ -146,6 +155,16 @@ export type ScannerRow = {
   disclosure_lag_warning?: string;
   alternative_data_confirmed_by_price_volume?: boolean;
   alternative_data_warnings?: string[];
+  velocity_score?: number;
+  velocity_type?: string;
+  velocity_risk?: string;
+  trigger_reason?: string;
+  chase_warning?: string;
+  quick_trade_watch_label?: string;
+  velocity_invalidation?: number | string;
+  velocity_tp1?: number | string;
+  velocity_tp2?: number | string;
+  expected_horizon?: string;
 };
 
 export type ScanPayload = {
@@ -199,4 +218,24 @@ export type AppStatusReport = {
   openai_works?: boolean;
   gemini_works?: boolean;
   validation_sample_enough?: boolean;
+};
+export type ReplayPayload = {
+  available?: boolean;
+  mode?: string;
+  summary?: Record<string, unknown>;
+  results?: Record<string, unknown>[];
+  replay_scans?: Record<string, unknown>[];
+  point_in_time_limitations?: string;
+  json_path?: string;
+  summary_markdown_path?: string;
+};
+export type ProofReport = {
+  available?: boolean;
+  evidence_strength?: string;
+  real_money_reliance?: boolean;
+  language_note?: string;
+  answers?: Record<string, unknown>;
+  historical_replay?: Record<string, unknown>;
+  velocity_replay?: Record<string, unknown> | null;
+  famous_outliers?: Record<string, unknown> | null;
 };

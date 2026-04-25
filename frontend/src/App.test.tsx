@@ -3,6 +3,14 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 
+class ResizeObserverMock {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+vi.stubGlobal('ResizeObserver', ResizeObserverMock);
+
 vi.stubGlobal(
   'fetch',
   vi.fn((url: string) => {
@@ -68,6 +76,20 @@ vi.stubGlobal(
       '/api/predictions': [],
       '/api/predictions/summary': {},
       '/api/app-status/latest': { available: true, markdown: '# TradeBruv App Status Report\n- OpenAI works: false' },
+      '/api/replay/latest': {
+        available: true,
+        mode: 'outliers',
+        summary: { total_replay_dates: 2, total_candidates: 2, false_positive_rate: 0.5, average_forward_return_by_horizon: { '20d': 4.2 }, strategy_performance: [] },
+        results: [],
+        point_in_time_limitations: 'OHLCV-only replay.',
+      },
+      '/api/proof-report/latest': {
+        available: true,
+        evidence_strength: 'Not enough evidence',
+        real_money_reliance: false,
+        language_note: 'Evidence only.',
+        answers: {},
+      },
       '/api/scan': {
         generated_at: '2026-04-24T00:00:00Z',
         provider: 'sample',
@@ -85,13 +107,34 @@ vi.stubGlobal(
             invalidation_level: 90,
             tp1: 110,
             tp2: 120,
+            velocity_score: 72,
+            velocity_type: 'Relative Volume Explosion',
+            velocity_risk: 'High',
+            quick_trade_watch_label: 'Quick trade watch',
+            trigger_reason: 'Relative volume is high.',
+            chase_warning: 'No special chase warning beyond normal invalidation discipline.',
+            expected_horizon: '5D',
           },
         ],
         market_regime: {},
         summary: {},
       },
+      '/api/outlier-study/run': {
+        ticker: 'GME',
+        available: true,
+        did_it_catch_move: 'caught',
+        was_it_early_or_late: 'early',
+        first_trigger_date: '2021-01-04',
+        first_trigger_type: 'Explosive Momentum',
+        max_outlier_score: 80,
+        date_of_max_score: '2021-01-11',
+        max_forward_return_after_trigger: 120,
+        score_progression: [{ date: '2021-01-04', price: 20, outlier_score: 70, velocity_score: 75, triggered: true }],
+        narrative: 'Mock case study narrative.',
+      },
     };
-    const key = Object.keys(payloads).find((path) => url.endsWith(path));
+    const pathname = new URL(url, 'http://localhost:8000').pathname;
+    const key = Object.keys(payloads).find((path) => pathname === path);
     return Promise.resolve(new Response(JSON.stringify(payloads[key ?? '/api/alerts']), { status: 200 }));
   }),
 );
@@ -133,5 +176,22 @@ describe('App', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Reports/i }));
     expect(await screen.findByText('App Status Report')).toBeInTheDocument();
     expect(screen.getByText(/OpenAI works/i)).toBeInTheDocument();
+  });
+
+  it('renders Replay Lab, Velocity Scanner, and Outlier Case Study', async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: /Replay Lab/i }));
+    expect(await screen.findByRole('heading', { name: /Replay Lab/i })).toBeInTheDocument();
+    expect(screen.getByText('OHLCV-only replay.')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Velocity Scanner/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Run Velocity Scan/i }));
+    expect(await screen.findByText('Velocity Score Cards')).toBeInTheDocument();
+    expect(screen.getAllByText('Relative Volume Explosion').length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('button', { name: /Outlier Case Study/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Run Study/i }));
+    expect(await screen.findByText('Trigger Timeline')).toBeInTheDocument();
+    expect(screen.getByText('Mock case study narrative.')).toBeInTheDocument();
   });
 });

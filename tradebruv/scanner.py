@@ -115,7 +115,9 @@ class DeterministicScanner:
             except Exception as exc:
                 results.append(self._failure_result(ticker, exc))
 
-        if mode == "outliers":
+        if mode == "velocity":
+            results.sort(key=lambda result: (-result.velocity_score, result.risk_score, -result.outlier_score, result.ticker))
+        elif mode == "outliers":
             results.sort(key=lambda result: (-result.outlier_score, result.risk_score, result.ticker))
         else:
             results.sort(key=lambda result: (-result.winner_score, result.risk_score, -result.outlier_score, result.ticker))
@@ -258,6 +260,7 @@ class DeterministicScanner:
             "alternative_data_source_count": alternative_data["alternative_data_source_count"],
             "outlier_components": outlier_components,
         }
+        velocity = self._velocity_payload(features=features, security=security, trade_plan=trade_plan, risk_score=risk_score)
 
         return ScannerResult(
             ticker=security.ticker,
@@ -299,6 +302,16 @@ class DeterministicScanner:
             data_used=data_used,
             catalyst_intelligence=catalyst_intelligence,
             alternative_data=alternative_data,
+            velocity_score=velocity["velocity_score"],
+            velocity_type=velocity["velocity_type"],
+            velocity_risk=velocity["velocity_risk"],
+            trigger_reason=velocity["trigger_reason"],
+            chase_warning=velocity["chase_warning"],
+            quick_trade_watch_label=velocity["quick_trade_watch_label"],
+            velocity_invalidation=velocity["invalidation"],
+            velocity_tp1=velocity["TP1"],
+            velocity_tp2=velocity["TP2"],
+            expected_horizon=velocity["expected_horizon"],
         )
 
     def _failure_result(self, ticker: str, error: Exception) -> ScannerResult:
@@ -1418,6 +1431,162 @@ class DeterministicScanner:
         if security.social_attention and security.social_attention.attention_velocity is not None and security.social_attention.attention_velocity >= 1.2 and features.unusual_volume:
             return "Attention is spiking quickly, so chasing a headline move carries extra risk."
         return None
+
+    def _velocity_payload(
+        self,
+        *,
+        features: FeatureSnapshot,
+        security: SecurityData,
+        trade_plan: TradePlan,
+        risk_score: int,
+    ) -> dict[str, object]:
+        bars = security.bars
+        latest = bars[-1]
+        previous = bars[-2] if len(bars) >= 2 else None
+        gap_pct = ((latest.open / previous.close) - 1.0) if previous and previous.close else 0.0
+        recent_volume = average([bar.volume for bar in bars[-5:]]) or 0.0
+        prior_volume = average([bar.volume for bar in bars[-25:-5]]) or 0.0
+        five_day_volume_ratio = (recent_volume / prior_volume) if prior_volume else 0.0
+
+        catalyst_present = bool(
+            (security.catalyst and security.catalyst.has_catalyst)
+            or security.catalyst_tags
+            or (
+                security.social_attention
+                and (
+                    (security.social_attention.news_headline_count or 0) >= 5
+                    or (security.social_attention.attention_velocity or 0) >= 0.8
+                )
+            )
+        )
+        squeeze_context = bool(
+            security.short_interest
+            and (
+                (security.short_interest.short_interest_percent_float or 0) >= 0.15
+                or (security.short_interest.days_to_cover or 0) >= 4
+                or (security.short_interest.float_shares is not None and security.short_interest.float_shares <= 60_000_000)
+            )
+        )
+
+        relative_volume_score = 0
+        if features.relative_volume_ratio is not None:
+            relative_volume_score += int(clamp((features.relative_volume_ratio - 1.0) / 3.0 * 18, 0, 18))
+        relative_volume_score += int(clamp((five_day_volume_ratio - 1.0) / 2.0 * 7, 0, 7))
+
+        acceleration = max(features.return_5d or 0.0, 0.0) + max(features.return_10d or 0.0, 0.0) * 0.5
+        price_acceleration_score = int(clamp(acceleration / 0.22 * 20, 0, 20))
+        if gap_pct >= 0.04:
+            price_acceleration_score = min(20, price_acceleration_score + 4)
+
+        close_strength_score = int(clamp(features.close_location * 11, 0, 11))
+        if gap_pct >= 0.03 and latest.close >= latest.open and features.close_location >= 0.55:
+            close_strength_score += 4
+        close_strength_score = min(close_strength_score, 15)
+
+        rs_score = 0
+        if features.rs_5d is not None and features.rs_5d > 0:
+            rs_score += 5
+        if features.rs_1m is not None and features.rs_1m > 0:
+            rs_score += 5
+        if features.rs_3m is not None and features.rs_3m > 0:
+            rs_score += 3
+        if features.rs_line_rising:
+            rs_score += 2
+        rs_score = min(rs_score, 15)
+
+        catalyst_score = 10 if catalyst_present else 0
+        squeeze_score = 10 if squeeze_context else 0
+        clean_score = 5
+        if features.gap_and_fade or features.failed_breakout:
+            clean_score -= 4
+        if features.low_liquidity or features.pump_risk:
+            clean_score -= 3
+        if features.extreme_overextension and not features.close_holds_breakout:
+            clean_score -= 2
+        clean_score = int(clamp(clean_score, 0, 5))
+
+        score = int(
+            clamp(
+                relative_volume_score
+                + price_acceleration_score
+                + close_strength_score
+                + rs_score
+                + catalyst_score
+                + squeeze_score
+                + clean_score,
+                0,
+                100,
+            )
+        )
+
+        velocity_type = "Momentum Continuation"
+        if features.low_liquidity and (features.pump_risk or gap_pct >= 0.08 or (features.relative_volume_ratio or 0) >= 4):
+            velocity_type = "Pump Risk / Avoid"
+        elif features.gap_and_fade or features.failed_breakout or features.weak_breakout_close:
+            velocity_type = "Failed Spike / Avoid"
+        elif squeeze_context and score >= 55:
+            velocity_type = "Squeeze Watch"
+        elif catalyst_present and features.unusual_volume and features.close_location >= 0.6:
+            velocity_type = "News + Volume Confirmed"
+        elif gap_pct >= 0.03 and latest.close >= latest.open and features.close_location >= 0.55:
+            velocity_type = "Gap and Hold"
+        elif features.unusual_volume and score >= 45:
+            velocity_type = "Relative Volume Explosion"
+        elif features.breakout_confirmed and features.close_location >= 0.55:
+            velocity_type = "High Volume Breakout"
+        elif score < 35:
+            velocity_type = "No High-Velocity Trigger"
+
+        avoid_type = velocity_type.endswith("/ Avoid")
+        velocity_risk = "Extreme" if velocity_type == "Pump Risk / Avoid" or risk_score >= 75 else "High" if avoid_type or risk_score >= 50 or features.extreme_overextension else "Medium" if risk_score >= 25 else "Low"
+        label = "Avoid quick setup" if avoid_type else "High velocity research candidate" if score >= 65 else "Quick trade watch" if score >= 45 else "Watch Only"
+        expected_horizon = "1D" if gap_pct >= 0.06 or features.relative_volume_ratio and features.relative_volume_ratio >= 4 else "5D" if features.return_5d and features.return_5d >= 0.08 else "10D" if score >= 50 else "20D"
+
+        invalidation = trade_plan.invalidation_level
+        if invalidation is None and features.atr14:
+            invalidation = features.current_price - max(features.atr14, features.current_price * 0.04)
+        tp1 = trade_plan.tp1 or (features.current_price * 1.06)
+        tp2 = trade_plan.tp2 or (features.current_price * 1.12)
+
+        reasons = []
+        if features.relative_volume_ratio is not None:
+            reasons.append(f"1D relative volume is {features.relative_volume_ratio:.2f}x the 50D average.")
+        if five_day_volume_ratio:
+            reasons.append(f"5D volume expansion is {five_day_volume_ratio:.2f}x prior volume.")
+        if gap_pct:
+            reasons.append(f"Gap from prior close is {gap_pct * 100:.2f}%.")
+        if features.close_location >= 0.65:
+            reasons.append("The latest close finished high in its daily range.")
+        if features.rs_5d is not None and features.rs_5d > 0:
+            reasons.append("Short-window relative strength is ahead of SPY/QQQ.")
+        if catalyst_present:
+            reasons.append("A catalyst or attention signal is present, subject to point-in-time availability.")
+        if not reasons:
+            reasons.append("No clean high-velocity ingredients were confirmed.")
+
+        warnings = []
+        if features.gap_and_fade:
+            warnings.append("Gap-and-fade risk: price opened strong but closed below the open.")
+        if features.low_liquidity:
+            warnings.append("Low-liquidity warning: thin volume or low price can make spikes unreliable.")
+        if features.pump_risk or velocity_type == "Pump Risk / Avoid":
+            warnings.append("Pump-risk warning: attention and price/volume behavior may be unstable.")
+        if features.extreme_overextension:
+            warnings.append("Chase warning: move is extended from nearby support.")
+        chase_warning = " ".join(warnings) if warnings else "No special chase warning beyond normal invalidation discipline."
+
+        return {
+            "velocity_score": score,
+            "velocity_type": velocity_type,
+            "velocity_risk": velocity_risk,
+            "trigger_reason": " ".join(reasons[:4]),
+            "chase_warning": chase_warning,
+            "quick_trade_watch_label": label,
+            "invalidation": round(invalidation, 2) if invalidation is not None else None,
+            "TP1": round(tp1, 2) if tp1 is not None else None,
+            "TP2": round(tp2, 2) if tp2 is not None else None,
+            "expected_horizon": expected_horizon,
+        }
 
     def _squeeze_watch_payload(self, security: SecurityData) -> dict[str, object]:
         if not security.short_interest:

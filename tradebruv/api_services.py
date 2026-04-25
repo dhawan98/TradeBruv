@@ -39,6 +39,7 @@ from .env import (
 )
 from .doctor import load_latest_doctor, run_doctor
 from .readiness import load_latest_readiness, run_readiness
+from .replay import run_famous_outlier_studies, run_historical_replay, run_outlier_study, run_proof_report
 from .signal_quality import load_latest_signal_quality, run_case_study, run_signal_audit
 from .journal import DEFAULT_JOURNAL_PATH, add_journal_entry, journal_stats, update_journal_entry
 from .portfolio import DEFAULT_PORTFOLIO_PATH, delete_position, import_portfolio_csv, save_portfolio
@@ -121,7 +122,7 @@ def run_scan(payload: dict[str, Any]) -> dict[str, Any]:
     )
     output_dir = Path(str(payload.get("output_dir") or "outputs"))
     output_dir.mkdir(parents=True, exist_ok=True)
-    stem = "outlier_scan_report" if mode == "outliers" else "scan_report"
+    stem = "velocity_scan_report" if mode == "velocity" else "outlier_scan_report" if mode == "outliers" else "scan_report"
     json_path = output_dir / f"{stem}.json"
     csv_path = output_dir / f"{stem}.csv"
     result_objects = [SimpleNamespace(to_dict=lambda row=row: row) for row in report.results]
@@ -311,6 +312,67 @@ def case_study(payload: dict[str, Any]) -> dict[str, Any]:
         signal_date=signal_date,
         end_date=_parse_date(payload.get("end_date")),
     )
+
+
+def replay_run(payload: dict[str, Any]) -> dict[str, Any]:
+    return run_historical_replay(
+        provider=_provider({**payload, "history_period": payload.get("history_period") or "max"}),
+        universe=load_universe(Path(str(payload.get("universe") or "config/outlier_watchlist.txt"))),
+        start_date=_parse_date(payload.get("start_date")) or date(2020, 1, 1),
+        end_date=_parse_date(payload.get("end_date")) or date.today(),
+        frequency=str(payload.get("frequency") or "weekly"),
+        mode=str(payload.get("mode") or "outliers"),
+        horizons=[int(item) for item in str(payload.get("horizons") or "1,5,10,20,60,120").split(",") if item.strip()],
+        top_n=int(payload.get("top_n") or 20),
+        output_dir=Path(str(payload.get("output_dir") or "outputs/replay")),
+    )
+
+
+def replay_latest(mode: str = "outliers") -> dict[str, Any]:
+    base = Path("outputs/replay")
+    candidates = [base / "replay_results.json"]
+    if mode == "velocity":
+        candidates.insert(0, base / "velocity_replay_results.json")
+    for path in candidates:
+        if path.exists():
+            with path.open(encoding="utf-8") as handle:
+                return json.load(handle)
+    return {"available": False, "summary": {}, "results": [], "point_in_time_limitations": "No replay report loaded yet."}
+
+
+def outlier_study_run(payload: dict[str, Any]) -> dict[str, Any]:
+    provider = _provider({**payload, "history_period": payload.get("history_period") or "max"})
+    if payload.get("preset") == "famous":
+        return run_famous_outlier_studies(provider=provider, mode=str(payload.get("mode") or "outliers"))
+    return run_outlier_study(
+        provider=provider,
+        ticker=str(payload.get("ticker") or "GME").upper(),
+        start_date=_parse_date(payload.get("start_date")) or date(2020, 8, 1),
+        end_date=_parse_date(payload.get("end_date")) or date(2021, 2, 15),
+        mode=str(payload.get("mode") or "outliers"),
+        output_dir=Path(str(payload.get("output_dir") or "outputs/case_studies")),
+    )
+
+
+def proof_report_run(payload: dict[str, Any]) -> dict[str, Any]:
+    return run_proof_report(
+        provider=_provider({**payload, "history_period": payload.get("history_period") or "max"}),
+        universe=load_universe(Path(str(payload.get("universe") or "config/outlier_watchlist.txt"))),
+        start_date=_parse_date(payload.get("start_date")) or date(2020, 1, 1),
+        end_date=_parse_date(payload.get("end_date")) or date.today(),
+        include_famous_outliers=bool(payload.get("include_famous_outliers", True)),
+        include_velocity=bool(payload.get("include_velocity", True)),
+        baselines=[item.strip().upper() for item in str(payload.get("baseline") or "SPY,QQQ").split(",") if item.strip()],
+        random_baseline=bool(payload.get("random_baseline", True)),
+    )
+
+
+def proof_report_latest() -> dict[str, Any]:
+    path = Path("outputs/proof/proof_report.json")
+    if not path.exists():
+        return {"available": False, "evidence_strength": "Not enough evidence", "answers": {}}
+    with path.open(encoding="utf-8") as handle:
+        return json.load(handle)
 
 
 def journal() -> dict[str, Any]:

@@ -141,6 +141,26 @@ def create_app() -> "FastAPI":
     def case_study(payload: dict[str, Any]) -> dict[str, Any]:
         return services.case_study(payload)
 
+    @app.post("/api/replay/run")
+    def replay_run(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return services.replay_run(payload or {})
+
+    @app.get("/api/replay/latest")
+    def replay_latest(mode: str = Query(default="outliers")) -> dict[str, Any]:
+        return services.replay_latest(mode=mode)
+
+    @app.post("/api/outlier-study/run")
+    def outlier_study_run(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return services.outlier_study_run(payload or {})
+
+    @app.post("/api/proof-report/run")
+    def proof_report_run(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return services.proof_report_run(payload or {})
+
+    @app.get("/api/proof-report/latest")
+    def proof_report_latest() -> dict[str, Any]:
+        return services.proof_report_latest()
+
     @app.get("/api/journal")
     def journal() -> dict[str, Any]:
         return services.journal()
