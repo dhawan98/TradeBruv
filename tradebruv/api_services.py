@@ -1,0 +1,382 @@
+from __future__ import annotations
+
+import json
+from datetime import date, datetime
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+from .automation import DEFAULT_DAILY_OUTPUT_DIR, DEFAULT_SCAN_ARCHIVE_ROOT
+from .cli import build_provider, load_universe
+from .dashboard_data import (
+    build_dashboard_combined_recommendation,
+    build_dashboard_data_source_status,
+    build_dashboard_portfolio_summary,
+    build_dashboard_validation_metrics,
+    build_daily_summary,
+    find_latest_report,
+    load_alerts_report,
+    load_daily_summary_report,
+    load_dashboard_journal,
+    load_dashboard_portfolio,
+    load_dashboard_predictions,
+    load_dashboard_report,
+    run_dashboard_ai_committee,
+    run_dashboard_case_study,
+    run_dashboard_deep_research,
+    run_dashboard_portfolio_analysis,
+    run_dashboard_scan,
+    upsert_dashboard_position,
+)
+from .env import (
+    LOCAL_ENV_WARNING,
+    create_local_env_from_template,
+    local_env_editor_enabled,
+    read_env_template,
+    update_local_env,
+)
+from .journal import DEFAULT_JOURNAL_PATH, add_journal_entry, journal_stats, update_journal_entry
+from .portfolio import DEFAULT_PORTFOLIO_PATH, delete_position, import_portfolio_csv, save_portfolio
+from .reporting import write_csv_report, write_json_report
+from .validation_lab import (
+    DEFAULT_PREDICTIONS_PATH,
+    add_prediction,
+    create_prediction_record,
+    save_predictions,
+    update_prediction_outcomes,
+)
+
+
+DEFAULT_UNIVERSE = Path("config/sample_universe.txt")
+
+
+def health() -> dict[str, Any]:
+    sources = data_sources()
+    portfolio = portfolio_state()
+    latest = reports_latest()
+    return {
+        "ok": True,
+        "app": "TradeBruv",
+        "environment": "local",
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "primary_ui": "vite-react",
+        "fallback_ui": "streamlit",
+        "provider": latest.get("provider", "sample"),
+        "mode": latest.get("mode", "outliers"),
+        "last_scan_time": latest.get("generated_at", "unavailable"),
+        "data_source_health": sources["summary"],
+        "ai": _ai_status(sources["rows"]),
+        "portfolio_value": portfolio["summary"].get("total_market_value", 0),
+        "alert_count": len(alerts()),
+        "local_env_editor_enabled": local_env_editor_enabled(),
+        "warning": "Research support only. No broker execution or order placement.",
+    }
+
+
+def data_sources() -> dict[str, Any]:
+    payload = build_dashboard_data_source_status()
+    rows = [_safe_source_row(row) for row in payload["rows"]]
+    return {
+        "rows": rows,
+        "summary": payload["summary"],
+        "local_env_editor_enabled": local_env_editor_enabled(),
+        "local_env_warning": LOCAL_ENV_WARNING,
+    }
+
+
+def env_template() -> dict[str, Any]:
+    return read_env_template()
+
+
+def create_env_template() -> dict[str, Any]:
+    return create_local_env_from_template()
+
+
+def update_env(values: dict[str, str]) -> dict[str, Any]:
+    return update_local_env(values)
+
+
+def run_scan(payload: dict[str, Any]) -> dict[str, Any]:
+    provider = str(payload.get("provider") or "sample")
+    mode = str(payload.get("mode") or "outliers")
+    universe_path = Path(str(payload.get("universe_path") or DEFAULT_UNIVERSE))
+    catalyst_file = payload.get("catalyst_file")
+    analysis_date = _parse_date(payload.get("as_of_date")) or date.today()
+    report = run_dashboard_scan(
+        provider_name=provider,
+        mode=mode,
+        universe_path=universe_path,
+        limit=int(payload.get("limit") or 0),
+        analysis_date=analysis_date,
+        data_dir=Path(str(payload["data_dir"])) if payload.get("data_dir") else None,
+        catalyst_file=Path(str(catalyst_file)) if catalyst_file else None,
+        ai_explanations=bool(payload.get("ai_explanations", False)),
+        mock_ai_explanations=bool(payload.get("mock_ai_explanations", False)),
+    )
+    output_dir = Path(str(payload.get("output_dir") or "outputs"))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = "outlier_scan_report" if mode == "outliers" else "scan_report"
+    json_path = output_dir / f"{stem}.json"
+    csv_path = output_dir / f"{stem}.csv"
+    result_objects = [SimpleNamespace(to_dict=lambda row=row: row) for row in report.results]
+    write_json_report(result_objects, json_path, mode=mode)
+    write_csv_report(result_objects, csv_path)
+    return {
+        "generated_at": report.generated_at,
+        "scanner": report.scanner,
+        "provider": report.provider,
+        "mode": report.mode,
+        "source": report.source,
+        "market_regime": report.market_regime,
+        "results": report.results,
+        "summary": build_daily_summary(report.results),
+        "json_path": str(json_path),
+        "csv_path": str(csv_path),
+    }
+
+
+def reports_latest() -> dict[str, Any]:
+    latest = find_latest_report(Path("outputs"))
+    if latest is None:
+        return {"available": False, "results": [], "generated_at": "unavailable"}
+    report = load_dashboard_report(latest)
+    return {
+        "available": True,
+        "path": str(latest),
+        "generated_at": report.generated_at,
+        "scanner": report.scanner,
+        "provider": report.provider,
+        "mode": report.mode,
+        "source": report.source,
+        "market_regime": report.market_regime,
+        "results": report.results,
+        "summary": build_daily_summary(report.results),
+    }
+
+
+def reports_archive() -> dict[str, Any]:
+    files = sorted(DEFAULT_SCAN_ARCHIVE_ROOT.rglob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True) if DEFAULT_SCAN_ARCHIVE_ROOT.exists() else []
+    return {
+        "archive_root": str(DEFAULT_SCAN_ARCHIVE_ROOT),
+        "reports": [
+            {"path": str(path), "name": path.name, "modified_at": datetime.utcfromtimestamp(path.stat().st_mtime).isoformat() + "Z"}
+            for path in files[:100]
+        ],
+    }
+
+
+def daily_summary() -> dict[str, Any]:
+    path = DEFAULT_DAILY_OUTPUT_DIR / "daily_summary.json"
+    if path.exists():
+        return load_daily_summary_report(path)
+    latest = reports_latest()
+    return {
+        "available": latest.get("available", False),
+        "generated_at": latest.get("generated_at", "unavailable"),
+        "top_outlier_candidates": latest.get("summary", {}).get("top_outlier_candidates", []),
+        "top_avoid_names": latest.get("summary", {}).get("top_avoid_names", []),
+        "market_regime": latest.get("market_regime", {}),
+        "markdown": "",
+    }
+
+
+def alerts() -> list[dict[str, Any]]:
+    path = DEFAULT_DAILY_OUTPUT_DIR / "alerts.json"
+    if not path.exists():
+        return []
+    return load_alerts_report(path).get("alerts", [])
+
+
+def deep_research(payload: dict[str, Any]) -> dict[str, Any]:
+    provider = _provider(payload)
+    return run_dashboard_deep_research(
+        ticker=str(payload.get("ticker") or "").upper(),
+        provider=provider,
+        portfolio_rows=load_dashboard_portfolio(DEFAULT_PORTFOLIO_PATH),
+        journal_rows=load_dashboard_journal(DEFAULT_JOURNAL_PATH),
+        analysis_date=_parse_date(payload.get("as_of_date")),
+    )
+
+
+def portfolio_state() -> dict[str, Any]:
+    rows = load_dashboard_portfolio(DEFAULT_PORTFOLIO_PATH)
+    return {"positions": rows, "summary": build_dashboard_portfolio_summary(rows)}
+
+
+def import_portfolio(payload: dict[str, Any]) -> dict[str, Any]:
+    rows = [position.to_dict() for position in import_portfolio_csv(Path(str(payload["path"])), DEFAULT_PORTFOLIO_PATH)]
+    return {"positions": rows, "summary": build_dashboard_portfolio_summary(rows)}
+
+
+def upsert_portfolio_position(payload: dict[str, Any]) -> dict[str, Any]:
+    position = upsert_dashboard_position(payload, DEFAULT_PORTFOLIO_PATH)
+    return {"position": position, **portfolio_state()}
+
+
+def delete_portfolio_position(ticker: str, account_name: str | None = None) -> dict[str, Any]:
+    removed = delete_position(ticker=ticker, account_name=account_name, portfolio_path=DEFAULT_PORTFOLIO_PATH)
+    return {"removed": removed, **portfolio_state()}
+
+
+def refresh_portfolio_prices(payload: dict[str, Any]) -> dict[str, Any]:
+    rows = load_dashboard_portfolio(DEFAULT_PORTFOLIO_PATH)
+    provider = _provider(payload)
+    from .dashboard_data import refresh_dashboard_portfolio_prices
+
+    refreshed = refresh_dashboard_portfolio_prices(rows=rows, provider=provider)
+    save_portfolio(refreshed, DEFAULT_PORTFOLIO_PATH)
+    return {"positions": refreshed, "summary": build_dashboard_portfolio_summary(refreshed)}
+
+
+def analyze_portfolio(payload: dict[str, Any]) -> dict[str, Any]:
+    return run_dashboard_portfolio_analysis(
+        rows=load_dashboard_portfolio(DEFAULT_PORTFOLIO_PATH),
+        provider=_provider(payload),
+        analysis_date=_parse_date(payload.get("as_of_date")),
+    )
+
+
+def ai_committee(payload: dict[str, Any]) -> dict[str, Any]:
+    scanner_row = payload.get("scanner_row")
+    if not scanner_row:
+        ticker = str(payload.get("ticker") or "NVDA").upper()
+        scanner_row = deep_research({"ticker": ticker, "provider": payload.get("provider", "sample")}).get("scanner_row", {})
+    output = run_dashboard_ai_committee(
+        scanner_row=scanner_row,
+        portfolio_context=payload.get("portfolio_context"),
+        mode=str(payload.get("mode") or "Mock AI for testing"),
+    )
+    combined = build_dashboard_combined_recommendation(
+        rule_based=str(scanner_row.get("status_label", "Data Insufficient")),
+        ai_output=output,
+        scanner_row=scanner_row,
+    )
+    return {"committee": output, "combined": combined, "scanner_row": scanner_row}
+
+
+def predictions() -> list[dict[str, Any]]:
+    return load_dashboard_predictions(DEFAULT_PREDICTIONS_PATH)
+
+
+def add_prediction_endpoint(payload: dict[str, Any]) -> dict[str, Any]:
+    if "scanner_row" in payload:
+        record = create_prediction_record(
+            scanner_row=payload["scanner_row"],
+            rule_based_recommendation=str(payload.get("rule_based_recommendation") or payload["scanner_row"].get("status_label", "Data Insufficient")),
+            ai_committee_recommendation=str(payload.get("ai_committee_recommendation") or "Data Insufficient"),
+            final_combined_recommendation=payload.get("final_combined_recommendation"),
+            thesis=str(payload.get("thesis") or ""),
+            events_to_watch=payload.get("events_to_watch") or [],
+            owned_at_signal=bool(payload.get("owned_at_signal", False)),
+            portfolio_weight_at_signal=payload.get("portfolio_weight_at_signal", ""),
+        )
+    else:
+        record = dict(payload)
+    return add_prediction(record, DEFAULT_PREDICTIONS_PATH)
+
+
+def update_predictions(payload: dict[str, Any]) -> dict[str, Any]:
+    records = update_prediction_outcomes(
+        records=predictions(),
+        provider=_provider(payload),
+        as_of_date=_parse_date(payload.get("as_of_date")),
+    )
+    save_predictions(records, DEFAULT_PREDICTIONS_PATH)
+    return {"predictions": records, "summary": build_dashboard_validation_metrics(records)}
+
+
+def predictions_summary() -> dict[str, Any]:
+    return build_dashboard_validation_metrics(predictions())
+
+
+def case_study(payload: dict[str, Any]) -> dict[str, Any]:
+    signal_date = _parse_date(payload.get("signal_date")) or date(2021, 1, 4)
+    return run_dashboard_case_study(
+        ticker=str(payload.get("ticker") or "NVDA").upper(),
+        provider=_provider(payload),
+        signal_date=signal_date,
+        end_date=_parse_date(payload.get("end_date")),
+    )
+
+
+def journal() -> dict[str, Any]:
+    rows = load_dashboard_journal(DEFAULT_JOURNAL_PATH)
+    return {"entries": rows, "stats": journal_stats(rows)}
+
+
+def add_journal(payload: dict[str, Any]) -> dict[str, Any]:
+    entry = add_journal_entry(
+        journal_path=DEFAULT_JOURNAL_PATH,
+        from_report=payload.get("from_report"),
+        ticker=payload.get("ticker"),
+        updates=payload.get("updates") or payload,
+    )
+    return {"entry": entry, **journal()}
+
+
+def update_journal(entry_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    entry = update_journal_entry(entry_id=entry_id, updates=payload, journal_path=DEFAULT_JOURNAL_PATH)
+    return {"entry": entry, **journal()}
+
+
+def doctor_latest() -> dict[str, Any]:
+    return {"available": False, "status": "not_run", "message": "Live doctor/readiness testing is scheduled for the next pass."}
+
+
+def readiness_latest() -> dict[str, Any]:
+    return {"available": False, "status": "not_run", "message": "No live API testing in Pass 7."}
+
+
+def _provider(payload: dict[str, Any]):
+    provider_name = str(payload.get("provider") or "sample")
+    args = SimpleNamespace(
+        provider=provider_name,
+        data_dir=Path(str(payload["data_dir"])) if payload.get("data_dir") else None,
+        history_period=str(payload.get("history_period") or "3y"),
+    )
+    return build_provider(args=args, analysis_date=_parse_date(payload.get("as_of_date")) or date.today())
+
+
+def _safe_source_row(row: dict[str, Any]) -> dict[str, Any]:
+    safe = dict(row)
+    safe["required_env_vars"] = _display_env_names(safe)
+    safe["missing_env_vars_list"] = _split_env_names(safe.get("missing_env_vars"))
+    safe["configured_env_vars_list"] = _split_env_names(safe.get("configured_env_vars"))
+    safe["last_checked"] = safe.get("last_successful_check")
+    return safe
+
+
+def _display_env_names(row: dict[str, Any]) -> list[str]:
+    names = _split_env_names(row.get("env_vars_needed"))
+    extras = {
+        "OpenAI": ["OPENAI_MODEL"],
+        "Anthropic Claude": ["ANTHROPIC_MODEL"],
+        "Google Gemini": ["GEMINI_MODEL"],
+        "OpenRouter / OpenAI-compatible endpoint": ["TRADEBRUV_LLM_MODEL"],
+    }
+    return [*names, *extras.get(str(row.get("name")), [])]
+
+
+def _split_env_names(value: Any) -> list[str]:
+    text = str(value or "")
+    if text == "none":
+        return []
+    return [item.strip() for item in text.split(",") if item.strip()]
+
+
+def _ai_status(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    ai_rows = [row for row in rows if row.get("category") == "AI providers"]
+    configured = [row["name"] for row in ai_rows if row.get("configured")]
+    missing = {row["name"]: row.get("missing_env_vars_list", []) for row in ai_rows if not row.get("configured")}
+    return {"configured": configured, "missing": missing, "any_configured": bool(configured)}
+
+
+def _parse_date(value: Any) -> date | None:
+    if not value:
+        return None
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError:
+        return None

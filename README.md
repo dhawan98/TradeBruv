@@ -136,6 +136,152 @@ These files are inputs only. The scanner does not hardcode any universe inside t
 
 ## Quick Start
 
+## Pass 7 Primary UI and API
+
+TradeBruv now has two local interfaces:
+- Primary UI: Vite/React in [frontend/](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/frontend)
+- Fallback/dev UI: the existing Streamlit dashboard through `tradebruv-dashboard`
+
+The React UI is a cockpit for the existing Python logic. It calls the FastAPI backend and does not duplicate scanner, portfolio, research, AI committee, validation, alert, or journal scoring logic in TypeScript.
+
+### Install Backend API Dependencies
+
+```bash
+python3 -m pip install -e '.[api]'
+```
+
+For the full local stack, including Streamlit and yfinance:
+
+```bash
+python3 -m pip install -e '.[all]'
+```
+
+### Run the FastAPI Backend
+
+```bash
+python3 -m tradebruv.api
+```
+
+Equivalent entry point after install:
+
+```bash
+tradebruv-api
+```
+
+The backend listens on `http://127.0.0.1:8000` and loads `.env` automatically if it exists. The app still works without `.env`.
+
+### Run the React Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Optional public frontend config:
+
+```bash
+VITE_TRADEBRUV_API_URL=http://localhost:8000
+```
+
+Do not put API keys in frontend environment files.
+
+### Convenience Commands
+
+```bash
+make api
+make frontend
+make app
+```
+
+`make app` prints the two terminal commands because the backend and frontend should run as separate processes.
+
+## Local `.env` Setup
+
+Create local secrets from the template:
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env` and restart the backend.
+
+Important rules:
+- `.env`, `.env.local`, and `.env.*.local` are ignored by git.
+- Real keys should never be committed.
+- The backend never sends secret values to the frontend.
+- Data-source status only reports provider names, configured/missing status, missing env var names, capabilities, setup instructions, docs links, and last checked time.
+- Pass 7 does not live-test keys. The next pass will add doctor/readiness checks.
+
+### OpenAI
+
+```bash
+OPENAI_API_KEY=your_key_here
+OPENAI_MODEL=gpt-4o-mini
+OPENAI_BASE_URL=https://api.openai.com/v1
+```
+
+OpenAI-compatible routing can use:
+
+```bash
+TRADEBRUV_LLM_API_KEY=your_key_here
+TRADEBRUV_LLM_MODEL=gpt-4o-mini
+TRADEBRUV_LLM_BASE_URL=https://openrouter.ai/api/v1
+```
+
+### Gemini
+
+```bash
+GEMINI_API_KEY=your_key_here
+GEMINI_MODEL=gemini-1.5-flash
+```
+
+### Market, News, and Social Keys
+
+Set only the providers you plan to use:
+
+```bash
+POLYGON_API_KEY=
+FINNHUB_API_KEY=
+NEWSAPI_KEY=
+ALPHA_VANTAGE_API_KEY=
+TWELVE_DATA_API_KEY=
+BENZINGA_API_KEY=
+REDDIT_CLIENT_ID=
+REDDIT_CLIENT_SECRET=
+X_BEARER_TOKEN=
+STOCKTWITS_ACCESS_TOKEN=
+```
+
+### Data Sources Page
+
+The React Data Sources page shows:
+- Market Data
+- News / Events
+- Social / Attention
+- AI Providers
+- Portfolio / Brokerage
+
+Each provider card shows configured/missing state, required env vars, missing env vars, capabilities unlocked, degraded behavior, setup instructions, docs link, and last checked time. It also has a “Create `.env` from template” action that copies `.env.example` to `.env` only if `.env` does not already exist.
+
+### Safe Local `.env` Editor
+
+The local editor is disabled by default:
+
+```bash
+TRADEBRUV_ALLOW_LOCAL_ENV_EDITOR=false
+```
+
+Only enable it on a private local machine:
+
+```bash
+TRADEBRUV_ALLOW_LOCAL_ENV_EDITOR=true
+```
+
+When enabled, the Data Sources page can submit missing keys to the backend for local `.env` writing. Existing key values are never sent back to the frontend, saved values are not echoed in responses, and the backend should be restarted after saving.
+
+Do not enable the local editor if TradeBruv is deployed or reachable by anyone else.
+
 ### Sample Scan
 
 ```bash
