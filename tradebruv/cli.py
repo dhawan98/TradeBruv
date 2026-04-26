@@ -62,9 +62,12 @@ from .review import (
 from .readiness import run_readiness
 from .replay import (
     FAMOUS_OUTLIER_WINDOWS,
+    run_investing_proof_report,
+    run_investing_replay,
     run_famous_outlier_studies,
     run_historical_replay,
     run_outlier_study,
+    run_portfolio_replay,
     run_proof_report,
 )
 from .scanner import DeterministicScanner
@@ -220,6 +223,49 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Replay summary MD: {payload['summary_markdown_path']}")
         return 0
 
+    if args.command == "investing-replay":
+        try:
+            provider = build_provider(args=args, analysis_date=args.end_date)
+            payload = run_investing_replay(
+                provider=provider,
+                universe=load_universe(args.universe),
+                start_date=args.start_date,
+                end_date=args.end_date,
+                frequency=args.frequency,
+                horizons=_parse_horizons(args.horizons),
+                top_n=args.top_n,
+                output_dir=args.output_dir,
+                baselines=[item.strip().upper() for item in args.baseline.split(",") if item.strip()],
+                random_baseline=args.random_baseline,
+            )
+        except (ProviderConfigurationError, FileNotFoundError, ValueError) as exc:
+            print(f"Investing replay error: {exc}")
+            return 2
+        print(f"Investing replay candidates: {payload['summary']['total_candidates']}")
+        print(f"Investing replay JSON: {payload['json_path']}")
+        print(f"Investing replay CSV:  {payload['csv_path']}")
+        print(f"Investing replay summary MD: {payload['summary_markdown_path']}")
+        return 0
+
+    if args.command == "portfolio-replay":
+        try:
+            provider = build_provider(args=args, analysis_date=args.end_date)
+            payload = run_portfolio_replay(
+                provider=provider,
+                universe=load_universe(args.universe),
+                start_date=args.start_date,
+                end_date=args.end_date,
+                frequency=args.frequency,
+                output_dir=args.output_dir,
+            )
+        except (ProviderConfigurationError, FileNotFoundError, ValueError) as exc:
+            print(f"Portfolio replay error: {exc}")
+            return 2
+        print(f"Portfolio replay decisions: {payload['summary']['total_decisions']}")
+        print(f"Portfolio replay JSON: {payload['json_path']}")
+        print(f"Portfolio replay MD:   {payload['markdown_path']}")
+        return 0
+
     if args.command == "outlier-study":
         try:
             provider = build_provider(args=args, analysis_date=args.end_date or date.today())
@@ -269,6 +315,26 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Proof report MD:   {payload['markdown_path']}")
         return 0
 
+    if args.command == "investing-proof-report":
+        try:
+            provider = build_provider(args=args, analysis_date=args.end_date)
+            payload = run_investing_proof_report(
+                provider=provider,
+                universe=load_universe(args.universe),
+                start_date=args.start_date,
+                end_date=args.end_date,
+                baselines=[item.strip().upper() for item in args.baseline.split(",") if item.strip()],
+                random_baseline=args.random_baseline,
+                output_dir=args.output_dir,
+            )
+        except (ProviderConfigurationError, FileNotFoundError, ValueError) as exc:
+            print(f"Investing proof report error: {exc}")
+            return 2
+        print(f"Core investing evidence strength: {payload['evidence_strength']}")
+        print(f"Investing proof JSON: {payload['json_path']}")
+        print(f"Investing proof MD:   {payload['markdown_path']}")
+        return 0
+
     if args.command == "case-study":
         payload = run_case_study(
             ticker=args.ticker,
@@ -308,7 +374,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scan.add_argument(
         "--mode",
-        choices=("standard", "outliers", "velocity"),
+        choices=("standard", "outliers", "velocity", "investing"),
         default="standard",
         help="Standard winner ranking or the outlier-winner ranking view.",
     )
@@ -363,7 +429,7 @@ def build_parser() -> argparse.ArgumentParser:
     daily = subparsers.add_parser("daily", help="Run scanner, archive results, generate alerts, and write daily summary.")
     daily.add_argument("--universe", type=Path, required=True, help="Path to a newline-delimited ticker file.")
     daily.add_argument("--provider", choices=("sample", "local", "real"), default="sample")
-    daily.add_argument("--mode", choices=("standard", "outliers", "velocity"), default="outliers")
+    daily.add_argument("--mode", choices=("standard", "outliers", "velocity", "investing"), default="outliers")
     daily.add_argument("--data-dir", type=Path)
     daily.add_argument("--history-period", default="3y")
     daily.add_argument("--output-dir", type=Path, default=DEFAULT_DAILY_OUTPUT_DIR)
@@ -482,6 +548,28 @@ def build_parser() -> argparse.ArgumentParser:
     replay.add_argument("--top-n", type=int, default=20)
     replay.add_argument("--output-dir", type=Path, default=Path("outputs/replay"))
 
+    investing_replay = subparsers.add_parser("investing-replay", help="Run monthly regular-investing validation against SPY/QQQ/random/equal-weight baselines.")
+    _add_review_provider_args(investing_replay)
+    investing_replay.set_defaults(history_period="max")
+    investing_replay.add_argument("--universe", type=Path, required=True)
+    investing_replay.add_argument("--start-date", type=_parse_date, required=True)
+    investing_replay.add_argument("--end-date", type=_parse_date, required=True)
+    investing_replay.add_argument("--frequency", choices=("daily", "weekly", "monthly"), default="monthly")
+    investing_replay.add_argument("--horizons", default="20,60,120,252")
+    investing_replay.add_argument("--top-n", type=int, default=10)
+    investing_replay.add_argument("--baseline", default="SPY,QQQ")
+    investing_replay.add_argument("--random-baseline", action="store_true")
+    investing_replay.add_argument("--output-dir", type=Path, default=Path("outputs/investing"))
+
+    portfolio_replay = subparsers.add_parser("portfolio-replay", help="Validate portfolio-aware core investing decisions in a simulated historical portfolio.")
+    _add_review_provider_args(portfolio_replay)
+    portfolio_replay.set_defaults(history_period="max")
+    portfolio_replay.add_argument("--universe", type=Path, required=True)
+    portfolio_replay.add_argument("--start-date", type=_parse_date, required=True)
+    portfolio_replay.add_argument("--end-date", type=_parse_date, required=True)
+    portfolio_replay.add_argument("--frequency", choices=("daily", "weekly", "monthly"), default="monthly")
+    portfolio_replay.add_argument("--output-dir", type=Path, default=Path("outputs/investing"))
+
     outlier_study = subparsers.add_parser("outlier-study", help="Run famous outlier point-in-time case studies.")
     _add_review_provider_args(outlier_study)
     outlier_study.set_defaults(history_period="max")
@@ -503,6 +591,16 @@ def build_parser() -> argparse.ArgumentParser:
     proof.add_argument("--baseline", default="SPY,QQQ")
     proof.add_argument("--random-baseline", action="store_true")
     proof.add_argument("--output-dir", type=Path, default=Path("outputs/proof"))
+
+    investing_proof = subparsers.add_parser("investing-proof-report", help="Write the Core Investing evidence report.")
+    _add_review_provider_args(investing_proof)
+    investing_proof.set_defaults(history_period="max")
+    investing_proof.add_argument("--universe", type=Path, required=True)
+    investing_proof.add_argument("--start-date", type=_parse_date, required=True)
+    investing_proof.add_argument("--end-date", type=_parse_date, required=True)
+    investing_proof.add_argument("--baseline", default="SPY,QQQ")
+    investing_proof.add_argument("--random-baseline", action="store_true")
+    investing_proof.add_argument("--output-dir", type=Path, default=Path("outputs/investing"))
 
     case_study = subparsers.add_parser("case-study", help="Run a famous outlier case-study workflow.")
     case_study.add_argument("--ticker", required=True)

@@ -39,7 +39,15 @@ from .env import (
 )
 from .doctor import load_latest_doctor, run_doctor
 from .readiness import load_latest_readiness, run_readiness
-from .replay import run_famous_outlier_studies, run_historical_replay, run_outlier_study, run_proof_report
+from .replay import (
+    run_famous_outlier_studies,
+    run_historical_replay,
+    run_investing_proof_report,
+    run_investing_replay,
+    run_outlier_study,
+    run_portfolio_replay,
+    run_proof_report,
+)
 from .signal_quality import load_latest_signal_quality, run_case_study, run_signal_audit
 from .journal import DEFAULT_JOURNAL_PATH, add_journal_entry, journal_stats, update_journal_entry
 from .portfolio import DEFAULT_PORTFOLIO_PATH, delete_position, import_portfolio_csv, save_portfolio
@@ -340,6 +348,48 @@ def replay_latest(mode: str = "outliers") -> dict[str, Any]:
     return {"available": False, "summary": {}, "results": [], "point_in_time_limitations": "No replay report loaded yet."}
 
 
+def investing_replay_run(payload: dict[str, Any]) -> dict[str, Any]:
+    return run_investing_replay(
+        provider=_provider({**payload, "history_period": payload.get("history_period") or "max"}),
+        universe=load_universe(Path(str(payload.get("universe") or "config/mega_cap_universe.txt"))),
+        start_date=_parse_date(payload.get("start_date")) or date(2020, 1, 1),
+        end_date=_parse_date(payload.get("end_date")) or date.today(),
+        frequency=str(payload.get("frequency") or "monthly"),
+        horizons=[int(item) for item in str(payload.get("horizons") or "20,60,120,252").split(",") if item.strip()],
+        top_n=int(payload.get("top_n") or 10),
+        output_dir=Path(str(payload.get("output_dir") or "outputs/investing")),
+        baselines=[item.strip().upper() for item in str(payload.get("baseline") or "SPY,QQQ").split(",") if item.strip()],
+        random_baseline=bool(payload.get("random_baseline", True)),
+    )
+
+
+def investing_replay_latest() -> dict[str, Any]:
+    path = Path("outputs/investing/investing_replay_results.json")
+    if not path.exists():
+        return {"available": False, "summary": {}, "results": [], "point_in_time_limitations": "No investing replay report loaded yet."}
+    with path.open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def portfolio_replay_run(payload: dict[str, Any]) -> dict[str, Any]:
+    return run_portfolio_replay(
+        provider=_provider({**payload, "history_period": payload.get("history_period") or "max"}),
+        universe=load_universe(Path(str(payload.get("universe") or "config/mega_cap_universe.txt"))),
+        start_date=_parse_date(payload.get("start_date")) or date(2020, 1, 1),
+        end_date=_parse_date(payload.get("end_date")) or date.today(),
+        frequency=str(payload.get("frequency") or "monthly"),
+        output_dir=Path(str(payload.get("output_dir") or "outputs/investing")),
+    )
+
+
+def portfolio_replay_latest() -> dict[str, Any]:
+    path = Path("outputs/investing/portfolio_replay_report.json")
+    if not path.exists():
+        return {"available": False, "summary": {}, "results": []}
+    with path.open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+
 def outlier_study_run(payload: dict[str, Any]) -> dict[str, Any]:
     provider = _provider({**payload, "history_period": payload.get("history_period") or "max"})
     if payload.get("preset") == "famous":
@@ -369,6 +419,26 @@ def proof_report_run(payload: dict[str, Any]) -> dict[str, Any]:
 
 def proof_report_latest() -> dict[str, Any]:
     path = Path("outputs/proof/proof_report.json")
+    if not path.exists():
+        return {"available": False, "evidence_strength": "Not enough evidence", "answers": {}}
+    with path.open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def investing_proof_report_run(payload: dict[str, Any]) -> dict[str, Any]:
+    return run_investing_proof_report(
+        provider=_provider({**payload, "history_period": payload.get("history_period") or "max"}),
+        universe=load_universe(Path(str(payload.get("universe") or "config/mega_cap_universe.txt"))),
+        start_date=_parse_date(payload.get("start_date")) or date(2020, 1, 1),
+        end_date=_parse_date(payload.get("end_date")) or date.today(),
+        baselines=[item.strip().upper() for item in str(payload.get("baseline") or "SPY,QQQ").split(",") if item.strip()],
+        random_baseline=bool(payload.get("random_baseline", True)),
+        output_dir=Path(str(payload.get("output_dir") or "outputs/investing")),
+    )
+
+
+def investing_proof_report_latest() -> dict[str, Any]:
+    path = Path("outputs/investing/investing_proof_report.json")
     if not path.exists():
         return {"available": False, "evidence_strength": "Not enough evidence", "answers": {}}
     with path.open(encoding="utf-8") as handle:

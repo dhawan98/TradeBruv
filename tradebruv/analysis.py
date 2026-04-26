@@ -14,11 +14,11 @@ PORTFOLIO_RECOMMENDATION_LABELS = (
     "Strong Hold",
     "Hold",
     "Add on Strength",
-    "Add on Pullback / Better Entry",
+    "Add on Better Entry",
     "Trim",
-    "Exit / Sell",
+    "Exit / Sell Candidate",
     "Watch Closely",
-    "Do Not Add",
+    "Avoid Adding",
     "Data Insufficient",
 )
 
@@ -66,6 +66,7 @@ def build_portfolio_recommendation(
     risk_score = _to_float(scanner.get("risk_score"))
     winner_score = _to_float(scanner.get("winner_score"))
     outlier_score = _to_float(scanner.get("outlier_score"))
+    regular_score = _to_float(scanner.get("regular_investing_score"))
     setup_quality = _to_float(scanner.get("setup_quality_score"))
     current_price = _to_float(scanner.get("current_price")) or position_obj.current_price
     if current_price:
@@ -79,27 +80,40 @@ def build_portfolio_recommendation(
     near_invalidation = bool(invalidation and current_price and current_price <= invalidation * 1.04)
     near_target = bool(target and current_price and current_price >= target * 0.97)
     concentration = weight >= 20
-    broken_setup = scanner.get("status_label") == "Avoid" or risk_score >= 75 or near_invalidation
-    strong_setup = scanner.get("status_label") in {"Strong Research Candidate", "Active Setup"} and setup_quality >= 70
+    broken_setup = scanner.get("investing_action_label") == "Exit / Sell Candidate" or scanner.get("status_label") == "Avoid" or risk_score >= 75 or near_invalidation
+    strong_setup = regular_score >= 70 or (scanner.get("status_label") in {"Strong Research Candidate", "Active Setup"} and setup_quality >= 70)
+    overextended = "extended" in str(scanner.get("investing_bear_case", "")).lower() or any("extended" in str(warning).lower() for warning in scanner.get("warnings", []))
+    weak_regular = regular_score < 45 or scanner.get("investing_action_label") in {"Avoid", "Data Insufficient"}
     profitable = bool(avg_cost and current_price and current_price > avg_cost)
 
     if not scanner_row or current_price <= 0:
         label = "Data Insufficient"
     elif broken_setup and near_invalidation:
-        label = "Exit / Sell"
+        label = "Exit / Sell Candidate"
     elif broken_setup:
-        label = "Do Not Add" if not position_obj.quantity else "Watch Closely"
-    elif concentration and (near_target or risk_score >= 55):
+        label = "Avoid Adding" if not position_obj.quantity else "Watch Closely"
+    elif weak_regular and position_obj.quantity:
+        label = "Watch Closely"
+    elif weak_regular:
+        label = "Avoid Adding"
+    elif concentration and (near_target or risk_score >= 55 or regular_score < 65):
         label = "Trim"
-    elif strong_setup and winner_score >= 75 and risk_score <= 35 and not concentration:
+    elif strong_setup and overextended and not concentration:
+        label = "Add on Better Entry"
+    elif strong_setup and regular_score >= 75 and risk_score <= 40 and not concentration:
         label = "Add on Strength"
     elif strong_setup and not near_target and risk_score <= 45:
-        label = "Strong Hold" if position_obj.quantity else "Add on Pullback / Better Entry"
-    elif setup_quality >= 55 and risk_score <= 55:
+        label = "Strong Hold" if position_obj.quantity else "Add on Better Entry"
+    elif regular_score >= 55 and risk_score <= 60:
         label = "Hold"
     else:
         label = "Watch Closely"
 
+    core_decision = label
+    concentration_warning = "Position concentration is high; adding may be inappropriate." if concentration else "No concentration warning."
+    overextension_warning = "Good long-term candidate but overextended; consider better entry discipline." if overextended else "No valuation or overextension warning."
+    broken_trend_warning = "Trend or thesis appears broken; review exit risk before adding." if broken_setup else "No broken-trend warning."
+    reason_to_exit = _reason_to_exit(scanner, near_invalidation, broken_setup)
     confidence = _confidence_label(scanner, label)
     conviction = _conviction_score(winner_score, outlier_score, setup_quality, risk_score, weight)
     action_urgency = _action_urgency(label, near_invalidation, near_target, concentration)
@@ -120,6 +134,10 @@ def build_portfolio_recommendation(
         "position_weight_pct": _round(weight),
         "scanner_status": scanner.get("status_label"),
         "winner_score": scanner.get("winner_score"),
+        "regular_investing_score": scanner.get("regular_investing_score"),
+        "investing_style": scanner.get("investing_style"),
+        "investing_action_label": scanner.get("investing_action_label"),
+        "investing_risk": scanner.get("investing_risk"),
         "outlier_score": scanner.get("outlier_score"),
         "risk_score": scanner.get("risk_score"),
         "setup_quality": scanner.get("setup_quality_score"),
@@ -135,12 +153,21 @@ def build_portfolio_recommendation(
         "theme_overlap": position_obj.theme_tags or "unavailable",
         "thesis_match": _thesis_match(position_obj, scanner),
         "recommendation_label": label,
+        "core_investing_decision": core_decision,
         "confidence_label": confidence,
         "conviction_score": conviction,
         "action_urgency": action_urgency,
         "reason_to_hold": reason_to_hold,
         "reason_to_add": reason_to_add,
-        "reason_to_trim_or_sell": reason_to_trim,
+        "reason_to_trim": reason_to_trim,
+        "reason_to_exit": reason_to_exit,
+        "reason_to_trim_or_sell": reason_to_trim if label != "Exit / Sell Candidate" else reason_to_exit,
+        "thesis_status": _thesis_status(scanner, broken_setup),
+        "concentration_warning": concentration_warning,
+        "valuation_or_overextension_warning": overextension_warning,
+        "broken_trend_warning": broken_trend_warning,
+        "review_priority": _review_priority(label, near_invalidation, concentration, broken_setup),
+        "next_review_trigger": _next_review_trigger(scanner, position_obj),
         "events_to_watch": _events_to_watch(scanner),
         "invalidation_level": invalidation or scanner.get("invalidation_level", "unavailable"),
         "risk_to_portfolio": _risk_to_portfolio(weight, risk_score, scanner),
@@ -154,10 +181,10 @@ def build_portfolio_recommendation(
 def build_portfolio_analyst_summary(analyses: Iterable[dict[str, Any]]) -> dict[str, Any]:
     rows = list(analyses)
     return {
-        "review_today": [row for row in rows if row["action_urgency"] == "High" or row["recommendation_label"] in {"Watch Closely", "Exit / Sell"}],
-        "consider_adding": [row for row in rows if row["recommendation_label"] in {"Add on Strength", "Add on Pullback / Better Entry"}],
+        "review_today": [row for row in rows if row["action_urgency"] == "High" or row["recommendation_label"] in {"Watch Closely", "Exit / Sell Candidate"}],
+        "consider_adding": [row for row in rows if row["recommendation_label"] in {"Add on Strength", "Add on Better Entry"}],
         "consider_trimming": [row for row in rows if row["recommendation_label"] == "Trim"],
-        "broken_setup": [row for row in rows if row["recommendation_label"] in {"Exit / Sell", "Do Not Add"}],
+        "broken_setup": [row for row in rows if row["recommendation_label"] in {"Exit / Sell Candidate", "Avoid Adding"}],
         "catalyst_risk": [row for row in rows if "hype" in str(row.get("news_catalyst_status", "")).lower()],
         "high_concentration": [row for row in rows if row["concentration_risk"] == "High"],
         "thesis_changed": [row for row in rows if row["thesis_match"] == "Needs review"],
@@ -229,6 +256,21 @@ def deep_research(
             "data_quality": data_quality,
             "safety": "Research/action candidate inside your personal system, not a guarantee or order.",
         },
+        "regular_investing_view": {
+            "regular_investing_score": result.get("regular_investing_score"),
+            "investing_action_label": result.get("investing_action_label"),
+            "investing_style": result.get("investing_style"),
+            "investing_risk": result.get("investing_risk"),
+            "investing_time_horizon": result.get("investing_time_horizon"),
+            "bull_case": result.get("investing_reason"),
+            "bear_case": result.get("investing_bear_case"),
+            "invalidation": result.get("investing_invalidation"),
+            "events_to_watch": result.get("investing_events_to_watch"),
+            "value_trap_warning": result.get("value_trap_warning"),
+            "thesis_quality": result.get("thesis_quality"),
+            "data_quality": result.get("investing_data_quality"),
+            "safety": "Buy Candidate means research candidate, not an order.",
+        },
         "scanner_row": result,
     }
 
@@ -236,8 +278,14 @@ def deep_research(
 def _deep_research_label(row: dict[str, Any], *, owned: bool) -> str:
     if _to_float(row.get("current_price")) <= 0:
         return "Data Insufficient"
+    if row.get("investing_action_label") == "Data Insufficient":
+        return "Data Insufficient"
     if owned and (row.get("status_label") == "Avoid" or _to_float(row.get("risk_score")) >= 75):
         return "Sell / Exit Candidate"
+    if row.get("investing_action_label") in {"Buy Candidate", "High Priority Research"}:
+        return "Buy Candidate"
+    if row.get("investing_action_label") == "Hold":
+        return "Hold / Watch"
     if row.get("status_label") == "Avoid":
         return "Avoid"
     if _to_float(row.get("winner_score")) >= 80 and _to_float(row.get("risk_score")) <= 35 and _to_float(row.get("setup_quality_score")) >= 70:
@@ -282,9 +330,9 @@ def _conviction_score(winner: float, outlier: float, setup: float, risk: float, 
 
 
 def _action_urgency(label: str, near_invalidation: bool, near_target: bool, concentration: bool) -> str:
-    if label == "Exit / Sell" or near_invalidation:
+    if label == "Exit / Sell Candidate" or near_invalidation:
         return "High"
-    if label in {"Trim", "Watch Closely", "Do Not Add"} or near_target or concentration:
+    if label in {"Trim", "Watch Closely", "Avoid Adding"} or near_target or concentration:
         return "Medium"
     return "Low"
 
@@ -316,7 +364,8 @@ def _reason_to_add(row: dict[str, Any], concentration: bool, near_target: bool) 
         return "Do not add automatically: position is already concentrated."
     if near_target:
         return "Do not add automatically: price is near the entered/scanner target."
-    return " | ".join(row.get("why_it_passed", [])[:3]) or "Add case requires more evidence."
+    regular_reason = row.get("investing_reason")
+    return str(regular_reason) if regular_reason else " | ".join(row.get("why_it_passed", [])[:3]) or "Add case requires more evidence."
 
 
 def _reason_to_trim(row: dict[str, Any], concentration: bool, near_target: bool, near_invalidation: bool) -> str:
@@ -331,8 +380,39 @@ def _reason_to_trim(row: dict[str, Any], concentration: bool, near_target: bool,
     return " | ".join(reasons) or "No trim/sell reason confirmed."
 
 
+def _reason_to_exit(row: dict[str, Any], near_invalidation: bool, broken_setup: bool) -> str:
+    reasons = []
+    if near_invalidation:
+        reasons.append("Price is near or below invalidation.")
+    if broken_setup:
+        reasons.append("Core investing or scanner trend is broken enough to require review.")
+    if row.get("value_trap_warning") and row.get("value_trap_warning") != "No value-trap warning.":
+        reasons.append(str(row.get("value_trap_warning")))
+    reasons.extend(row.get("why_it_could_fail", [])[:2])
+    return " | ".join(reasons) or "Exit case is not confirmed; review manually."
+
+
+def _thesis_status(row: dict[str, Any], broken_setup: bool) -> str:
+    if broken_setup:
+        return "Broken / needs review"
+    if row.get("thesis_quality") in {"High", "Medium"}:
+        return str(row.get("thesis_quality"))
+    if row.get("investing_data_quality") == "Weak":
+        return "Data Insufficient"
+    return "Mixed"
+
+
+def _review_priority(label: str, near_invalidation: bool, concentration: bool, broken_setup: bool) -> str:
+    if near_invalidation or broken_setup or label == "Exit / Sell Candidate":
+        return "High"
+    if concentration or label in {"Trim", "Watch Closely", "Avoid Adding"}:
+        return "Medium"
+    return "Normal"
+
+
 def _events_to_watch(row: dict[str, Any]) -> list[str]:
     events = []
+    events.extend(str(item) for item in row.get("investing_events_to_watch", [])[:3])
     if row.get("catalyst_quality") and row.get("catalyst_quality") != "Unavailable":
         events.append(f"Catalyst: {row.get('catalyst_quality')} / {row.get('catalyst_type')}")
     for warning in row.get("warnings", [])[:3]:

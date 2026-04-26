@@ -151,6 +151,220 @@ def run_historical_replay(
     return payload
 
 
+def run_investing_replay(
+    *,
+    provider: MarketDataProvider,
+    universe: Iterable[str],
+    start_date: date,
+    end_date: date,
+    frequency: str = "monthly",
+    horizons: Iterable[int] = (20, 60, 120, 252),
+    top_n: int = 10,
+    output_dir: Path = Path("outputs/investing"),
+    baselines: Iterable[str] = ("SPY", "QQQ"),
+    random_baseline: bool = True,
+) -> dict[str, Any]:
+    tickers = sorted(dict.fromkeys(ticker.strip().upper() for ticker in universe if ticker.strip()))
+    horizons = tuple(sorted({int(horizon) for horizon in horizons}))
+    baseline_symbols = sorted(dict.fromkeys([*(symbol.upper() for symbol in baselines), "SPY", "QQQ", *SECTOR_BENCHMARKS.values()]))
+    cache = _prefetch(provider, [*tickers, *baseline_symbols])
+    replay_dates = _replay_dates(cache, tickers, start_date, end_date, frequency)
+    rows: list[dict[str, Any]] = []
+    winner_rows: list[dict[str, Any]] = []
+    random_rows: list[dict[str, Any]] = []
+    equal_weight_rows: list[dict[str, Any]] = []
+    scans: list[dict[str, Any]] = []
+    randomizer = random.Random(11)
+
+    for replay_date in replay_dates:
+        pit_provider = _CachedPointInTimeProvider(cache, replay_date)
+        scanned = [result.to_dict() for result in DeterministicScanner(pit_provider, analysis_date=replay_date).scan(tickers, mode="investing")]
+        selected = [row for row in scanned if row.get("investing_action_label") not in {"Avoid", "Data Insufficient"}][:top_n]
+        winner_selected = sorted(scanned, key=lambda row: (-_to_float(row.get("winner_score")), _to_float(row.get("risk_score")), str(row.get("ticker"))))[:top_n]
+        scans.append({"replay_date": replay_date.isoformat(), "top_investing_candidates": selected, "top_winner_score_candidates": winner_selected, "point_in_time_note": _point_in_time_note()})
+        for row in selected:
+            evaluated = _evaluate_row(row=row, cache=cache, signal_date=replay_date, horizons=horizons, baselines=baselines)
+            if evaluated.get("available"):
+                rows.append({**evaluated, "selection_lane": "regular_investing_score"})
+        for row in winner_selected:
+            evaluated = _evaluate_row(row=row, cache=cache, signal_date=replay_date, horizons=horizons, baselines=baselines)
+            if evaluated.get("available"):
+                winner_rows.append({**evaluated, "selection_lane": "winner_score"})
+        if random_baseline and tickers and selected:
+            for ticker in randomizer.sample(tickers, min(len(selected), len(tickers))):
+                random_eval = _evaluate_random(ticker=ticker, cache=cache, signal_date=replay_date, horizons=horizons, baselines=baselines)
+                if random_eval.get("available"):
+                    random_rows.append(random_eval)
+        for ticker in tickers:
+            equal_eval = _evaluate_random(ticker=ticker, cache=cache, signal_date=replay_date, horizons=horizons, baselines=baselines)
+            if equal_eval.get("available"):
+                equal_weight_rows.append(equal_eval)
+
+    summary = _investing_summary(
+        rows=rows,
+        winner_rows=winner_rows,
+        random_rows=random_rows,
+        equal_weight_rows=equal_weight_rows,
+        replay_dates=replay_dates,
+        horizons=horizons,
+        baselines=baselines,
+    )
+    payload = {
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "mode": "regular_investing",
+        "frequency": frequency,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "top_n": top_n,
+        "horizons": list(horizons),
+        "point_in_time_limitations": _point_in_time_note(),
+        "fundamental_limitations": "Historical replay strips non-point-in-time fundamentals unless the provider supplies point-in-time snapshots. Current real-provider fundamentals are active snapshots and are not used in OHLCV-only replay scoring.",
+        "summary": summary,
+        "results": rows,
+        "winner_score_baseline_results": winner_rows,
+        "random_baseline_results": random_rows,
+        "equal_weight_universe_results": equal_weight_rows,
+        "replay_scans": scans,
+    }
+    paths = write_investing_replay_outputs(payload, output_dir=output_dir)
+    payload.update(paths)
+    return payload
+
+
+def run_portfolio_replay(
+    *,
+    provider: MarketDataProvider,
+    universe: Iterable[str],
+    start_date: date,
+    end_date: date,
+    frequency: str = "monthly",
+    horizons: Iterable[int] = (20, 60, 120, 252),
+    output_dir: Path = Path("outputs/investing"),
+    portfolio_size: int = 12,
+) -> dict[str, Any]:
+    from .analysis import build_portfolio_recommendation
+    from .portfolio import PortfolioPosition
+
+    tickers = sorted(dict.fromkeys(ticker.strip().upper() for ticker in universe if ticker.strip()))
+    horizons = tuple(sorted({int(horizon) for horizon in horizons}))
+    cache = _prefetch(provider, [*tickers, "SPY", "QQQ", *SECTOR_BENCHMARKS.values()])
+    replay_dates = _replay_dates(cache, tickers, start_date, end_date, frequency)
+    rows: list[dict[str, Any]] = []
+    held: list[str] = []
+
+    for replay_date in replay_dates:
+        pit_provider = _CachedPointInTimeProvider(cache, replay_date)
+        scanned = [result.to_dict() for result in DeterministicScanner(pit_provider, analysis_date=replay_date).scan(tickers, mode="investing")]
+        if not held:
+            held = [row["ticker"] for row in scanned[:portfolio_size]]
+        candidate_pool = {row["ticker"]: row for row in scanned}
+        for add_row in [row for row in scanned if row["ticker"] not in held][: max(1, portfolio_size // 4)]:
+            held.append(add_row["ticker"])
+        held = held[: max(portfolio_size * 2, portfolio_size)]
+        simulated_positions = []
+        for ticker in held:
+            scanner_row = candidate_pool.get(ticker)
+            if not scanner_row:
+                continue
+            simulated_positions.append(
+                PortfolioPosition(
+                    ticker=ticker,
+                    company_name=str(scanner_row.get("company_name") or ticker),
+                    quantity=1,
+                    current_price=_to_float(scanner_row.get("current_price")),
+                    market_value=_to_float(scanner_row.get("current_price")),
+                    average_cost=_to_float(scanner_row.get("current_price")),
+                    sector=str((scanner_row.get("data_used") or {}).get("sector") or ""),
+                )
+            )
+        total = sum(position.market_value for position in simulated_positions) or 1
+        for position in simulated_positions:
+            position.position_weight_pct = (position.market_value / total) * 100
+            scanner_row = candidate_pool.get(position.ticker, {})
+            decision = build_portfolio_recommendation(position=position, scanner_row=scanner_row)
+            evaluated = _evaluate_row(row=scanner_row, cache=cache, signal_date=replay_date, horizons=horizons, baselines=("SPY", "QQQ"))
+            if evaluated.get("available"):
+                rows.append({**evaluated, **{key: decision.get(key) for key in _portfolio_decision_fields()}, "portfolio_replay_date": replay_date.isoformat()})
+        held = [row["ticker"] for row in rows[-len(simulated_positions) :] if row.get("core_investing_decision") not in {"Exit / Sell Candidate", "Trim"}][:portfolio_size]
+
+    summary = _portfolio_replay_summary(rows, horizons)
+    payload = {
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "mode": "portfolio_replay",
+        "frequency": frequency,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "horizons": list(horizons),
+        "summary": summary,
+        "results": rows,
+        "point_in_time_limitations": _point_in_time_note(),
+        "safety": "Simulated portfolio validation only. No broker execution, orders, or real-money recommendation.",
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "portfolio_replay_report.json"
+    md_path = output_dir / "portfolio_replay_report.md"
+    json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    md_path.write_text(_portfolio_replay_markdown(payload), encoding="utf-8")
+    payload.update({"json_path": str(json_path), "markdown_path": str(md_path)})
+    return payload
+
+
+def run_investing_proof_report(
+    *,
+    provider: MarketDataProvider,
+    universe: Iterable[str],
+    start_date: date,
+    end_date: date,
+    baselines: Iterable[str] = ("SPY", "QQQ"),
+    random_baseline: bool = True,
+    output_dir: Path = Path("outputs/investing"),
+) -> dict[str, Any]:
+    replay = run_investing_replay(
+        provider=provider,
+        universe=universe,
+        start_date=start_date,
+        end_date=end_date,
+        frequency="monthly",
+        horizons=(20, 60, 120, 252),
+        output_dir=output_dir,
+        baselines=baselines,
+        random_baseline=random_baseline,
+    )
+    portfolio = run_portfolio_replay(
+        provider=provider,
+        universe=universe,
+        start_date=start_date,
+        end_date=end_date,
+        frequency="monthly",
+        output_dir=output_dir,
+    )
+    summary = replay.get("summary", {})
+    answers = _investing_proof_answers(summary, portfolio.get("summary", {}), baselines)
+    payload = {
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "evidence_strength": _regular_evidence_strength(summary),
+        "real_money_reliance": False,
+        "language_note": "This is historical evidence for research and paper tracking, not proof of future returns or a real-money recommendation.",
+        "answers": answers,
+        "investing_replay": summary,
+        "portfolio_replay": portfolio.get("summary", {}),
+        "what_remains_unproven": [
+            "Forward paper-tracked performance after Pass 11.",
+            "Point-in-time fundamentals, debt, valuation, and analyst revisions.",
+            "Whether Add/Hold/Trim/Exit labels remain useful across future regimes.",
+        ],
+        "recommended_use": "Use Core Investing for research and paper tracking. Do not rely on it as a source of truth for real-money decisions.",
+        "point_in_time_limitations": replay.get("point_in_time_limitations"),
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "investing_proof_report.json"
+    md_path = output_dir / "investing_proof_report.md"
+    json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    md_path.write_text(_investing_proof_markdown(payload), encoding="utf-8")
+    payload.update({"json_path": str(json_path), "markdown_path": str(md_path)})
+    return payload
+
+
 def run_outlier_study(
     *,
     provider: MarketDataProvider,
@@ -376,6 +590,15 @@ def _replay_dates(cache: dict[str, SecurityData], universe: list[str], start_dat
     dates = [bar.date for bar in date_source.bars if start_date <= bar.date <= end_date]
     if frequency == "daily":
         return dates
+    if frequency == "monthly":
+        monthly: list[date] = []
+        seen_months: set[tuple[int, int]] = set()
+        for item in dates:
+            key = (item.year, item.month)
+            if key not in seen_months:
+                monthly.append(item)
+                seen_months.add(key)
+        return monthly
     weekly: list[date] = []
     seen: set[tuple[int, int]] = set()
     for item in dates:
@@ -414,6 +637,7 @@ def _evaluate_row(
     levels = _level_hits(cache[str(row.get("ticker")).upper()], signal_date, max(horizons), tp1=tp1, tp2=tp2, invalidation=invalidation)
     return {
         **{key: row.get(key) for key in _result_fields()},
+        "sector": row.get("sector") or (row.get("data_used") or {}).get("sector"),
         "replay_date": signal_date.isoformat(),
         "available": True,
         "signal_price": evaluated["signal_price"],
@@ -529,6 +753,79 @@ def _summary(
     }
 
 
+def _investing_summary(
+    *,
+    rows: list[dict[str, Any]],
+    winner_rows: list[dict[str, Any]],
+    random_rows: list[dict[str, Any]],
+    equal_weight_rows: list[dict[str, Any]],
+    replay_dates: list[date],
+    horizons: Iterable[int],
+    baselines: Iterable[str],
+) -> dict[str, Any]:
+    horizon_metrics = {f"{horizon}d": _return_metrics(rows, f"{horizon}d") for horizon in horizons}
+    winner_metrics = {f"{horizon}d": _return_metrics(winner_rows, f"{horizon}d") for horizon in horizons}
+    random_metrics = {f"{horizon}d": _return_metrics(random_rows, f"{horizon}d") for horizon in horizons}
+    equal_weight_metrics = {f"{horizon}d": _return_metrics(equal_weight_rows, f"{horizon}d") for horizon in horizons}
+    benchmark_excess = {}
+    random_excess = {}
+    equal_weight_excess = {}
+    for horizon in horizons:
+        key = f"{horizon}d"
+        row_avg = horizon_metrics[key]["average"]
+        random_avg = random_metrics[key]["average"]
+        equal_avg = equal_weight_metrics[key]["average"]
+        random_excess[key] = _round(row_avg - random_avg) if row_avg is not None and random_avg is not None else None
+        equal_weight_excess[key] = _round(row_avg - equal_avg) if row_avg is not None and equal_avg is not None else None
+        for symbol in baselines:
+            values = [_nested_float(row, "excess_returns", f"excess_vs_{symbol.upper()}_{horizon}d") for row in rows]
+            values = [value for value in values if value is not None]
+            benchmark_excess[f"{symbol.upper()}_{key}"] = _avg_metric(values)
+    return {
+        "mode": "regular_investing",
+        "total_replay_dates": len(replay_dates),
+        "total_candidates": len(rows),
+        "regular_investing_forward_returns": horizon_metrics,
+        "winner_score_forward_returns": winner_metrics,
+        "random_baseline_comparison": random_metrics,
+        "equal_weight_universe_baseline": equal_weight_metrics,
+        "excess_return_vs_baselines": benchmark_excess,
+        "excess_return_vs_random_baseline": random_excess,
+        "excess_return_vs_equal_weight_universe": equal_weight_excess,
+        "median_forward_return_by_horizon": {key: value["median"] for key, value in horizon_metrics.items()},
+        "win_rate_by_horizon": {key: value["win_rate"] for key, value in horizon_metrics.items()},
+        "average_MFE": _avg([_to_float(row.get("max_favorable_excursion")) for row in rows]),
+        "average_MAE": _avg([_to_float(row.get("max_adverse_excursion")) for row in rows]),
+        "hit_invalidation_rate": _rate(row.get("hit_invalidation") for row in rows),
+        "false_positive_rate": _false_positive_rate(rows),
+        "turnover": _turnover(rows),
+        "repeated_monthly_picks": _repeated_picks(rows),
+        "sector_concentration": _bucket(rows, "sector"),
+        "best_worst_investing_styles": _bucket(rows, "investing_style"),
+        "best_worst_action_labels": _bucket(rows, "investing_action_label"),
+        "sample_size_warning": "Small sample: treat as weak evidence only." if len(rows) < 100 else "",
+        "safety": "Regular investing replay is research evidence only. It can underperform SPY, QQQ, random, or equal-weight baselines.",
+    }
+
+
+def write_investing_replay_outputs(payload: dict[str, Any], *, output_dir: Path) -> dict[str, str]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "investing_replay_results.json"
+    csv_path = output_dir / "investing_replay_results.csv"
+    summary_json = output_dir / "investing_replay_summary.json"
+    summary_md = output_dir / "investing_replay_summary.md"
+    json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    summary_json.write_text(json.dumps(payload["summary"], indent=2), encoding="utf-8")
+    _write_investing_rows_csv(payload.get("results", []), csv_path)
+    summary_md.write_text(_investing_replay_markdown(payload), encoding="utf-8")
+    return {
+        "json_path": str(json_path),
+        "csv_path": str(csv_path),
+        "summary_json_path": str(summary_json),
+        "summary_markdown_path": str(summary_md),
+    }
+
+
 def write_replay_outputs(payload: dict[str, Any], *, output_dir: Path, prefix: str = "replay") -> dict[str, str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / ("replay_results.json" if prefix == "replay" else f"{prefix}_results.json")
@@ -582,7 +879,38 @@ def _write_rows_csv(rows: list[dict[str, Any]], path: Path) -> None:
         "hit_invalidation",
     ]
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
+        writer.writeheader()
+        for row in rows:
+            flat = {field: row.get(field, "") for field in fields}
+            for key, value in (row.get("returns") or {}).items():
+                flat[f"return_{key}"] = value
+            writer.writerow(flat)
+
+
+def _write_investing_rows_csv(rows: list[dict[str, Any]], path: Path) -> None:
+    fields = [
+        "replay_date",
+        "ticker",
+        "regular_investing_score",
+        "investing_action_label",
+        "investing_style",
+        "investing_risk",
+        "thesis_quality",
+        "investing_data_quality",
+        "winner_score",
+        "risk_score",
+        "signal_price",
+        "return_20d",
+        "return_60d",
+        "return_120d",
+        "return_252d",
+        "max_favorable_excursion",
+        "max_adverse_excursion",
+        "hit_invalidation",
+    ]
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         for row in rows:
             flat = {field: row.get(field, "") for field in fields}
@@ -594,13 +922,29 @@ def _write_rows_csv(rows: list[dict[str, Any]], path: Path) -> None:
 def _result_fields() -> list[str]:
     return [
         "ticker",
+        "company_name",
         "status_label",
         "strategy_label",
+        "regular_investing_score",
+        "investing_style",
+        "investing_risk",
+        "investing_time_horizon",
+        "investing_action_label",
+        "investing_reason",
+        "investing_bear_case",
+        "investing_invalidation",
+        "investing_events_to_watch",
+        "value_trap_warning",
+        "thesis_quality",
+        "investing_data_quality",
+        "regular_investing_components",
         "outlier_type",
         "outlier_score",
         "outlier_risk",
         "risk_score",
         "setup_quality_score",
+        "winner_score",
+        "sector",
         "velocity_score",
         "velocity_type",
         "velocity_risk",
@@ -763,6 +1107,41 @@ def _proof_answers(replay: dict[str, Any], velocity: dict[str, Any] | None, famo
     }
 
 
+def _investing_proof_answers(summary: dict[str, Any], portfolio_summary: dict[str, Any], baselines: Iterable[str]) -> dict[str, Any]:
+    excess = summary.get("excess_return_vs_baselines", {})
+    random_excess = summary.get("excess_return_vs_random_baseline", {})
+    equal_excess = summary.get("excess_return_vs_equal_weight_universe", {})
+    return {
+        "does_regular_investing_score_beat_SPY": _beat_baseline_text(excess, "SPY_252d"),
+        "does_regular_investing_score_beat_QQQ": _beat_baseline_text(excess, "QQQ_252d"),
+        "does_it_beat_random_baseline": _beat_simple_text(random_excess.get("252d")),
+        "does_it_beat_equal_weight_universe": _beat_simple_text(equal_excess.get("252d")),
+        "which_investing_styles_work": [row for row in summary.get("best_worst_investing_styles", []) if (row.get("average") or 0) > 0],
+        "which_investing_styles_are_poor": [row for row in summary.get("best_worst_investing_styles", []) if (row.get("average") or 0) <= 0],
+        "are_add_hold_trim_exit_labels_useful": portfolio_summary.get("label_usefulness", "Not enough evidence"),
+        "is_system_useful_for_normal_investing": "Useful for research/paper tracking only when it beats or clearly contextualizes baselines; not for real-money reliance.",
+        "what_remains_unproven": "Point-in-time fundamentals, future performance, valuation calibration, taxes, execution, and behavior.",
+        "baseline_symbols": [symbol.upper() for symbol in baselines],
+    }
+
+
+def _beat_baseline_text(excess: dict[str, Any], key: str) -> str:
+    value = excess.get(key)
+    average = value.get("average") if isinstance(value, dict) else value
+    return _beat_simple_text(average)
+
+
+def _beat_simple_text(value: Any) -> str:
+    if value is None:
+        return "Not enough evidence"
+    numeric = _to_float(value)
+    if numeric > 0:
+        return f"Yes in this replay window by {numeric:.2f} percentage points on average."
+    if numeric < 0:
+        return f"No in this replay window; it lagged by {abs(numeric):.2f} percentage points on average."
+    return "Tied in this replay window."
+
+
 def _evidence_strength(summary: dict[str, Any]) -> str:
     samples = int(summary.get("total_candidates") or 0)
     avg20 = (summary.get("average_forward_return_by_horizon") or {}).get("20d")
@@ -775,8 +1154,93 @@ def _evidence_strength(summary: dict[str, Any]) -> str:
     return "Strong historical evidence" if avg20 >= 3 else "Needs forward confirmation"
 
 
+def _regular_evidence_strength(summary: dict[str, Any]) -> str:
+    samples = int(summary.get("total_candidates") or 0)
+    returns = summary.get("regular_investing_forward_returns") or {}
+    avg252 = (returns.get("252d") or {}).get("average")
+    random_excess = (summary.get("excess_return_vs_random_baseline") or {}).get("252d")
+    if samples < 30:
+        return "Not enough evidence"
+    if avg252 is None:
+        return "Weak evidence"
+    if _to_float(avg252) <= 0:
+        return "Weak evidence"
+    if random_excess is not None and _to_float(random_excess) <= 0:
+        return "Mixed evidence"
+    return "Promising historical evidence" if samples < 100 else "Strong historical evidence"
+
+
 def _point_in_time_note() -> str:
     return "Replay truncates OHLCV at each replay date and strips non-point-in-time fundamentals/news/social/short-interest/options. Results are historical evidence, not proof or guaranteed prediction accuracy."
+
+
+def _portfolio_decision_fields() -> list[str]:
+    return [
+        "core_investing_decision",
+        "reason_to_hold",
+        "reason_to_add",
+        "reason_to_trim",
+        "reason_to_exit",
+        "thesis_status",
+        "concentration_warning",
+        "valuation_or_overextension_warning",
+        "broken_trend_warning",
+        "review_priority",
+        "next_review_trigger",
+    ]
+
+
+def _portfolio_replay_summary(rows: list[dict[str, Any]], horizons: Iterable[int]) -> dict[str, Any]:
+    label_metrics = _bucket(rows, "core_investing_decision")
+    add_rows = [row for row in rows if str(row.get("core_investing_decision")).startswith("Add")]
+    hold_rows = [row for row in rows if row.get("core_investing_decision") in {"Hold", "Strong Hold"}]
+    trim_rows = [row for row in rows if row.get("core_investing_decision") == "Trim"]
+    exit_rows = [row for row in rows if row.get("core_investing_decision") == "Exit / Sell Candidate"]
+    horizon = f"{max(horizons)}d"
+    add_avg = _return_metrics(add_rows, horizon)["average"]
+    hold_avg = _return_metrics(hold_rows, horizon)["average"]
+    trim_avg = _return_metrics(trim_rows, horizon)["average"]
+    exit_avg = _return_metrics(exit_rows, horizon)["average"]
+    useful = "Not enough evidence"
+    if len(add_rows) >= 5 and len(hold_rows) >= 5 and add_avg is not None and hold_avg is not None:
+        useful = "Add labels outperformed Hold labels in this replay." if add_avg > hold_avg else "Add labels did not outperform Hold labels in this replay."
+    return {
+        "total_decisions": len(rows),
+        "decision_performance": label_metrics,
+        "add_label_forward_return": add_avg,
+        "hold_label_forward_return": hold_avg,
+        "trim_label_forward_return": trim_avg,
+        "exit_label_forward_return": exit_avg,
+        "avoided_drawdown_rate": _rate((_to_float(row.get("max_adverse_excursion")) <= -10) for row in [*trim_rows, *exit_rows]),
+        "false_trim_rate": _rate((_to_float((row.get("returns") or {}).get(horizon)) > 0) for row in trim_rows),
+        "bad_hold_rate": _rate((_to_float(row.get("max_adverse_excursion")) <= -15) for row in hold_rows),
+        "portfolio_concentration_warnings": sum(1 for row in rows if row.get("concentration_warning") not in (None, "", "No concentration warning.")),
+        "sample_size_warning": "Small sample: treat portfolio label evidence as directional only." if len(rows) < 100 else "",
+        "label_usefulness": useful,
+    }
+
+
+def _turnover(rows: list[dict[str, Any]]) -> float | None:
+    by_date: dict[str, set[str]] = {}
+    for row in rows:
+        by_date.setdefault(str(row.get("replay_date")), set()).add(str(row.get("ticker")))
+    dates = sorted(by_date)
+    if len(dates) < 2:
+        return None
+    changes = []
+    for previous, current in zip(dates, dates[1:]):
+        prev_set = by_date[previous]
+        curr_set = by_date[current]
+        changes.append(1 - (len(prev_set & curr_set) / max(len(curr_set), 1)))
+    return _round(sum(changes) / len(changes)) if changes else None
+
+
+def _repeated_picks(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        ticker = str(row.get("ticker"))
+        counts[ticker] = counts.get(ticker, 0) + 1
+    return [{"ticker": ticker, "pick_count": count} for ticker, count in sorted(counts.items(), key=lambda item: item[1], reverse=True)[:20] if count > 1]
 
 
 def _case_markdown(payload: dict[str, Any]) -> str:
@@ -830,6 +1294,73 @@ def _replay_markdown(payload: dict[str, Any]) -> str:
     ]
     for horizon, value in (summary.get("average_forward_return_by_horizon") or {}).items():
         lines.append(f"- {horizon}: avg {value}, median {(summary.get('median_forward_return_by_horizon') or {}).get(horizon)}, win rate {(summary.get('win_rate_by_horizon') or {}).get(horizon)}")
+    return "\n".join(lines)
+
+
+def _investing_replay_markdown(payload: dict[str, Any]) -> str:
+    summary = payload.get("summary", {})
+    returns = summary.get("regular_investing_forward_returns") or {}
+    lines = [
+        "# Regular investing replay summary",
+        "",
+        f"- Replay dates: {summary.get('total_replay_dates')}",
+        f"- Candidates: {summary.get('total_candidates')}",
+        f"- False-positive rate: {summary.get('false_positive_rate')}",
+        f"- Invalidation hit rate: {summary.get('hit_invalidation_rate')}",
+        f"- Point-in-time limitation: {payload.get('point_in_time_limitations')}",
+        f"- Fundamental limitation: {payload.get('fundamental_limitations')}",
+        "",
+        "## Forward Returns",
+    ]
+    for horizon, metric in returns.items():
+        lines.append(f"- {horizon}: avg {metric.get('average')}, median {metric.get('median')}, win rate {metric.get('win_rate')}, sample {metric.get('sample_size')}")
+    lines.extend(["", "## Baseline Comparisons"])
+    lines.append(f"- Excess vs SPY/QQQ: {summary.get('excess_return_vs_baselines')}")
+    lines.append(f"- Excess vs random: {summary.get('excess_return_vs_random_baseline')}")
+    lines.append(f"- Excess vs equal-weight universe: {summary.get('excess_return_vs_equal_weight_universe')}")
+    lines.extend(["", "## Styles And Labels"])
+    lines.append(f"- Investing styles: {summary.get('best_worst_investing_styles')}")
+    lines.append(f"- Action labels: {summary.get('best_worst_action_labels')}")
+    return "\n".join(lines)
+
+
+def _portfolio_replay_markdown(payload: dict[str, Any]) -> str:
+    summary = payload.get("summary", {})
+    return "\n".join(
+        [
+            "# Portfolio replay report",
+            "",
+            f"- Decisions: {summary.get('total_decisions')}",
+            f"- Add forward return: {summary.get('add_label_forward_return')}",
+            f"- Hold forward return: {summary.get('hold_label_forward_return')}",
+            f"- Trim forward return: {summary.get('trim_label_forward_return')}",
+            f"- Exit forward return: {summary.get('exit_label_forward_return')}",
+            f"- Avoided drawdown rate: {summary.get('avoided_drawdown_rate')}",
+            f"- False trim rate: {summary.get('false_trim_rate')}",
+            f"- Bad hold rate: {summary.get('bad_hold_rate')}",
+            f"- Label usefulness: {summary.get('label_usefulness')}",
+            f"- Sample size warning: {summary.get('sample_size_warning') or 'None'}",
+            "",
+            str(payload.get("safety", "")),
+        ]
+    )
+
+
+def _investing_proof_markdown(payload: dict[str, Any]) -> str:
+    lines = [
+        "# Core investing evidence report",
+        "",
+        f"- Evidence strength: {payload.get('evidence_strength')}",
+        f"- Real-money reliance: {payload.get('real_money_reliance')}",
+        f"- Note: {payload.get('language_note')}",
+        "",
+        "## Answers",
+    ]
+    for key, value in (payload.get("answers") or {}).items():
+        lines.append(f"- {key}: {value}")
+    lines.extend(["", "## What remains unproven"])
+    lines.extend(f"- {item}" for item in payload.get("what_remains_unproven", []))
+    lines.extend(["", f"Recommended use: {payload.get('recommended_use')}"])
     return "\n".join(lines)
 
 

@@ -1,5 +1,62 @@
 # TradeBruv
 
+## Pass 11: Core Investing / Regular Investing
+
+TradeBruv now has three separate research lanes:
+
+- **Core Investing**: regular investing research for long-term candidates, quality growth, holds, add/trim reviews, broken-thesis warnings, and portfolio fit.
+- **Outliers**: unusual asymmetric setups, famous outlier studies, and large-move evidence gathering.
+- **Velocity**: high-volume or fast-moving watch setups. This remains research only and does not add day-trading, options, broker execution, or trade execution.
+
+`regular_investing_score` is a 0-100 deterministic research score. It is separate from `winner_score`, `outlier_score`, and `velocity_score`. Its current components are business quality/profitability, growth trend, price trend/relative strength, valuation/risk discipline, earnings/revision support, downside risk, and portfolio fit. When fundamentals are unavailable, TradeBruv marks them as unavailable instead of inventing them; historical replay strips non-point-in-time fundamentals/news/social/short-interest/options to avoid look-ahead.
+
+Regular investing labels include Long-Term Compounder, Quality Growth Leader, Profitable Growth, Value + Improving Trend, Dividend / Stable Compounder, Turnaround Candidate, Strong Hold, Add Candidate, Trim Candidate, Exit / Broken Thesis, Watchlist Only, Avoid / Value Trap, and Data Insufficient. Action labels include High Priority Research, Buy Candidate, Hold, Add on Strength, Add on Weakness / Better Entry, Trim, Exit / Sell Candidate, Watchlist Only, Avoid, and Data Insufficient. Buy Candidate means research candidate, not an order.
+
+Core investing validation commands:
+
+```bash
+python3 -m tradebruv investing-replay \
+  --universe config/mega_cap_universe.txt \
+  --provider real \
+  --start-date 2020-01-01 \
+  --end-date 2026-04-24 \
+  --frequency monthly \
+  --horizons 20,60,120,252 \
+  --random-baseline
+
+python3 -m tradebruv portfolio-replay \
+  --universe config/mega_cap_universe.txt \
+  --provider real \
+  --start-date 2020-01-01 \
+  --end-date 2026-04-24 \
+  --frequency monthly
+
+python3 -m tradebruv investing-proof-report \
+  --universe config/mega_cap_universe.txt \
+  --provider real \
+  --start-date 2020-01-01 \
+  --end-date 2026-04-24 \
+  --baseline SPY,QQQ \
+  --random-baseline
+```
+
+Outputs are written under `outputs/investing/`, including `investing_replay_results.json`, `investing_replay_results.csv`, `investing_replay_summary.md`, `portfolio_replay_report.md`, `investing_proof_report.md`, and `investing_pass11_summary.md`.
+
+Interpretation rules:
+
+- Compare Core Investing against SPY, QQQ, random baseline, and equal-weight universe baseline.
+- Weak or mixed evidence must stay visible.
+- Favor paper tracking over real-money reliance until forward evidence is strong.
+- Review the Core Investing page monthly or weekly, then verify Deep Research and Portfolio Analyst before saving paper predictions.
+- Compare outcomes over 3, 6, and 12 month horizons.
+
+Known limitations:
+
+- Real-provider fundamentals are current snapshots and are not point-in-time in historical replay.
+- OHLCV-only replay is cleaner for no-lookahead, but it cannot validate true historical revenue, EPS, margins, debt, valuation, or analyst revisions.
+- Portfolio replay is simulated and does not model taxes, slippage, execution, user constraints, or real brokerage behavior.
+- Pass 11 evidence was mixed: it beat SPY/QQQ in the mega-cap replay, but did not beat random or equal-weight universe baselines.
+
 TradeBruv is a deterministic stock scanner for personal research and trading workflow triage.
 
 The project is deliberately not an AI stock picker. AI is not making decisions here. The source of truth is a rule-based scanner that scores stocks using objective price, volume, relative-strength, risk, and supporting fundamental signals.

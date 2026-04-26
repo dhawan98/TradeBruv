@@ -1,0 +1,430 @@
+{
+  "generated_at": "2026-04-26T00:14:54.587154Z",
+  "evidence_strength": "Mixed evidence",
+  "real_money_reliance": false,
+  "language_note": "This is historical evidence for research and paper tracking, not proof of future returns or a real-money recommendation.",
+  "answers": {
+    "does_regular_investing_score_beat_SPY": "Yes in this replay window by 25.87 percentage points on average.",
+    "does_regular_investing_score_beat_QQQ": "Yes in this replay window by 22.80 percentage points on average.",
+    "does_it_beat_random_baseline": "No in this replay window; it lagged by 0.81 percentage points on average.",
+    "does_it_beat_equal_weight_universe": "No in this replay window; it lagged by 1.81 percentage points on average.",
+    "which_investing_styles_work": [
+      {
+        "investing_style": "Value + Improving Trend",
+        "sample_size": 254,
+        "average": 3.3686,
+        "median": 2.9909,
+        "win_rate": 0.5906,
+        "false_positive_rate": 0.4921
+      },
+      {
+        "investing_style": "Watchlist Only",
+        "sample_size": 208,
+        "average": 3.1838,
+        "median": 1.0025,
+        "win_rate": 0.5385,
+        "false_positive_rate": 0.5385
+      },
+      {
+        "investing_style": "Exit / Broken Thesis",
+        "sample_size": 91,
+        "average": 2.4777,
+        "median": -0.0625,
+        "win_rate": 0.4945,
+        "false_positive_rate": 0.5385
+      },
+      {
+        "investing_style": "Data Insufficient",
+        "sample_size": 89,
+        "average": 2.3261,
+        "median": 2.7159,
+        "win_rate": 0.5618,
+        "false_positive_rate": 0.5506
+      },
+      {
+        "investing_style": "Turnaround Candidate",
+        "sample_size": 13,
+        "average": 3.1044,
+        "median": 2.4763,
+        "win_rate": 0.5385,
+        "false_positive_rate": 0.5385
+      }
+    ],
+    "which_investing_styles_are_poor": [],
+    "are_add_hold_trim_exit_labels_useful": "Not enough evidence",
+    "is_system_useful_for_normal_investing": "Useful for research/paper tracking only when it beats or clearly contextualizes baselines; not for real-money reliance.",
+    "what_remains_unproven": "Point-in-time fundamentals, future performance, valuation calibration, taxes, execution, and behavior.",
+    "baseline_symbols": [
+      "SPY",
+      "QQQ"
+    ]
+  },
+  "investing_replay": {
+    "mode": "regular_investing",
+    "total_replay_dates": 76,
+    "total_candidates": 664,
+    "regular_investing_forward_returns": {
+      "20d": {
+        "sample_size": 655,
+        "average": 3.0393,
+        "median": 2.0425,
+        "win_rate": 0.5557
+      },
+      "60d": {
+        "sample_size": 637,
+        "average": 8.9058,
+        "median": 5.9888,
+        "win_rate": 0.6185
+      },
+      "120d": {
+        "sample_size": 610,
+        "average": 20.0146,
+        "median": 14.8337,
+        "win_rate": 0.6934
+      },
+      "252d": {
+        "sample_size": 558,
+        "average": 43.0575,
+        "median": 30.4651,
+        "win_rate": 0.7796
+      }
+    },
+    "winner_score_forward_returns": {
+      "20d": {
+        "sample_size": 675,
+        "average": 3.1963,
+        "median": 2.1829,
+        "win_rate": 0.5585
+      },
+      "60d": {
+        "sample_size": 657,
+        "average": 9.4125,
+        "median": 6.1437,
+        "win_rate": 0.6256
+      },
+      "120d": {
+        "sample_size": 630,
+        "average": 21.3181,
+        "median": 15.374,
+        "win_rate": 0.7
+      },
+      "252d": {
+        "sample_size": 576,
+        "average": 44.8653,
+        "median": 31.1444,
+        "win_rate": 0.7847
+      }
+    },
+    "random_baseline_comparison": {
+      "20d": {
+        "sample_size": 655,
+        "average": 3.1187,
+        "median": 2.0425,
+        "win_rate": 0.5557
+      },
+      "60d": {
+        "sample_size": 637,
+        "average": 9.0782,
+        "median": 5.8231,
+        "win_rate": 0.6185
+      },
+      "120d": {
+        "sample_size": 610,
+        "average": 20.9178,
+        "median": 15.1261,
+        "win_rate": 0.6951
+      },
+      "252d": {
+        "sample_size": 558,
+        "average": 43.8666,
+        "median": 30.6984,
+        "win_rate": 0.7778
+      }
+    },
+    "equal_weight_universe_baseline": {
+      "20d": {
+        "sample_size": 675,
+        "average": 3.1963,
+        "median": 2.1829,
+        "win_rate": 0.5585
+      },
+      "60d": {
+        "sample_size": 657,
+        "average": 9.4125,
+        "median": 6.1437,
+        "win_rate": 0.6256
+      },
+      "120d": {
+        "sample_size": 630,
+        "average": 21.3181,
+        "median": 15.374,
+        "win_rate": 0.7
+      },
+      "252d": {
+        "sample_size": 576,
+        "average": 44.8653,
+        "median": 31.1444,
+        "win_rate": 0.7847
+      }
+    },
+    "excess_return_vs_baselines": {
+      "SPY_20d": {
+        "sample_size": 655,
+        "average": 1.8773,
+        "median": 0.7503
+      },
+      "QQQ_20d": {
+        "sample_size": 655,
+        "average": 1.5225,
+        "median": 0.2985
+      },
+      "SPY_60d": {
+        "sample_size": 637,
+        "average": 5.2747,
+        "median": 1.6375
+      },
+      "QQQ_60d": {
+        "sample_size": 637,
+        "average": 4.4812,
+        "median": 0.833
+      },
+      "SPY_120d": {
+        "sample_size": 610,
+        "average": 12.0517,
+        "median": 5.3466
+      },
+      "QQQ_120d": {
+        "sample_size": 610,
+        "average": 10.3436,
+        "median": 4.5483
+      },
+      "SPY_252d": {
+        "sample_size": 558,
+        "average": 25.8748,
+        "median": 11.1201
+      },
+      "QQQ_252d": {
+        "sample_size": 558,
+        "average": 22.798,
+        "median": 8.1557
+      }
+    },
+    "excess_return_vs_random_baseline": {
+      "20d": -0.0794,
+      "60d": -0.1724,
+      "120d": -0.9032,
+      "252d": -0.8091
+    },
+    "excess_return_vs_equal_weight_universe": {
+      "20d": -0.157,
+      "60d": -0.5067,
+      "120d": -1.3035,
+      "252d": -1.8078
+    },
+    "median_forward_return_by_horizon": {
+      "20d": 2.0425,
+      "60d": 5.9888,
+      "120d": 14.8337,
+      "252d": 30.4651
+    },
+    "win_rate_by_horizon": {
+      "20d": 0.5557,
+      "60d": 0.6185,
+      "120d": 0.6934,
+      "252d": 0.7796
+    },
+    "average_MFE": 68.1925,
+    "average_MAE": -19.3694,
+    "hit_invalidation_rate": 0.4729,
+    "false_positive_rate": 0.5221,
+    "turnover": 0.0219,
+    "repeated_monthly_picks": [
+      {
+        "ticker": "AAPL",
+        "pick_count": 76
+      },
+      {
+        "ticker": "AVGO",
+        "pick_count": 76
+      },
+      {
+        "ticker": "MSFT",
+        "pick_count": 75
+      },
+      {
+        "ticker": "MU",
+        "pick_count": 74
+      },
+      {
+        "ticker": "TSLA",
+        "pick_count": 74
+      },
+      {
+        "ticker": "NVDA",
+        "pick_count": 73
+      },
+      {
+        "ticker": "META",
+        "pick_count": 73
+      },
+      {
+        "ticker": "AMD",
+        "pick_count": 73
+      },
+      {
+        "ticker": "AMZN",
+        "pick_count": 70
+      }
+    ],
+    "sector_concentration": [
+      {
+        "sector": "Technology",
+        "sample_size": 441,
+        "average": 3.2253,
+        "median": 2.3855,
+        "win_rate": 0.5624,
+        "false_positive_rate": 0.5102
+      },
+      {
+        "sector": "Consumer Cyclical",
+        "sample_size": 142,
+        "average": 3.422,
+        "median": 1.456,
+        "win_rate": 0.5563,
+        "false_positive_rate": 0.5211
+      },
+      {
+        "sector": "Communication Services",
+        "sample_size": 72,
+        "average": 1.1451,
+        "median": 1.0056,
+        "win_rate": 0.5139,
+        "false_positive_rate": 0.5972
+      }
+    ],
+    "best_worst_investing_styles": [
+      {
+        "investing_style": "Value + Improving Trend",
+        "sample_size": 254,
+        "average": 3.3686,
+        "median": 2.9909,
+        "win_rate": 0.5906,
+        "false_positive_rate": 0.4921
+      },
+      {
+        "investing_style": "Watchlist Only",
+        "sample_size": 208,
+        "average": 3.1838,
+        "median": 1.0025,
+        "win_rate": 0.5385,
+        "false_positive_rate": 0.5385
+      },
+      {
+        "investing_style": "Exit / Broken Thesis",
+        "sample_size": 91,
+        "average": 2.4777,
+        "median": -0.0625,
+        "win_rate": 0.4945,
+        "false_positive_rate": 0.5385
+      },
+      {
+        "investing_style": "Data Insufficient",
+        "sample_size": 89,
+        "average": 2.3261,
+        "median": 2.7159,
+        "win_rate": 0.5618,
+        "false_positive_rate": 0.5506
+      },
+      {
+        "investing_style": "Turnaround Candidate",
+        "sample_size": 13,
+        "average": 3.1044,
+        "median": 2.4763,
+        "win_rate": 0.5385,
+        "false_positive_rate": 0.5385
+      }
+    ],
+    "best_worst_action_labels": [
+      {
+        "investing_action_label": "Watchlist Only",
+        "sample_size": 283,
+        "average": 3.2586,
+        "median": 1.3689,
+        "win_rate": 0.5477,
+        "false_positive_rate": 0.5406
+      },
+      {
+        "investing_action_label": "Hold",
+        "sample_size": 281,
+        "average": 3.0002,
+        "median": 2.6852,
+        "win_rate": 0.5836,
+        "false_positive_rate": 0.4982
+      },
+      {
+        "investing_action_label": "Exit / Sell Candidate",
+        "sample_size": 91,
+        "average": 2.4777,
+        "median": -0.0625,
+        "win_rate": 0.4945,
+        "false_positive_rate": 0.5385
+      }
+    ],
+    "sample_size_warning": "",
+    "safety": "Regular investing replay is research evidence only. It can underperform SPY, QQQ, random, or equal-weight baselines."
+  },
+  "portfolio_replay": {
+    "total_decisions": 678,
+    "decision_performance": [
+      {
+        "core_investing_decision": "Watch Closely",
+        "sample_size": 359,
+        "average": 3.4158,
+        "median": 2.0409,
+        "win_rate": 0.5571,
+        "false_positive_rate": 0.4986
+      },
+      {
+        "core_investing_decision": "Hold",
+        "sample_size": 206,
+        "average": 3.5,
+        "median": 2.941,
+        "win_rate": 0.5874,
+        "false_positive_rate": 0.4854
+      },
+      {
+        "core_investing_decision": "Trim",
+        "sample_size": 70,
+        "average": 0.2217,
+        "median": -0.4395,
+        "win_rate": 0.4714,
+        "false_positive_rate": 0.6286
+      },
+      {
+        "core_investing_decision": "Exit / Sell Candidate",
+        "sample_size": 34,
+        "average": 4.0382,
+        "median": 1.7566,
+        "win_rate": 0.5294,
+        "false_positive_rate": 0.6765
+      }
+    ],
+    "add_label_forward_return": null,
+    "hold_label_forward_return": 39.9335,
+    "trim_label_forward_return": 12.4858,
+    "exit_label_forward_return": 31.6745,
+    "avoided_drawdown_rate": 0.6346,
+    "false_trim_rate": 0.6429,
+    "bad_hold_rate": 0.4712,
+    "portfolio_concentration_warnings": 109,
+    "sample_size_warning": "",
+    "label_usefulness": "Not enough evidence"
+  },
+  "what_remains_unproven": [
+    "Forward paper-tracked performance after Pass 11.",
+    "Point-in-time fundamentals, debt, valuation, and analyst revisions.",
+    "Whether Add/Hold/Trim/Exit labels remain useful across future regimes."
+  ],
+  "recommended_use": "Use Core Investing for research and paper tracking. Do not rely on it as a source of truth for real-money decisions.",
+  "point_in_time_limitations": "Replay truncates OHLCV at each replay date and strips non-point-in-time fundamentals/news/social/short-interest/options. Results are historical evidence, not proof or guaranteed prediction accuracy."
+}

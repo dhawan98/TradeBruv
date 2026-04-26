@@ -83,12 +83,58 @@ vi.stubGlobal(
         results: [],
         point_in_time_limitations: 'OHLCV-only replay.',
       },
+      '/api/investing-replay/latest': {
+        available: true,
+        mode: 'regular_investing',
+        summary: {
+          total_replay_dates: 2,
+          total_candidates: 2,
+          false_positive_rate: 0,
+          regular_investing_forward_returns: { '20d': { average: 3.1, median: 2.4, win_rate: 1, sample_size: 2 } },
+          best_worst_investing_styles: [{ investing_style: 'Quality Growth Leader', sample_size: 2, average: 3.1, median: 2.4, win_rate: 1 }],
+        },
+        replay_scans: [{
+          top_investing_candidates: [{
+            ticker: 'MSFT',
+            company_name: 'Microsoft',
+            regular_investing_score: 82,
+            investing_action_label: 'Buy Candidate',
+            investing_style: 'Quality Growth Leader',
+            investing_risk: 'Low',
+            investing_time_horizon: '12+ months',
+            investing_reason: 'Quality long-term candidate.',
+            investing_bear_case: 'Valuation can reset.',
+            investing_invalidation: '200D trend fails.',
+            investing_events_to_watch: ['Earnings'],
+            value_trap_warning: 'No value-trap warning.',
+            thesis_quality: 'High',
+            investing_data_quality: 'Strong',
+          }],
+        }],
+        results: [],
+        point_in_time_limitations: 'OHLCV-only investing replay.',
+      },
+      '/api/portfolio-replay/latest': {
+        available: true,
+        summary: {
+          total_decisions: 2,
+          decision_performance: [{ core_investing_decision: 'Add on Strength', sample_size: 1, average: 4, median: 4, win_rate: 1 }],
+        },
+        results: [],
+      },
       '/api/proof-report/latest': {
         available: true,
         evidence_strength: 'Not enough evidence',
         real_money_reliance: false,
         language_note: 'Evidence only.',
         answers: {},
+      },
+      '/api/investing-proof-report/latest': {
+        available: true,
+        evidence_strength: 'Promising historical evidence',
+        real_money_reliance: false,
+        language_note: 'Evidence only.',
+        answers: { does_regular_investing_score_beat_SPY: 'Yes in this replay window.' },
       },
       '/api/scan': {
         generated_at: '2026-04-24T00:00:00Z',
@@ -114,6 +160,18 @@ vi.stubGlobal(
             trigger_reason: 'Relative volume is high.',
             chase_warning: 'No special chase warning beyond normal invalidation discipline.',
             expected_horizon: '5D',
+            regular_investing_score: 82,
+            investing_action_label: 'Buy Candidate',
+            investing_style: 'Quality Growth Leader',
+            investing_risk: 'Low',
+            investing_time_horizon: '12+ months',
+            investing_reason: 'Quality long-term candidate.',
+            investing_bear_case: 'Valuation can reset.',
+            investing_invalidation: '200D trend fails.',
+            investing_events_to_watch: ['Earnings'],
+            value_trap_warning: 'No value-trap warning.',
+            thesis_quality: 'High',
+            investing_data_quality: 'Strong',
           },
         ],
         market_regime: {},
@@ -131,6 +189,58 @@ vi.stubGlobal(
         max_forward_return_after_trigger: 120,
         score_progression: [{ date: '2021-01-04', price: 20, outlier_score: 70, velocity_score: 75, triggered: true }],
         narrative: 'Mock case study narrative.',
+      },
+      '/api/deep-research': {
+        ticker: 'NVDA',
+        current_price: 100,
+        decision_card: { research_recommendation: 'Buy Candidate' },
+        regular_investing_view: {
+          regular_investing_score: 82,
+          investing_action_label: 'Buy Candidate',
+          investing_style: 'Quality Growth Leader',
+          investing_risk: 'Low',
+          bull_case: 'Quality long-term candidate.',
+          bear_case: 'Valuation can reset.',
+          invalidation: '200D trend fails.',
+          events_to_watch: ['Earnings'],
+          value_trap_warning: 'No value-trap warning.',
+          thesis_quality: 'High',
+          data_quality: 'Strong',
+        },
+        scanner_row: {
+          ticker: 'NVDA',
+          winner_score: 70,
+          outlier_score: 65,
+          risk_score: 35,
+          regular_investing_score: 82,
+          investing_action_label: 'Buy Candidate',
+          investing_style: 'Quality Growth Leader',
+          investing_risk: 'Low',
+          investing_reason: 'Quality long-term candidate.',
+          investing_bear_case: 'Valuation can reset.',
+          investing_invalidation: '200D trend fails.',
+          investing_events_to_watch: ['Earnings'],
+          value_trap_warning: 'No value-trap warning.',
+          thesis_quality: 'High',
+          investing_data_quality: 'Strong',
+        },
+      },
+      '/api/portfolio/analyze': {
+        positions: [{
+          ticker: 'NVDA',
+          core_investing_decision: 'Strong Hold',
+          regular_investing_score: 82,
+          investing_style: 'Quality Growth Leader',
+          review_priority: 'Normal',
+          reason_to_hold: 'Trend intact.',
+          reason_to_add: 'Quality long-term candidate.',
+          reason_to_trim: 'No trim reason confirmed.',
+          reason_to_exit: 'Exit case is not confirmed.',
+          concentration_warning: 'No concentration warning.',
+          valuation_or_overextension_warning: 'No valuation or overextension warning.',
+          broken_trend_warning: 'No broken-trend warning.',
+          next_review_trigger: 'Review on earnings.',
+        }],
       },
     };
     const pathname = new URL(url, 'http://localhost:8000').pathname;
@@ -193,5 +303,27 @@ describe('App', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Run Study/i }));
     expect(await screen.findByText('Trigger Timeline')).toBeInTheDocument();
     expect(screen.getByText('Mock case study narrative.')).toBeInTheDocument();
+  });
+
+  it('renders Core Investing, Deep Research regular view, portfolio decision, and validation workflows', async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: /Core Investing/i }));
+    expect(await screen.findByRole('heading', { name: /Core Investing/i })).toBeInTheDocument();
+    expect(screen.getByText('Long-Term Candidates')).toBeInTheDocument();
+    expect(screen.getAllByText('Quality Growth Leader').length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('button', { name: /Deep Research/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Research$/i }));
+    expect(await screen.findByText('Regular Investing View')).toBeInTheDocument();
+    expect(screen.getAllByText('Buy Candidate').length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('button', { name: /Portfolio Analyst/i }));
+    expect(await screen.findByText('Strong Hold')).toBeInTheDocument();
+    expect(screen.getByText('Core Investing Decision')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Validation Lab/i }));
+    expect(await screen.findByText('Core Investing Validation')).toBeInTheDocument();
+    expect(screen.getByText('Investing Replay')).toBeInTheDocument();
+    expect(screen.getByText('Investing Proof Report')).toBeInTheDocument();
   });
 });

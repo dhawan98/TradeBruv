@@ -149,6 +149,22 @@ def create_app() -> "FastAPI":
     def replay_latest(mode: str = Query(default="outliers")) -> dict[str, Any]:
         return services.replay_latest(mode=mode)
 
+    @app.post("/api/investing-replay/run")
+    def investing_replay_run(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return services.investing_replay_run(payload or {})
+
+    @app.get("/api/investing-replay/latest")
+    def investing_replay_latest() -> dict[str, Any]:
+        return services.investing_replay_latest()
+
+    @app.post("/api/portfolio-replay/run")
+    def portfolio_replay_run(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return services.portfolio_replay_run(payload or {})
+
+    @app.get("/api/portfolio-replay/latest")
+    def portfolio_replay_latest() -> dict[str, Any]:
+        return services.portfolio_replay_latest()
+
     @app.post("/api/outlier-study/run")
     def outlier_study_run(payload: dict[str, Any] | None = None) -> dict[str, Any]:
         return services.outlier_study_run(payload or {})
@@ -160,6 +176,14 @@ def create_app() -> "FastAPI":
     @app.get("/api/proof-report/latest")
     def proof_report_latest() -> dict[str, Any]:
         return services.proof_report_latest()
+
+    @app.post("/api/investing-proof-report/run")
+    def investing_proof_report_run(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return services.investing_proof_report_run(payload or {})
+
+    @app.get("/api/investing-proof-report/latest")
+    def investing_proof_report_latest() -> dict[str, Any]:
+        return services.investing_proof_report_latest()
 
     @app.get("/api/journal")
     def journal() -> dict[str, Any]:

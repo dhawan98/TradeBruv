@@ -56,11 +56,20 @@ export const api = {
   runReplay: (payload: Record<string, unknown>) =>
     request<ReplayPayload>('/api/replay/run', { method: 'POST', body: JSON.stringify(payload) }),
   latestReplay: (mode = 'outliers') => request<ReplayPayload>(`/api/replay/latest?mode=${encodeURIComponent(mode)}`),
+  runInvestingReplay: (payload: Record<string, unknown>) =>
+    request<ReplayPayload>('/api/investing-replay/run', { method: 'POST', body: JSON.stringify(payload) }),
+  latestInvestingReplay: () => request<ReplayPayload>('/api/investing-replay/latest'),
+  runPortfolioReplay: (payload: Record<string, unknown>) =>
+    request<ReplayPayload>('/api/portfolio-replay/run', { method: 'POST', body: JSON.stringify(payload) }),
+  latestPortfolioReplay: () => request<ReplayPayload>('/api/portfolio-replay/latest'),
   runOutlierStudy: (payload: Record<string, unknown>) =>
     request<Record<string, unknown>>('/api/outlier-study/run', { method: 'POST', body: JSON.stringify(payload) }),
   runProofReport: (payload: Record<string, unknown>) =>
     request<ProofReport>('/api/proof-report/run', { method: 'POST', body: JSON.stringify(payload) }),
   latestProofReport: () => request<ProofReport>('/api/proof-report/latest'),
+  runInvestingProofReport: (payload: Record<string, unknown>) =>
+    request<ProofReport>('/api/investing-proof-report/run', { method: 'POST', body: JSON.stringify(payload) }),
+  latestInvestingProofReport: () => request<ProofReport>('/api/investing-proof-report/latest'),
   doctorLatest: () => request<WorkflowReport>('/api/doctor/latest'),
   runDoctor: (payload: Record<string, unknown>) =>
     request<WorkflowReport>('/api/doctor/run', { method: 'POST', body: JSON.stringify(payload) }),
@@ -165,6 +174,18 @@ export type ScannerRow = {
   velocity_tp1?: number | string;
   velocity_tp2?: number | string;
   expected_horizon?: string;
+  regular_investing_score?: number;
+  investing_style?: string;
+  investing_risk?: string;
+  investing_time_horizon?: string;
+  investing_action_label?: string;
+  investing_reason?: string;
+  investing_bear_case?: string;
+  investing_invalidation?: string;
+  investing_events_to_watch?: string[];
+  value_trap_warning?: string;
+  thesis_quality?: string;
+  investing_data_quality?: string;
 };
 
 export type ScanPayload = {

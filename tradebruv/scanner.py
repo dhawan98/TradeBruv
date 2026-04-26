@@ -119,6 +119,8 @@ class DeterministicScanner:
             results.sort(key=lambda result: (-result.velocity_score, result.risk_score, -result.outlier_score, result.ticker))
         elif mode == "outliers":
             results.sort(key=lambda result: (-result.outlier_score, result.risk_score, result.ticker))
+        elif mode == "investing":
+            results.sort(key=lambda result: (-result.regular_investing_score, result.risk_score, -result.winner_score, result.ticker))
         else:
             results.sort(key=lambda result: (-result.winner_score, result.risk_score, -result.outlier_score, result.ticker))
         return results
@@ -246,6 +248,9 @@ class DeterministicScanner:
         data_used = {
             "bars": len(security.bars),
             "provider": security.provider_name,
+            "market_cap": security.market_cap if security.market_cap is not None else "unavailable",
+            "sector": security.sector or "unavailable",
+            "industry": security.industry or "unavailable",
             "sector_benchmark": sector_symbol or "unavailable",
             "fundamentals_available": security.fundamentals is not None,
             "catalyst_available": security.catalyst is not None,
@@ -261,6 +266,14 @@ class DeterministicScanner:
             "outlier_components": outlier_components,
         }
         velocity = self._velocity_payload(features=features, security=security, trade_plan=trade_plan, risk_score=risk_score)
+        investing = self._regular_investing_payload(
+            features=features,
+            security=security,
+            risk_score=risk_score,
+            trade_plan=trade_plan,
+        )
+        data_used["regular_investing_components"] = investing["components"]
+        data_used["regular_investing_note"] = investing["data_quality_note"]
 
         return ScannerResult(
             ticker=security.ticker,
@@ -312,6 +325,20 @@ class DeterministicScanner:
             velocity_tp1=velocity["TP1"],
             velocity_tp2=velocity["TP2"],
             expected_horizon=velocity["expected_horizon"],
+            regular_investing_score=investing["regular_investing_score"],
+            investing_style=investing["investing_style"],
+            investing_risk=investing["investing_risk"],
+            investing_time_horizon=investing["investing_time_horizon"],
+            investing_action_label=investing["investing_action_label"],
+            investing_reason=investing["investing_reason"],
+            investing_bear_case=investing["investing_bear_case"],
+            investing_invalidation=investing["investing_invalidation"],
+            investing_events_to_watch=investing["investing_events_to_watch"],
+            value_trap_warning=investing["value_trap_warning"],
+            thesis_quality=investing["thesis_quality"],
+            investing_data_quality=investing["investing_data_quality"],
+            regular_investing_components=investing["components"],
+            regular_investing_fundamental_snapshot=investing["fundamental_snapshot"],
         )
 
     def _failure_result(self, ticker: str, error: Exception) -> ScannerResult:
@@ -1586,6 +1613,318 @@ class DeterministicScanner:
             "TP1": round(tp1, 2) if tp1 is not None else None,
             "TP2": round(tp2, 2) if tp2 is not None else None,
             "expected_horizon": expected_horizon,
+        }
+
+    def _regular_investing_payload(
+        self,
+        *,
+        features: FeatureSnapshot,
+        security: SecurityData,
+        risk_score: int,
+        trade_plan: TradePlan,
+    ) -> dict[str, object]:
+        fundamentals = security.fundamentals
+        fundamentals_available = fundamentals is not None
+        quality = 0
+        if fundamentals:
+            if fundamentals.profitability_positive:
+                quality += 7
+            if fundamentals.margin_change is not None and fundamentals.margin_change >= 0:
+                quality += 4
+            if fundamentals.free_cash_flow_growth is not None and fundamentals.free_cash_flow_growth >= 0:
+                quality += 4
+            if fundamentals.eps_growth is not None and fundamentals.eps_growth >= 0:
+                quality += 3
+            if fundamentals.recent_dilution is False:
+                quality += 2
+        elif features.above_200 and features.sma200_rising and not features.low_liquidity:
+            quality += 7
+
+        growth = 0
+        if fundamentals:
+            if fundamentals.revenue_growth is not None:
+                growth += int(clamp(fundamentals.revenue_growth / 0.25 * 8, -6, 8))
+            if fundamentals.eps_growth is not None:
+                growth += int(clamp(fundamentals.eps_growth / 0.25 * 7, -6, 7))
+            if fundamentals.free_cash_flow_growth is not None:
+                growth += int(clamp(fundamentals.free_cash_flow_growth / 0.20 * 5, -4, 5))
+        if features.return_12m is not None and features.return_12m > 0:
+            growth += 3
+        growth = int(clamp(growth, 0, 20))
+
+        trend = 0
+        if features.return_6m is not None and features.return_6m > 0:
+            trend += 4
+        if features.return_12m is not None and features.return_12m > 0:
+            trend += 4
+        if features.rs_3m is not None and features.rs_3m > 0:
+            trend += 4
+        if features.rs_6m is not None and features.rs_6m > 0:
+            trend += 3
+        if features.ma_stack_bullish:
+            trend += 3
+        if features.sma200_rising:
+            trend += 2
+        trend = min(trend, 20)
+
+        drawdown_from_high = (1.0 - (features.current_price / features.high_52w)) if features.high_52w else None
+        valuation_risk = 15
+        if features.extreme_overextension:
+            valuation_risk -= 7
+        elif features.overextended:
+            valuation_risk -= 4
+        if drawdown_from_high is not None and drawdown_from_high >= 0.45:
+            valuation_risk -= 5
+        if risk_score >= 65:
+            valuation_risk -= 4
+        valuation_risk = int(clamp(valuation_risk, 0, 15))
+
+        earnings = 0
+        if fundamentals:
+            if fundamentals.analyst_revision_score is not None and fundamentals.analyst_revision_score > 0:
+                earnings += 5
+            if fundamentals.estimate_revision_trend is not None and fundamentals.estimate_revision_trend > 0:
+                earnings += 2
+            if fundamentals.guidance_improvement:
+                earnings += 2
+            if fundamentals.earnings_beat:
+                earnings += 1
+        earnings = min(earnings, 10)
+
+        balance = 10
+        if features.low_liquidity:
+            balance -= 3
+        if fundamentals and fundamentals.recent_dilution:
+            balance -= 4
+        if features.falling_knife or features.broken_downtrend:
+            balance -= 4
+        balance = int(clamp(balance, 0, 10))
+
+        portfolio_fit = 5
+        if features.extreme_overextension or risk_score >= 70:
+            portfolio_fit -= 2
+        if security.sector is None:
+            portfolio_fit -= 1
+        portfolio_fit = int(clamp(portfolio_fit, 0, 5))
+
+        components = {
+            "business_quality_profitability": int(clamp(quality, 0, 20)),
+            "growth_trend": growth,
+            "price_trend_relative_strength": trend,
+            "valuation_risk_discipline": valuation_risk,
+            "earnings_revision_support": earnings,
+            "balance_sheet_downside_risk": balance,
+            "portfolio_fit_concentration": portfolio_fit,
+        }
+        score = int(clamp(sum(components.values()), 0, 100))
+
+        value_trap = self._value_trap_warning(features, security)
+        broken = features.falling_knife or features.broken_downtrend or (features.above_200 is False and features.sma200_rising is False and risk_score >= 55)
+        overextended = features.extreme_overextension or (features.overextended and score >= 55)
+        style = self._investing_style(features, security, score, value_trap, broken)
+        risk = "High" if risk_score >= 60 or features.falling_knife or value_trap != "No value-trap warning." else "Medium" if risk_score >= 35 or overextended else "Low"
+        data_quality = self._investing_data_quality(security, features)
+        thesis_quality = "High" if score >= 75 and risk != "High" else "Medium" if score >= 55 and not broken else "Weak"
+        if data_quality == "Weak" and score < 50:
+            thesis_quality = "Data Insufficient"
+
+        action = self._investing_action_label(
+            score=score,
+            risk=risk,
+            style=style,
+            data_quality=data_quality,
+            broken=broken,
+            overextended=overextended,
+            value_trap=value_trap,
+        )
+        reason = self._investing_reason(features, security, score, components, style)
+        bear_case = self._investing_bear_case(features, security, risk, value_trap)
+        invalidation = self._investing_invalidation(features, trade_plan)
+        events = self._investing_events_to_watch(security, features, fundamentals_available)
+        fundamental_snapshot = self._fundamental_snapshot(security)
+        missing_note = "Fundamentals are point-in-time unavailable in OHLCV-only replay." if not fundamentals_available else "Fundamentals came from the active provider snapshot and may not be point-in-time in historical replay."
+
+        return {
+            "regular_investing_score": score,
+            "investing_style": style,
+            "investing_risk": risk,
+            "investing_time_horizon": "12+ months" if style in {"Long-Term Compounder", "Dividend / Stable Compounder", "Strong Hold"} else "6-18 months" if score >= 55 else "Watch until thesis improves",
+            "investing_action_label": action,
+            "investing_reason": reason,
+            "investing_bear_case": bear_case,
+            "investing_invalidation": invalidation,
+            "investing_events_to_watch": events,
+            "value_trap_warning": value_trap,
+            "thesis_quality": thesis_quality,
+            "investing_data_quality": data_quality,
+            "components": components,
+            "fundamental_snapshot": fundamental_snapshot,
+            "data_quality_note": missing_note,
+        }
+
+    def _investing_style(self, features: FeatureSnapshot, security: SecurityData, score: int, value_trap: str, broken: bool) -> str:
+        fundamentals = security.fundamentals
+        profitable = bool(fundamentals and fundamentals.profitability_positive)
+        revenue_growth = fundamentals.revenue_growth if fundamentals else None
+        eps_growth = fundamentals.eps_growth if fundamentals else None
+        fcf_growth = fundamentals.free_cash_flow_growth if fundamentals else None
+        if not security.bars or len(security.bars) < 80:
+            return "Data Insufficient"
+        if broken:
+            return "Exit / Broken Thesis"
+        if value_trap != "No value-trap warning.":
+            return "Avoid / Value Trap"
+        if score >= 75 and features.return_12m is not None and features.return_12m >= 0.18 and features.rs_6m is not None and features.rs_6m > 0:
+            if profitable and (revenue_growth is None or revenue_growth >= 0.08):
+                return "Long-Term Compounder"
+            return "Quality Growth Leader"
+        if profitable and ((revenue_growth is not None and revenue_growth >= 0.12) or (eps_growth is not None and eps_growth >= 0.12)):
+            return "Profitable Growth"
+        if features.above_200 and features.sma200_rising and features.rs_3m is not None and features.rs_3m > 0 and score >= 55:
+            return "Value + Improving Trend"
+        if profitable and (fcf_growth is None or fcf_growth >= 0) and not any((features.low_liquidity, features.broken_downtrend, features.falling_knife)):
+            return "Dividend / Stable Compounder"
+        if features.reclaimed_sma50 and score >= 45:
+            return "Turnaround Candidate"
+        if score >= 65:
+            return "Strong Hold"
+        if score >= 45:
+            return "Watchlist Only"
+        return "Data Insufficient"
+
+    def _investing_action_label(
+        self,
+        *,
+        score: int,
+        risk: str,
+        style: str,
+        data_quality: str,
+        broken: bool,
+        overextended: bool,
+        value_trap: str,
+    ) -> str:
+        if data_quality == "Weak" and score < 45:
+            return "Data Insufficient"
+        if broken:
+            return "Exit / Sell Candidate"
+        if value_trap != "No value-trap warning.":
+            return "Avoid"
+        if score >= 80 and risk == "Low" and not overextended:
+            return "High Priority Research"
+        if score >= 70 and risk != "High" and not overextended:
+            return "Buy Candidate"
+        if score >= 65 and overextended:
+            return "Add on Weakness / Better Entry"
+        if style in {"Long-Term Compounder", "Quality Growth Leader", "Profitable Growth"} and score >= 60:
+            return "Hold" if risk == "High" else "Add on Strength"
+        if score >= 55:
+            return "Hold"
+        if risk == "High":
+            return "Watchlist Only"
+        return "Watchlist Only"
+
+    def _value_trap_warning(self, features: FeatureSnapshot, security: SecurityData) -> str:
+        fundamentals = security.fundamentals
+        deteriorating = bool(
+            fundamentals
+            and any(
+                value is not None and value < -0.05
+                for value in (fundamentals.revenue_growth, fundamentals.eps_growth, fundamentals.free_cash_flow_growth)
+            )
+        )
+        if features.broken_downtrend and deteriorating:
+            return "Potential value trap: price trend is broken while available fundamentals are deteriorating."
+        if features.return_12m is not None and features.return_12m < -0.25 and features.rs_6m is not None and features.rs_6m < 0 and not features.reclaimed_sma50:
+            return "Potential value trap: long-term price and relative strength remain weak."
+        return "No value-trap warning."
+
+    def _investing_data_quality(self, security: SecurityData, features: FeatureSnapshot) -> str:
+        points = 0
+        if len(security.bars) >= 252:
+            points += 2
+        elif len(security.bars) >= 126:
+            points += 1
+        if features.rs_3m is not None or features.rs_6m is not None:
+            points += 1
+        if security.fundamentals:
+            points += 2
+        if security.sector:
+            points += 1
+        if security.market_cap is not None:
+            points += 1
+        return "Strong" if points >= 6 else "Medium" if points >= 3 else "Weak"
+
+    def _investing_reason(self, features: FeatureSnapshot, security: SecurityData, score: int, components: dict[str, int], style: str) -> str:
+        reasons = [f"{style} scored {score}/100."]
+        if features.return_12m is not None:
+            reasons.append(f"12M price trend is {features.return_12m * 100:.1f}%.")
+        if features.rs_6m is not None:
+            reasons.append(f"6M relative strength vs SPY/QQQ is {features.rs_6m * 100:.1f}%.")
+        if security.fundamentals and security.fundamentals.revenue_growth is not None:
+            reasons.append(f"Revenue growth snapshot is {security.fundamentals.revenue_growth * 100:.1f}%.")
+        elif not security.fundamentals:
+            reasons.append("Fundamentals are unavailable, so the score relies mostly on price, trend, risk, and provider metadata.")
+        best_component = max(components, key=components.get)
+        reasons.append(f"Best component: {best_component.replace('_', ' ')}.")
+        return " ".join(reasons)
+
+    def _investing_bear_case(self, features: FeatureSnapshot, security: SecurityData, risk: str, value_trap: str) -> str:
+        risks: list[str] = []
+        if value_trap != "No value-trap warning.":
+            risks.append(value_trap)
+        if features.extreme_overextension:
+            risks.append("Shares are extended from moving-average support, so long-term quality may not justify adding here.")
+        if features.broken_downtrend:
+            risks.append("The long-term trend is broken.")
+        if security.fundamentals and security.fundamentals.recent_dilution:
+            risks.append("Recent dilution risk is present.")
+        if not security.fundamentals:
+            risks.append("Fundamental evidence is missing and must be verified before making a long-term thesis.")
+        if not risks:
+            risks.append(f"Main risk is {risk.lower()} volatility or a thesis change after earnings, revisions, or trend deterioration.")
+        return " ".join(risks)
+
+    def _investing_invalidation(self, features: FeatureSnapshot, trade_plan: TradePlan) -> str:
+        levels = []
+        if trade_plan.invalidation_level:
+            levels.append(f"price closes below {trade_plan.invalidation_level:.2f}")
+        if features.sma200:
+            levels.append(f"200D trend fails near {features.sma200:.2f}")
+        levels.append("relative strength and business evidence deteriorate for two review cycles")
+        return "; ".join(levels)
+
+    def _investing_events_to_watch(self, security: SecurityData, features: FeatureSnapshot, fundamentals_available: bool) -> list[str]:
+        events = ["Quarterly earnings and guidance", "6M/12M relative strength vs SPY/QQQ", "Breaks of the 50D/200D trend"]
+        if security.next_earnings_date:
+            events.insert(0, f"Next earnings date: {security.next_earnings_date.isoformat()}")
+        if not fundamentals_available:
+            events.append("Verify revenue, EPS, margins, free cash flow, debt, and valuation from primary filings before relying on the thesis")
+        if features.overextended:
+            events.append("Wait for consolidation or a better entry before adding")
+        return events
+
+    def _fundamental_snapshot(self, security: SecurityData) -> dict[str, object]:
+        fundamentals = security.fundamentals
+        if not fundamentals:
+            return {
+                "available": False,
+                "revenue_growth": "unavailable",
+                "eps_growth": "unavailable",
+                "margin_trend": "unavailable",
+                "free_cash_flow_trend": "unavailable",
+                "analyst_revision_support": "unavailable",
+                "balance_sheet_risk": "unavailable",
+                "valuation_proxy": "unavailable",
+            }
+        return {
+            "available": True,
+            "revenue_growth": fundamentals.revenue_growth if fundamentals.revenue_growth is not None else "unavailable",
+            "eps_growth": fundamentals.eps_growth if fundamentals.eps_growth is not None else "unavailable",
+            "margin_trend": fundamentals.margin_change if fundamentals.margin_change is not None else "unavailable",
+            "free_cash_flow_trend": fundamentals.free_cash_flow_growth if fundamentals.free_cash_flow_growth is not None else "unavailable",
+            "analyst_revision_support": fundamentals.analyst_revision_score if fundamentals.analyst_revision_score is not None else "unavailable",
+            "balance_sheet_risk": "dilution warning" if fundamentals.recent_dilution else "unavailable",
+            "valuation_proxy": "unavailable",
         }
 
     def _squeeze_watch_payload(self, security: SecurityData) -> dict[str, object]:

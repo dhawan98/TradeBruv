@@ -25,6 +25,7 @@ import { useAsync } from './hooks';
 type PageKey =
   | 'Home'
   | 'Stock Picker'
+  | 'Core Investing'
   | 'Velocity Scanner'
   | 'Deep Research'
   | 'Replay Lab'
@@ -41,6 +42,7 @@ type PageKey =
 const NAV: { key: PageKey; icon: React.ComponentType<{ size?: number }> }[] = [
   { key: 'Home', icon: Home },
   { key: 'Stock Picker', icon: Search },
+  { key: 'Core Investing', icon: LineChart },
   { key: 'Velocity Scanner', icon: Activity },
   { key: 'Deep Research', icon: BookOpen },
   { key: 'Replay Lab', icon: LineChart },
@@ -92,6 +94,7 @@ export function App() {
         <section className="workspace">
           {page === 'Home' && <HomePage setPage={setPage} />}
           {page === 'Stock Picker' && <StockPicker />}
+          {page === 'Core Investing' && <CoreInvesting />}
           {page === 'Velocity Scanner' && <VelocityScanner />}
           {page === 'Deep Research' && <DeepResearch />}
           {page === 'Replay Lab' && <ReplayLab />}
@@ -255,6 +258,131 @@ function StockPicker() {
           Sample mode does not need external keys and is safe for local UI checks.
         </EmptyState>
       )}
+    </Page>
+  );
+}
+
+function CoreInvesting() {
+  const latestReplay = useAsync(api.latestInvestingReplay, []);
+  const latestProof = useAsync(api.latestInvestingProofReport, []);
+  const [scan, setScan] = useState<ScannerRow[]>([]);
+  const [replay, setReplay] = useState<ReplayPayload | null>(null);
+  const [proof, setProof] = useState<ProofReport | null>(null);
+  const [loading, setLoading] = useState('');
+  const [error, setError] = useState('');
+
+  async function runScan(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    setLoading('scan');
+    setError('');
+    try {
+      const payload = await api.scan({
+        provider: form.get('provider'),
+        mode: 'investing',
+        universe_path: form.get('universe_path'),
+        as_of_date: form.get('as_of_date'),
+      });
+      setScan(payload.results);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Core investing scan failed');
+    } finally {
+      setLoading('');
+    }
+  }
+
+  async function runReplay() {
+    setLoading('replay');
+    setError('');
+    try {
+      setReplay(await api.runInvestingReplay({
+        provider: 'sample',
+        universe: 'config/mega_cap_universe.txt',
+        start_date: '2020-01-01',
+        end_date: '2026-04-24',
+        frequency: 'monthly',
+        horizons: '20,60,120,252',
+        random_baseline: true,
+      }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Investing replay failed');
+    } finally {
+      setLoading('');
+    }
+  }
+
+  async function runProof() {
+    setLoading('proof');
+    setError('');
+    try {
+      setProof(await api.runInvestingProofReport({
+        provider: 'sample',
+        universe: 'config/mega_cap_universe.txt',
+        start_date: '2020-01-01',
+        end_date: '2026-04-24',
+        baseline: 'SPY,QQQ',
+        random_baseline: true,
+      }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Investing proof report failed');
+    } finally {
+      setLoading('');
+    }
+  }
+
+  const rows = scan.length ? scan : ((latestReplay.data?.replay_scans?.[0]?.top_investing_candidates as ScannerRow[] | undefined) ?? []);
+  const replayReport = replay ?? latestReplay.data;
+  const proofReport = proof ?? latestProof.data;
+  return (
+    <Page title="Core Investing" subtitle="Regular buy, watch, hold, add, trim, and avoid research separated from outlier and velocity lanes.">
+      <form className="toolbar" onSubmit={runScan}>
+        <Select name="provider" label="Provider" options={['sample', 'local', 'real']} />
+        <Field name="universe_path" label="Universe" defaultValue="config/mega_cap_universe.txt" />
+        <Field name="as_of_date" label="As of" defaultValue="2026-04-24" />
+        <button className="primary" disabled={loading === 'scan'}><RefreshCcw size={16} /> {loading === 'scan' ? 'Scanning' : 'Run Core Scan'}</button>
+      </form>
+      {error && <Notice tone="bad">{error}</Notice>}
+      <div className="metric-grid">
+        <Metric label="Candidates" value={String(rows.filter((row) => Number(row.regular_investing_score ?? 0) >= 60).length)} sub="Regular score >= 60" />
+        <Metric label="Add / Buy" value={String(rows.filter((row) => String(row.investing_action_label).includes('Add') || String(row.investing_action_label).includes('Buy')).length)} sub="Research candidates only" />
+        <Metric label="Trim / Exit" value={String(rows.filter((row) => String(row.investing_action_label).includes('Trim') || String(row.investing_action_label).includes('Exit')).length)} sub="Portfolio review prompts" />
+        <Metric label="Warnings" value={String(rows.filter((row) => row.value_trap_warning && row.value_trap_warning !== 'No value-trap warning.').length)} sub="Value trap / broken thesis" />
+      </div>
+      <div className="grid two">
+        <Panel title="Long-Term Candidates">
+          <CoreInvestingCards rows={rows.filter((row) => ['Long-Term Compounder', 'Profitable Growth'].includes(String(row.investing_style))).slice(0, 6)} />
+        </Panel>
+        <Panel title="Quality Growth">
+          <CoreInvestingCards rows={rows.filter((row) => ['Quality Growth Leader', 'Profitable Growth'].includes(String(row.investing_style))).slice(0, 6)} />
+        </Panel>
+        <Panel title="Strong Holds">
+          <CoreInvestingCards rows={rows.filter((row) => row.investing_action_label === 'Hold' || row.investing_style === 'Strong Hold').slice(0, 6)} />
+        </Panel>
+        <Panel title="Add Candidates">
+          <CoreInvestingCards rows={rows.filter((row) => String(row.investing_action_label).includes('Add') || row.investing_action_label === 'Buy Candidate').slice(0, 6)} />
+        </Panel>
+        <Panel title="Trim / Exit Candidates">
+          <CoreInvestingCards rows={rows.filter((row) => String(row.investing_action_label).includes('Trim') || String(row.investing_action_label).includes('Exit')).slice(0, 6)} />
+        </Panel>
+        <Panel title="Value Trap / Broken Thesis Warnings">
+          <CoreInvestingCards rows={rows.filter((row) => row.value_trap_warning && row.value_trap_warning !== 'No value-trap warning.').slice(0, 6)} />
+        </Panel>
+        <Panel title="Portfolio Fit">
+          <DataTable rows={rows as Record<string, unknown>[]} columns={['ticker', 'regular_investing_score', 'investing_action_label', 'investing_style', 'investing_risk', 'thesis_quality', 'investing_data_quality']} />
+        </Panel>
+        <Panel title="Regular Investing Replay Results">
+          <div className="action-strip">
+            <button className="secondary" onClick={runReplay} disabled={loading === 'replay'}>{loading === 'replay' ? 'Running' : 'Run Investing Replay'}</button>
+          </div>
+          <ReplaySummary report={replayReport} />
+        </Panel>
+        <Panel title="Investing Proof Report">
+          <div className="action-strip">
+            <button className="secondary" onClick={runProof} disabled={loading === 'proof'}>{loading === 'proof' ? 'Running' : 'Run Investing Evidence'}</button>
+          </div>
+          <ProofReportView report={proofReport} />
+        </Panel>
+      </div>
     </Page>
   );
 }
@@ -485,7 +613,7 @@ function PortfolioAnalyst() {
   const positions = (analyst.data?.positions as Record<string, unknown>[] | undefined) ?? [];
   return (
     <Page title="Portfolio Analyst" subtitle="Hold, add, trim, exit, and watch labels generated by the Python analyst.">
-      <DataTable rows={positions} columns={['ticker', 'recommendation_label', 'action_urgency', 'reason_to_hold', 'reason_to_add', 'invalidation_level']} />
+      <DataTable rows={positions} columns={['ticker', 'core_investing_decision', 'regular_investing_score', 'investing_style', 'review_priority', 'reason_to_hold', 'reason_to_add', 'reason_to_trim', 'reason_to_exit', 'concentration_warning', 'valuation_or_overextension_warning', 'broken_trend_warning', 'next_review_trigger']} />
     </Page>
   );
 }
@@ -546,8 +674,12 @@ function ValidationLab() {
   const predictions = useAsync(api.predictions, []);
   const signalAudit = useAsync(api.signalAuditLatest, []);
   const proof = useAsync(api.latestProofReport, []);
+  const investingReplay = useAsync(api.latestInvestingReplay, []);
+  const portfolioReplay = useAsync(api.latestPortfolioReplay, []);
+  const investingProof = useAsync(api.latestInvestingProofReport, []);
   const [auditLoading, setAuditLoading] = useState(false);
   const [proofLoading, setProofLoading] = useState(false);
+  const [investingLoading, setInvestingLoading] = useState('');
   const [updateLoading, setUpdateLoading] = useState(false);
 
   async function runAudit() {
@@ -588,6 +720,21 @@ function ValidationLab() {
     }
   }
 
+  async function runInvestingWorkflow(kind: 'investing-replay' | 'portfolio-replay' | 'investing-proof') {
+    setInvestingLoading(kind);
+    try {
+      if (kind === 'investing-replay') {
+        investingReplay.setData(await api.runInvestingReplay({ provider: 'sample', universe: 'config/mega_cap_universe.txt', start_date: '2020-01-01', end_date: '2026-04-24', frequency: 'monthly', horizons: '20,60,120,252', random_baseline: true }));
+      } else if (kind === 'portfolio-replay') {
+        portfolioReplay.setData(await api.runPortfolioReplay({ provider: 'sample', universe: 'config/mega_cap_universe.txt', start_date: '2020-01-01', end_date: '2026-04-24', frequency: 'monthly' }));
+      } else {
+        investingProof.setData(await api.runInvestingProofReport({ provider: 'sample', universe: 'config/mega_cap_universe.txt', start_date: '2020-01-01', end_date: '2026-04-24', baseline: 'SPY,QQQ', random_baseline: true }));
+      }
+    } finally {
+      setInvestingLoading('');
+    }
+  }
+
   const due = (summary.data?.recent_predictions_needing_update as Record<string, unknown>[] | undefined) ?? [];
   const hitLevels = (summary.data?.predictions_with_hit_levels as Record<string, unknown>[] | undefined) ?? [];
   const missingOutcomes = (summary.data?.predictions_with_missing_outcome as Record<string, unknown>[] | undefined) ?? [];
@@ -622,6 +769,17 @@ function ValidationLab() {
           <button className="secondary" onClick={runProof} disabled={proofLoading}>{proofLoading ? 'Running' : 'Run Evidence Report'}</button>
         </div>
         <ProofReportView report={proof.data} />
+      </Panel>
+      <Panel title="Core Investing Validation">
+        <div className="action-strip">
+          <button className="secondary" onClick={() => runInvestingWorkflow('investing-replay')} disabled={!!investingLoading}>{investingLoading === 'investing-replay' ? 'Running' : 'Investing Replay'}</button>
+          <button className="secondary" onClick={() => runInvestingWorkflow('portfolio-replay')} disabled={!!investingLoading}>{investingLoading === 'portfolio-replay' ? 'Running' : 'Portfolio Replay'}</button>
+          <button className="secondary" onClick={() => runInvestingWorkflow('investing-proof')} disabled={!!investingLoading}>{investingLoading === 'investing-proof' ? 'Running' : 'Investing Proof Report'}</button>
+        </div>
+        <Notice tone="neutral">Core Investing compares regular_investing_score against SPY, QQQ, random baseline, and equal-weight universe where available.</Notice>
+        <ReplaySummary report={investingReplay.data} />
+        <DataTable rows={((portfolioReplay.data?.summary?.decision_performance as Record<string, unknown>[] | undefined) ?? [])} columns={['core_investing_decision', 'sample_size', 'average', 'median', 'win_rate', 'false_positive_rate']} />
+        <ProofReportView report={investingProof.data} />
       </Panel>
       <Panel title="Predictions">
         <DataTable rows={predictions.data ?? []} columns={['prediction_id', 'ticker', 'final_combined_recommendation', 'next_review_date', 'outcome_label', 'return_20d']} />
@@ -959,6 +1117,39 @@ function CandidateList({ rows }: { rows: ScannerRow[] }) {
   );
 }
 
+function CoreInvestingCards({ rows }: { rows: ScannerRow[] }) {
+  if (!rows.length) return <p className="muted">No names in this section yet.</p>;
+  return (
+    <div className="candidate-list">
+      {rows.map((row) => (
+        <article className="candidate-card" key={row.ticker}>
+          <div className="provider-title">
+            <div>
+              <h3>{row.ticker}</h3>
+              <span>{row.investing_style ?? 'Core investing'}</span>
+            </div>
+            <ScoreRing value={Number(row.regular_investing_score ?? 0)} label="Core" />
+          </div>
+          <div className="pill-row">
+            <Chip tone={String(row.investing_action_label).includes('Avoid') || String(row.investing_action_label).includes('Exit') ? 'bad' : String(row.investing_action_label).includes('Watch') ? 'warn' : 'good'}>{row.investing_action_label ?? 'Data Insufficient'}</Chip>
+            <Chip tone={row.investing_risk === 'High' ? 'warn' : 'neutral'}>{row.investing_risk ?? 'Risk n/a'}</Chip>
+            <Chip tone="neutral">{row.investing_time_horizon ?? 'Horizon n/a'}</Chip>
+          </div>
+          <p>{row.investing_reason ?? 'No regular investing reason returned.'}</p>
+          <KeyValue payload={{
+            bear_case: row.investing_bear_case,
+            invalidation: row.investing_invalidation,
+            events_to_watch: row.investing_events_to_watch,
+            value_trap_warning: row.value_trap_warning,
+            thesis_quality: row.thesis_quality,
+            data_quality: row.investing_data_quality,
+          }} />
+        </article>
+      ))}
+    </div>
+  );
+}
+
 function ScannerTable({ rows }: { rows: ScannerRow[] }) {
   return <DataTable rows={rows} columns={['ticker', 'status_label', 'winner_score', 'outlier_score', 'risk_score', 'setup_quality_score', 'outlier_type', 'entry_zone']} />;
 }
@@ -1026,8 +1217,8 @@ function VelocityCard({ row }: { row: ScannerRow }) {
 
 function ReplaySummary({ report }: { report: ReplayPayload | null }) {
   const summary = report?.summary ?? {};
-  const strategy = (summary.strategy_performance as Record<string, unknown>[] | undefined) ?? [];
-  const returns = summary.average_forward_return_by_horizon as Record<string, unknown> | undefined;
+  const strategy = (summary.strategy_performance as Record<string, unknown>[] | undefined) ?? (summary.best_worst_investing_styles as Record<string, unknown>[] | undefined) ?? [];
+  const returns = (summary.average_forward_return_by_horizon as Record<string, unknown> | undefined) ?? Object.fromEntries(Object.entries((summary.regular_investing_forward_returns as Record<string, Record<string, unknown>> | undefined) ?? {}).map(([horizon, metric]) => [horizon, metric.average]));
   const chartData = Object.entries(returns ?? {}).map(([horizon, value]) => ({ horizon, value: Number(value ?? 0) }));
   return (
     <div className="grid">
@@ -1047,10 +1238,10 @@ function ReplaySummary({ report }: { report: ReplayPayload | null }) {
         </Panel>
       </div>
       <Panel title="Performance By Strategy">
-        <DataTable rows={strategy} columns={['strategy_label', 'sample_size', 'average', 'median', 'win_rate', 'false_positive_rate']} />
+        <DataTable rows={strategy} columns={['strategy_label', 'investing_style', 'sample_size', 'average', 'median', 'win_rate', 'false_positive_rate']} />
       </Panel>
       <Panel title="Recent Replay Rows">
-        <DataTable rows={(report?.results ?? []).slice(0, 30)} columns={['replay_date', 'ticker', 'status_label', 'outlier_type', 'outlier_score', 'velocity_type', 'velocity_score', 'risk_score']} />
+        <DataTable rows={(report?.results ?? []).slice(0, 30)} columns={['replay_date', 'ticker', 'regular_investing_score', 'investing_action_label', 'investing_style', 'status_label', 'outlier_score', 'velocity_score', 'risk_score']} />
       </Panel>
     </div>
   );
@@ -1148,6 +1339,7 @@ function DualLineChart({ data }: { data: Record<string, unknown>[] }) {
 function ResearchView({ payload }: { payload: Record<string, unknown> }) {
   const decision = payload.decision_card as Record<string, unknown> | undefined;
   const scanner = payload.scanner_row as ScannerRow | undefined;
+  const regularView = payload.regular_investing_view as Record<string, unknown> | undefined;
   return (
     <div className="grid">
       <Panel title="Hero Decision">
@@ -1178,6 +1370,24 @@ function ResearchView({ payload }: { payload: Record<string, unknown> }) {
         </Panel>
         <Panel title="Bear Case">
           <KeyValue payload={{ bear_case: payload.bear_case ?? scanner?.why_it_could_fail, key_risks: payload.key_risks ?? scanner?.warnings }} />
+        </Panel>
+        <Panel title="Regular Investing View">
+          <div className="metric-grid compact">
+            <Metric label="Core score" value={String(regularView?.regular_investing_score ?? scanner?.regular_investing_score ?? 0)} sub="0-100 regular investing" />
+            <Metric label="Action" value={String(regularView?.investing_action_label ?? scanner?.investing_action_label ?? 'Data Insufficient')} sub="Research label only" />
+            <Metric label="Risk" value={String(regularView?.investing_risk ?? scanner?.investing_risk ?? 'Unknown')} sub="Not an order" />
+          </div>
+          <KeyValue payload={{
+            style: regularView?.investing_style ?? scanner?.investing_style,
+            horizon: regularView?.investing_time_horizon ?? scanner?.investing_time_horizon,
+            bull_case: regularView?.bull_case ?? scanner?.investing_reason,
+            bear_case: regularView?.bear_case ?? scanner?.investing_bear_case,
+            invalidation: regularView?.invalidation ?? scanner?.investing_invalidation,
+            events_to_watch: regularView?.events_to_watch ?? scanner?.investing_events_to_watch,
+            value_trap_warning: regularView?.value_trap_warning ?? scanner?.value_trap_warning,
+            thesis_quality: regularView?.thesis_quality ?? scanner?.thesis_quality,
+            data_quality: regularView?.data_quality ?? scanner?.investing_data_quality,
+          }} />
         </Panel>
         <Panel title="Insider / Politician Activity">
           <div className="alt-grid">

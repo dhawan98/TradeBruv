@@ -251,6 +251,20 @@ class ScannerResult:
     velocity_tp1: float | None = None
     velocity_tp2: float | None = None
     expected_horizon: str = "unavailable"
+    regular_investing_score: int = 0
+    investing_style: str = "Data Insufficient"
+    investing_risk: str = "High"
+    investing_time_horizon: str = "unavailable"
+    investing_action_label: str = "Data Insufficient"
+    investing_reason: str = "Regular investing data was unavailable."
+    investing_bear_case: str = "Missing data can weaken any long-term thesis."
+    investing_invalidation: str = "unavailable"
+    investing_events_to_watch: list[str] = field(default_factory=list)
+    value_trap_warning: str = "unavailable"
+    thesis_quality: str = "Data Insufficient"
+    investing_data_quality: str = "Weak"
+    regular_investing_components: dict[str, int] = field(default_factory=dict)
+    regular_investing_fundamental_snapshot: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         catalyst_intelligence = _default_catalyst_intelligence() | self.catalyst_intelligence
@@ -349,6 +363,20 @@ class ScannerResult:
             "velocity_tp1": _format_number(self.velocity_tp1),
             "velocity_tp2": _format_number(self.velocity_tp2),
             "expected_horizon": self.expected_horizon,
+            "regular_investing_score": self.regular_investing_score,
+            "investing_style": self.investing_style,
+            "investing_risk": self.investing_risk,
+            "investing_time_horizon": self.investing_time_horizon,
+            "investing_action_label": self.investing_action_label,
+            "investing_reason": self.investing_reason,
+            "investing_bear_case": self.investing_bear_case,
+            "investing_invalidation": self.investing_invalidation,
+            "investing_events_to_watch": self.investing_events_to_watch,
+            "value_trap_warning": self.value_trap_warning,
+            "thesis_quality": self.thesis_quality,
+            "investing_data_quality": self.investing_data_quality,
+            "regular_investing_components": self.regular_investing_components,
+            "regular_investing_fundamental_snapshot": self.regular_investing_fundamental_snapshot,
         }
 
 
