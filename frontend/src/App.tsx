@@ -1,7 +1,6 @@
 import { FormEvent, useState } from 'react';
 import type React from 'react';
 import {
-  AlertTriangle,
   Activity,
   BookOpen,
   Brain,
@@ -19,7 +18,24 @@ import {
   Wallet,
 } from 'lucide-react';
 import { Bar, BarChart, CartesianGrid, Line, LineChart as ReLineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { api, AlertRow, DataSourceRow, HealthPayload, PortfolioPayload, PredictionRow, ProofReport, ReplayPayload, ScannerRow } from './api';
+import {
+  api,
+  AlertRow,
+  DataSourceRow,
+  HealthPayload,
+  PortfolioPayload,
+  PredictionRow,
+  ProofReport,
+  ReplayPayload,
+  ResearchPayload,
+  ScannerRow,
+  UnifiedDecision,
+  UniverseItem,
+  UniversesPayload,
+  ValidationContext,
+  getApiBaseUrl,
+  isApiError,
+} from './api';
 import { useAsync } from './hooks';
 
 type PageKey =
@@ -65,10 +81,29 @@ const GROUPS: Record<string, string[]> = {
   'Future brokerage': ['Future brokerage'],
 };
 
+const DEFAULT_UNIVERSES: UniverseItem[] = [
+  { label: 'Active Core Investing', path: 'config/active_core_investing_universe.txt', description: 'Quality compounders and practical portfolio research names.', available: true },
+  { label: 'Active Outliers', path: 'config/active_outlier_universe.txt', description: 'Current high-growth and high-momentum research names.', available: true },
+  { label: 'Active Velocity', path: 'config/active_velocity_universe.txt', description: 'High-volume / velocity monitor names.', available: true },
+  { label: 'Mega Cap', path: 'config/mega_cap_universe.txt', description: 'Large-cap leadership basket.', available: true },
+  { label: 'Momentum', path: 'config/momentum_universe.txt', description: 'Momentum-leaning universe.', available: true },
+  { label: 'Famous Case Studies', path: 'config/famous_outlier_case_studies.txt', description: 'Historical validation names only.', available: true },
+];
+
+const DEFAULT_UNIVERSE_WARNING = 'Famous Case Studies are for historical validation, not active monitoring.';
+
+type ScanState = {
+  generated_at?: string;
+  results?: ScannerRow[];
+  decisions?: UnifiedDecision[];
+  validation_context?: ValidationContext;
+};
+
 export function App() {
   const [page, setPage] = useState<PageKey>('Home');
   const health = useAsync(api.health, []);
   const portfolio = useAsync(api.portfolio, []);
+  const latest = useAsync(api.latestReport, []);
 
   return (
     <div className="app-shell">
@@ -90,7 +125,13 @@ export function App() {
         </nav>
       </aside>
       <main className="main">
-        <TopBar health={health.data} portfolio={portfolio.data} />
+        <TopBar
+          health={health.data}
+          healthError={health.error}
+          portfolio={portfolio.data}
+          latest={latest.data}
+          onRetryHealth={health.retry}
+        />
         <section className="workspace">
           {page === 'Home' && <HomePage setPage={setPage} />}
           {page === 'Stock Picker' && <StockPicker />}
@@ -113,77 +154,127 @@ export function App() {
   );
 }
 
-function TopBar({ health, portfolio }: { health: HealthPayload | null; portfolio: PortfolioPayload | null }) {
+function TopBar({
+  health,
+  healthError,
+  portfolio,
+  latest,
+  onRetryHealth,
+}: {
+  health: HealthPayload | null;
+  healthError: Error | null;
+  portfolio: PortfolioPayload | null;
+  latest: { generated_at?: string; provider?: string; validation_context?: ValidationContext } | null;
+  onRetryHealth: () => void;
+}) {
+  const backendStatus = describeBackendStatus(healthError);
   return (
     <header className="topbar">
       <div>
-        <span className="eyebrow">Mode</span>
-        <strong>{health?.mode ?? 'outliers'}</strong>
+        <span className="eyebrow">Decision Cockpit</span>
+        <strong>{health?.mode ?? 'waiting for backend'}</strong>
       </div>
-      <Status label="Provider" value={health?.provider ?? 'sample'} />
-      <Status label="Last scan" value={compactDate(health?.last_scan_time)} />
+      <Status label="Backend" value={backendStatus.label} tone={backendStatus.tone} />
+      <Status label="API base" value={getApiBaseUrl()} />
+      <Status label="Provider" value={latest?.provider ?? health?.provider ?? 'unavailable'} />
+      <Status label="Last scan" value={compactDate(latest?.generated_at ?? health?.last_scan_time)} />
       <Status label="Data sources" value={`${health?.data_source_health.optional_ready ?? 0} ready`} tone="good" />
       <Status label="AI" value={health?.ai.any_configured ? 'Configured' : 'Missing'} tone={health?.ai.any_configured ? 'good' : 'warn'} />
       <Status label="Portfolio" value={money(Number(portfolio?.summary?.total_market_value ?? health?.portfolio_value ?? 0))} />
       <Status label="Alerts" value={String(health?.alert_count ?? 0)} tone={health?.alert_count ? 'warn' : 'good'} />
+      {healthError && <button className="ghost topbar-retry" onClick={onRetryHealth}><RefreshCcw size={14} /> Retry backend</button>}
     </header>
   );
 }
 
 function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
   const latest = useAsync(api.latestReport, []);
-  const alerts = useAsync(api.alerts, []);
+  const portfolio = useAsync(api.portfolio, []);
   const sources = useAsync(api.dataSources, []);
-  const predictions = useAsync(api.predictions, []);
-  const rows = latest.data?.results ?? [];
-  const top = rows.filter((row) => row.status_label !== 'Avoid').slice(0, 5);
-  const openPredictions = (predictions.data ?? []).filter((row) => !row.outcome_label || ['Open', 'Still Open', 'Data Unavailable'].includes(row.outcome_label));
-  const duePredictions = openPredictions.filter((row) => !row.next_review_date || row.next_review_date <= new Date().toISOString().slice(0, 10));
+  const universes = useAsync(api.universes, []);
+  const decisions = latest.data?.decisions ?? [];
+  const validation = latest.data?.validation_context;
+  const buyResearch = decisions.filter((row) => row.primary_action === 'Research / Buy Candidate').slice(0, 6);
+  const watch = decisions.filter((row) => row.primary_action === 'Watch').slice(0, 6);
+  const holdAdd = decisions.filter((row) => ['Hold', 'Add'].includes(String(row.primary_action))).slice(0, 6);
+  const trimSell = decisions.filter((row) => ['Trim', 'Sell / Exit Candidate', 'Watch Closely'].includes(String(row.primary_action))).slice(0, 6);
+  const avoid = decisions.filter((row) => ['Avoid', 'Data Insufficient'].includes(String(row.primary_action))).slice(0, 6);
+  const tpBoard = decisions.filter((row) => row.entry_zone && row.entry_zone !== 'unavailable').slice(0, 10);
 
   return (
-    <Page title="Home" subtitle="Daily brief, open risks, and the next useful research action.">
+    <Page title="Home" subtitle="One-screen daily decision cockpit for what to research, watch, hold, add to, trim, sell, and avoid.">
+      {latest.error && <ApiErrorPanel error={latest.error} onRetry={latest.retry} />}
+      {sources.error && <ApiErrorPanel error={sources.error} onRetry={sources.retry} compact />}
       <div className="metric-grid">
-        <Metric label="Candidates" value={String(top.length)} sub="Non-avoid names in latest scan" />
-        <Metric label="Open alerts" value={String(alerts.data?.length ?? 0)} sub="Daily workflow prompts" />
-        <Metric label="Due reviews" value={String(duePredictions.length)} sub="Paper predictions needing update" />
+        <Metric label="Buy / Research" value={String(buyResearch.length)} sub="Highest-priority current candidates" />
+        <Metric label="Watch" value={String(watch.length)} sub="Interesting, not actionable yet" />
+        <Metric label="Hold / Add / Trim" value={String(holdAdd.length + trimSell.length)} sub="Portfolio-aware labels when available" />
         <Metric label="Data sources" value={`${sources.data?.summary.optional_ready ?? 0} ready`} sub="Configured optional providers" />
       </div>
       <div className="grid two">
-        <Panel title="Market Regime">
+        <Panel title="Market / Data Health">
           <DecisionCard
             label={String(latest.data?.market_regime?.regime ?? 'Unavailable')}
-            status={latest.data?.available ? 'Latest scan loaded' : 'Run a scan to populate regime'}
-            risk={String(latest.data?.market_regime?.risk_level ?? 'Unknown')}
-            details={String(latest.data?.market_regime?.summary ?? 'Regime comes from Python scan outputs.')}
+            status={String(latest.data?.market_regime?.provider ?? 'No market regime loaded')}
+            risk={String(avoid.length ? 55 : 30)}
+            details={listText((latest.data?.validation_context?.messages as string[] | undefined) ?? ['Run a fresh scan, then use Deep Research only on the top names.'])}
           />
-        </Panel>
-        <Panel title="Quick Actions">
+          <div className="metric-grid compact">
+            <Metric label="Last scan" value={compactDate(latest.data?.generated_at)} sub={latest.data?.provider ?? 'unavailable'} />
+            <Metric label="Portfolio loaded" value={(portfolio.data?.positions?.length ?? 0) ? 'Yes' : 'No'} sub={(portfolio.data?.positions?.length ?? 0) ? 'Portfolio-aware labels active' : 'Import or add positions for hold/add/trim/sell labels'} />
+            <Metric label="Universe defaults" value={String((universes.data?.home_defaults ?? []).length)} sub="Home uses active universes only" />
+          </div>
           <div className="action-strip">
             <button className="primary" onClick={() => setPage('Stock Picker')}><RefreshCcw size={16} /> Run Scan</button>
-            <button className="secondary" onClick={() => setPage('Deep Research')}><Search size={16} /> Deep Research Ticker</button>
-            <button className="secondary" onClick={() => setPage('Validation Lab')}><FlaskConical size={16} /> Review Predictions</button>
+            <button className="secondary" onClick={() => setPage('Deep Research')}><Search size={16} /> Deep Research</button>
+            <button className="secondary" onClick={() => setPage('Validation Lab')}><FlaskConical size={16} /> Validation Context</button>
           </div>
-          <WatchlistChangeCard label="Predictions needing review" value={String(duePredictions.length)} note="Forward tracking is the honest scorekeeper." />
+        </Panel>
+        <Panel title="Active Universes">
+          <UniverseSummary payload={universes.data} />
         </Panel>
       </div>
-      {top.length ? (
-        <div className="grid two">
-          <Panel title="Top Research Candidates">
-            <CandidateList rows={top} />
+      {decisions.length ? (
+        <>
+          <div className="grid two">
+            <Panel title="Buy / Research Candidates">
+              <DecisionList rows={buyResearch} empty="Run a fresh active-universe scan to fill this lane." />
+            </Panel>
+            <Panel title="Watchlist / Wait">
+              <DecisionList rows={watch} empty="No watch-only names right now." />
+            </Panel>
+            <Panel title="Hold / Add">
+              {portfolio.data?.positions?.length ? (
+                <DecisionList rows={holdAdd} empty="No hold/add names right now." />
+              ) : (
+                <EmptyState title="No portfolio loaded" action="Open Portfolio" onAction={() => setPage('Portfolio')}>
+                  Import a portfolio or add positions manually to activate Hold / Add / Trim / Sell decisions.
+                </EmptyState>
+              )}
+            </Panel>
+            <Panel title="Trim / Sell / Watch Closely">
+              {portfolio.data?.positions?.length ? (
+                <DecisionList rows={trimSell} empty="No trim or sell candidates right now." />
+              ) : (
+                <EmptyState title="Portfolio decisions need holdings" action="Open Portfolio" onAction={() => setPage('Portfolio')}>
+                  Portfolio-aware actions stay empty until a portfolio is loaded.
+                </EmptyState>
+              )}
+            </Panel>
+            <Panel title="Avoid / Risk">
+              <DecisionList rows={avoid} empty="No avoid candidates right now." />
+            </Panel>
+            <Panel title="Validation Context">
+              <ValidationContextCard context={validation} />
+            </Panel>
+          </div>
+          <Panel title="Quick TP / SL Board">
+            <DecisionBoard rows={tpBoard} />
           </Panel>
-          <Panel title="Open Alerts">
-            <AlertList rows={(alerts.data ?? []).slice(0, 6)} />
-          </Panel>
-          <Panel title="Data Health">
-            <DataHealthCard ready={sources.data?.summary.optional_ready ?? 0} missing={sources.data?.summary.optional_missing ?? 0} requiredMissing={sources.data?.summary.required_missing ?? 0} />
-          </Panel>
-          <Panel title="Portfolio Review Prompts">
-            <p className="muted">Use Portfolio Analyst after each real scan to compare current holdings against refreshed deterministic signals.</p>
-          </Panel>
-        </div>
+        </>
       ) : (
-        <EmptyState title="No scan loaded" action="Run Scan" onAction={() => setPage('Stock Picker')}>
-          Run a deterministic sample scan to populate candidates, risk warnings, and the daily cockpit.
+        <EmptyState title="No scan loaded" action="Open scanner" onAction={() => setPage('Stock Picker')}>
+          Home becomes the daily cockpit after you run a scan from an active universe.
         </EmptyState>
       )}
     </Page>
@@ -191,15 +282,16 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
 }
 
 function StockPicker() {
-  const [scan, setScan] = useState<ScannerRow[]>([]);
-  const [tab, setTab] = useState<'Outliers' | 'Velocity' | 'Long-Term' | 'Avoid'>('Outliers');
-  const [error, setError] = useState('');
+  const universes = useAsync(api.universes, []);
+  const [scan, setScan] = useState<ScanState | null>(null);
+  const [tab, setTab] = useState<'All Decisions' | 'Buy / Research' | 'Watch' | 'Hold / Add' | 'Trim / Sell' | 'Avoid' | 'Core Investing' | 'Outliers' | 'Velocity'>('All Decisions');
+  const [error, setError] = useState<Error | null>(null);
   const [loading, setLoading] = useState(false);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setLoading(true);
-    setError('');
+    setError(null);
     const form = new FormData(event.currentTarget);
     try {
       const payload = await api.scan({
@@ -208,49 +300,53 @@ function StockPicker() {
         universe_path: form.get('universe_path'),
         as_of_date: form.get('as_of_date'),
       });
-      setScan(payload.results);
+      setScan(payload);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Scan failed');
+      setError(err instanceof Error ? err : new Error('Scan failed'));
     } finally {
       setLoading(false);
     }
   }
 
+  const rows = filterDecisionRows(scan?.decisions ?? [], tab);
+
   return (
-    <Page title="Stock Picker" subtitle="Run the Python scanner and review candidates without duplicating scoring in React.">
+    <Page title="Stock Picker" subtitle="Run one scan, then filter decisions by action instead of jumping across scattered tabs.">
+      {universes.error && <ApiErrorPanel error={universes.error} onRetry={universes.retry} compact />}
       <form className="toolbar" onSubmit={submit}>
         <Select name="provider" label="Provider" options={['sample', 'local', 'real']} />
-        <Select name="mode" label="Mode" options={['outliers', 'velocity', 'standard']} />
-        <Field name="universe_path" label="Universe" defaultValue="config/outlier_watchlist.txt" />
+        <Select name="mode" label="Mode" options={['outliers', 'velocity', 'investing']} />
+        <UniverseField name="universe_path" label="Universe" defaultValue="config/active_outlier_universe.txt" universes={universes.data} />
         <Field name="as_of_date" label="As of" defaultValue="2026-04-24" />
         <button className="primary" disabled={loading}>
           <RefreshCcw size={16} /> {loading ? 'Running' : 'Run Scan'}
         </button>
       </form>
-      {error && <Notice tone="bad">{error}</Notice>}
+      <Notice tone="neutral">{universes.data?.warning ?? DEFAULT_UNIVERSE_WARNING}</Notice>
+      {error && <ApiErrorPanel error={error} onRetry={() => setError(null)} />}
       {loading && <Notice tone="neutral">Running the scanner can take a bit with the real provider. Results will appear here without changing your data.</Notice>}
-      {scan.length > 0 && (
+      {scan?.decisions?.length ? (
         <div className="tabs">
-          {(['Outliers', 'Velocity', 'Long-Term', 'Avoid'] as const).map((item) => (
+          {(['All Decisions', 'Buy / Research', 'Watch', 'Hold / Add', 'Trim / Sell', 'Avoid', 'Core Investing', 'Outliers', 'Velocity'] as const).map((item) => (
             <button className={tab === item ? 'active' : ''} key={item} onClick={() => setTab(item)}>{item}</button>
           ))}
         </div>
-      )}
+      ) : null}
       {loading ? (
         <SkeletonGrid />
-      ) : scan.length ? (
+      ) : scan?.decisions?.length ? (
         <div className="grid">
-          <Panel title={`${tab} Candidates`}>
-            <CandidateList rows={filterStockRows(scan, tab).slice(0, 8)} />
+          <Panel title={tab}>
+            <DecisionList rows={rows.slice(0, 10)} empty="No names match this tab right now." />
           </Panel>
-          <Panel title="Why This Is Actionable">
-            <SignalBrief rows={filterStockRows(scan, tab)} />
+          <Panel title="Why This Lane Is Actionable">
+            <DecisionSummary rows={rows} />
           </Panel>
-          <Panel title="Scanner Table">
-            <ScannerTable rows={filterStockRows(scan, tab)} />
+          <Panel title="Decision Table">
+            <DecisionBoard rows={rows} />
           </Panel>
-          <Panel title="What Invalidates This Fast">
-            <ScannerTable rows={scan.filter((row) => row.status_label === 'Avoid')} />
+          <Panel title="Raw Scanner Table">
+            <ScannerTable rows={filterScannerRows(scan.results ?? [], tab)} />
           </Panel>
         </div>
       ) : (
@@ -263,19 +359,20 @@ function StockPicker() {
 }
 
 function CoreInvesting() {
+  const universes = useAsync(api.universes, []);
   const latestReplay = useAsync(api.latestInvestingReplay, []);
   const latestProof = useAsync(api.latestInvestingProofReport, []);
   const [scan, setScan] = useState<ScannerRow[]>([]);
   const [replay, setReplay] = useState<ReplayPayload | null>(null);
   const [proof, setProof] = useState<ProofReport | null>(null);
   const [loading, setLoading] = useState('');
-  const [error, setError] = useState('');
+  const [error, setError] = useState<Error | null>(null);
 
   async function runScan(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     setLoading('scan');
-    setError('');
+    setError(null);
     try {
       const payload = await api.scan({
         provider: form.get('provider'),
@@ -285,7 +382,7 @@ function CoreInvesting() {
       });
       setScan(payload.results);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Core investing scan failed');
+      setError(err instanceof Error ? err : new Error('Core investing scan failed'));
     } finally {
       setLoading('');
     }
@@ -293,7 +390,7 @@ function CoreInvesting() {
 
   async function runReplay() {
     setLoading('replay');
-    setError('');
+    setError(null);
     try {
       setReplay(await api.runInvestingReplay({
         provider: 'sample',
@@ -305,7 +402,7 @@ function CoreInvesting() {
         random_baseline: true,
       }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Investing replay failed');
+      setError(err instanceof Error ? err : new Error('Investing replay failed'));
     } finally {
       setLoading('');
     }
@@ -313,7 +410,7 @@ function CoreInvesting() {
 
   async function runProof() {
     setLoading('proof');
-    setError('');
+    setError(null);
     try {
       setProof(await api.runInvestingProofReport({
         provider: 'sample',
@@ -324,7 +421,7 @@ function CoreInvesting() {
         random_baseline: true,
       }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Investing proof report failed');
+      setError(err instanceof Error ? err : new Error('Investing proof report failed'));
     } finally {
       setLoading('');
     }
@@ -337,11 +434,11 @@ function CoreInvesting() {
     <Page title="Core Investing" subtitle="Regular buy, watch, hold, add, trim, and avoid research separated from outlier and velocity lanes.">
       <form className="toolbar" onSubmit={runScan}>
         <Select name="provider" label="Provider" options={['sample', 'local', 'real']} />
-        <Field name="universe_path" label="Universe" defaultValue="config/mega_cap_universe.txt" />
+        <UniverseField name="universe_path" label="Universe" defaultValue="config/active_core_investing_universe.txt" universes={universes.data} />
         <Field name="as_of_date" label="As of" defaultValue="2026-04-24" />
         <button className="primary" disabled={loading === 'scan'}><RefreshCcw size={16} /> {loading === 'scan' ? 'Scanning' : 'Run Core Scan'}</button>
       </form>
-      {error && <Notice tone="bad">{error}</Notice>}
+      {error && <ApiErrorPanel error={error} onRetry={() => setError(null)} />}
       <div className="metric-grid">
         <Metric label="Candidates" value={String(rows.filter((row) => Number(row.regular_investing_score ?? 0) >= 60).length)} sub="Regular score >= 60" />
         <Metric label="Add / Buy" value={String(rows.filter((row) => String(row.investing_action_label).includes('Add') || String(row.investing_action_label).includes('Buy')).length)} sub="Research candidates only" />
@@ -388,15 +485,16 @@ function CoreInvesting() {
 }
 
 function VelocityScanner() {
+  const universes = useAsync(api.universes, []);
   const [payload, setPayload] = useState<ScannerRow[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<Error | null>(null);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     setLoading(true);
-    setError('');
+    setError(null);
     try {
       const result = await api.scan({
         provider: form.get('provider'),
@@ -406,7 +504,7 @@ function VelocityScanner() {
       });
       setPayload(result.results);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Velocity scan failed');
+      setError(err instanceof Error ? err : new Error('Velocity scan failed'));
     } finally {
       setLoading(false);
     }
@@ -417,11 +515,11 @@ function VelocityScanner() {
     <Page title="Velocity Scanner" subtitle="High-volume and quick-moving research candidates. No day-trading, options, execution, or buy-now language.">
       <form className="toolbar" onSubmit={submit}>
         <Select name="provider" label="Provider" options={['sample', 'local', 'real']} />
-        <Field name="universe_path" label="Universe" defaultValue="config/outlier_watchlist.txt" />
+        <UniverseField name="universe_path" label="Universe" defaultValue="config/active_velocity_universe.txt" universes={universes.data} />
         <Field name="as_of_date" label="As of" defaultValue="2026-04-24" />
         <button className="primary" disabled={loading}><Activity size={16} /> {loading ? 'Scanning' : 'Run Velocity Scan'}</button>
       </form>
-      {error && <Notice tone="bad">{error}</Notice>}
+      {error && <ApiErrorPanel error={error} onRetry={() => setError(null)} />}
       <div className="metric-grid">
         <Metric label="Velocity names" value={String(candidates.length)} sub="Triggered or watchlisted" />
         <Metric label="Avoid spikes" value={String(payload.filter((row) => String(row.velocity_type).includes('Avoid')).length)} sub="Failed spike / pump risk" />
@@ -448,13 +546,13 @@ function ReplayLab() {
   const latest = useAsync(() => api.latestReplay('outliers'), []);
   const [payload, setPayload] = useState<ReplayPayload | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<Error | null>(null);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     setLoading(true);
-    setError('');
+    setError(null);
     try {
       const result = await api.runReplay({
         provider: form.get('provider'),
@@ -467,7 +565,7 @@ function ReplayLab() {
       });
       setPayload(result);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Replay failed');
+      setError(err instanceof Error ? err : new Error('Replay failed'));
     } finally {
       setLoading(false);
     }
@@ -480,13 +578,13 @@ function ReplayLab() {
         <Select name="provider" label="Provider" options={['sample', 'local', 'real']} />
         <Select name="mode" label="Mode" options={['outliers', 'velocity']} />
         <Select name="frequency" label="Frequency" options={['weekly', 'daily']} />
-        <Field name="universe" label="Universe" defaultValue="config/outlier_watchlist.txt" />
+        <Field name="universe" label="Universe" defaultValue="config/famous_outlier_case_studies.txt" />
         <Field name="start_date" label="Start" defaultValue="2020-01-01" />
         <Field name="end_date" label="End" defaultValue="2026-04-24" />
         <Field name="top_n" label="Top N" defaultValue="20" />
         <button className="primary" disabled={loading}><RefreshCcw size={16} /> {loading ? 'Running' : 'Run Replay'}</button>
       </form>
-      {error && <Notice tone="bad">{error}</Notice>}
+      {error && <ApiErrorPanel error={error} onRetry={() => setError(null)} />}
       <ReplaySummary report={report} />
     </Page>
   );
@@ -495,13 +593,13 @@ function ReplayLab() {
 function OutlierCaseStudy() {
   const [study, setStudy] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<Error | null>(null);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     setLoading(true);
-    setError('');
+    setError(null);
     try {
       setStudy(await api.runOutlierStudy({
         provider: form.get('provider'),
@@ -511,7 +609,7 @@ function OutlierCaseStudy() {
         mode: form.get('mode'),
       }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Case study failed');
+      setError(err instanceof Error ? err : new Error('Case study failed'));
     } finally {
       setLoading(false);
     }
@@ -527,7 +625,8 @@ function OutlierCaseStudy() {
         <Field name="end_date" label="End" defaultValue="2021-02-15" />
         <button className="primary" disabled={loading}><Sparkles size={16} /> {loading ? 'Running' : 'Run Study'}</button>
       </form>
-      {error && <Notice tone="bad">{error}</Notice>}
+      <Notice tone="warn">{DEFAULT_UNIVERSE_WARNING}</Notice>
+      {error && <ApiErrorPanel error={error} onRetry={() => setError(null)} />}
       {study && (
         <div className="grid">
           <div className="metric-grid">
@@ -552,19 +651,19 @@ function OutlierCaseStudy() {
 }
 
 function DeepResearch() {
-  const [research, setResearch] = useState<Record<string, unknown> | null>(null);
-  const [error, setError] = useState('');
+  const [research, setResearch] = useState<ResearchPayload | null>(null);
+  const [error, setError] = useState<Error | null>(null);
   const [loading, setLoading] = useState(false);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    setError('');
+    setError(null);
     setLoading(true);
     try {
       setResearch(await api.deepResearch({ ticker: form.get('ticker'), provider: form.get('provider') }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Deep research failed');
+      setError(err instanceof Error ? err : new Error('Deep research failed'));
     } finally {
       setLoading(false);
     }
@@ -577,7 +676,7 @@ function DeepResearch() {
         <Select name="provider" label="Provider" options={['sample', 'local', 'real']} />
         <button className="primary" disabled={loading}><Search size={16} /> {loading ? 'Researching' : 'Research'}</button>
       </form>
-      {error && <Notice tone="bad">{error}</Notice>}
+      {error && <ApiErrorPanel error={error} onRetry={() => setError(null)} />}
       {loading && <SkeletonGrid />}
       {research && <ResearchView payload={research} />}
     </Page>
@@ -620,17 +719,17 @@ function PortfolioAnalyst() {
 
 function AICommittee() {
   const [payload, setPayload] = useState<Record<string, unknown> | null>(null);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<Error | null>(null);
   const [loading, setLoading] = useState(false);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    setError('');
+    setError(null);
     setLoading(true);
     try {
       setPayload(await api.aiCommittee({ ticker: form.get('ticker'), mode: form.get('mode'), provider: form.get('provider') }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'AI committee failed');
+      setError(err instanceof Error ? err : new Error('AI committee failed'));
     } finally {
       setLoading(false);
     }
@@ -645,7 +744,7 @@ function AICommittee() {
         <Select name="mode" label="Mode" options={['No AI', 'Mock AI for testing', 'OpenAI only', 'Gemini only']} />
         <button className="primary" disabled={loading}><Brain size={16} /> {loading ? 'Running' : 'Run Committee'}</button>
       </form>
-      {error && <Notice tone="bad">{error}</Notice>}
+      {error && <ApiErrorPanel error={error} onRetry={() => setError(null)} />}
       {loading && <SkeletonLine />}
       {committee && (
         <div className="grid two">
@@ -681,11 +780,15 @@ function ValidationLab() {
   const [proofLoading, setProofLoading] = useState(false);
   const [investingLoading, setInvestingLoading] = useState('');
   const [updateLoading, setUpdateLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
 
   async function runAudit() {
     setAuditLoading(true);
     try {
       signalAudit.setData(await api.runSignalAudit({ reports_dir: 'reports/scans', baseline: 'SPY,QQQ', random_baseline: true }));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error('Signal audit failed'));
     } finally {
       setAuditLoading(false);
     }
@@ -697,6 +800,9 @@ function ValidationLab() {
       const payload = await api.updatePredictions({ provider: 'real' });
       summary.setData(payload.summary as Record<string, unknown>);
       predictions.setData(payload.predictions as PredictionRow[]);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error('Prediction outcome update failed'));
     } finally {
       setUpdateLoading(false);
     }
@@ -707,7 +813,7 @@ function ValidationLab() {
     try {
       proof.setData(await api.runProofReport({
         provider: 'sample',
-        universe: 'config/outlier_watchlist.txt',
+        universe: 'config/active_outlier_universe.txt',
         start_date: '2020-01-01',
         end_date: '2026-04-24',
         include_famous_outliers: true,
@@ -715,6 +821,9 @@ function ValidationLab() {
         baseline: 'SPY,QQQ',
         random_baseline: true,
       }));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error('Proof report failed'));
     } finally {
       setProofLoading(false);
     }
@@ -730,6 +839,9 @@ function ValidationLab() {
       } else {
         investingProof.setData(await api.runInvestingProofReport({ provider: 'sample', universe: 'config/mega_cap_universe.txt', start_date: '2020-01-01', end_date: '2026-04-24', baseline: 'SPY,QQQ', random_baseline: true }));
       }
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error('Investing validation workflow failed'));
     } finally {
       setInvestingLoading('');
     }
@@ -741,6 +853,9 @@ function ValidationLab() {
 
   return (
     <Page title="Validation Lab" subtitle="Paper predictions, outcome updates, and famous outlier case studies.">
+      {(error || summary.error || predictions.error || signalAudit.error || proof.error || investingReplay.error || portfolioReplay.error || investingProof.error) && (
+        <ApiErrorPanel error={error ?? summary.error ?? predictions.error ?? signalAudit.error ?? proof.error ?? investingReplay.error ?? portfolioReplay.error ?? investingProof.error ?? new Error('Validation request failed')} onRetry={() => setError(null)} />
+      )}
       <div className="metric-grid">
         <Metric label="Open" value={String((summary.data?.open_predictions as unknown[] | undefined)?.length ?? 0)} sub="Awaiting outcome" />
         <Metric label="Closed" value={String((summary.data?.closed_predictions as unknown[] | undefined)?.length ?? 0)} sub="Measured signals" />
@@ -815,23 +930,23 @@ function DataSources() {
   const doctor = useAsync(api.doctorLatest, []);
   const readiness = useAsync(api.readinessLatest, []);
   const [message, setMessage] = useState('');
-  const [error, setError] = useState('');
+  const [error, setError] = useState<Error | null>(null);
   const [workflowLoading, setWorkflowLoading] = useState('');
   const rows = sources.data?.rows ?? [];
 
   async function createTemplate() {
-    setError('');
+    setError(null);
     try {
       const result = await api.createEnvTemplate();
       setMessage(result.message);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not create .env');
+      setError(err instanceof Error ? err : new Error('Could not create .env'));
     }
   }
 
   async function runWorkflow(kind: 'doctor' | 'doctor-live' | 'readiness' | 'readiness-openai' | 'readiness-gemini') {
     setWorkflowLoading(kind);
-    setError('');
+    setError(null);
     try {
       if (kind === 'doctor') {
         const report = await api.runDoctor({ live: false, ticker: 'NVDA' });
@@ -841,12 +956,12 @@ function DataSources() {
         doctor.setData(report);
       } else {
         const ai = kind === 'readiness-openai' ? 'openai' : kind === 'readiness-gemini' ? 'gemini' : 'mock';
-        const report = await api.runReadiness({ provider: 'real', ai, tickers: 'NVDA,PLTR,MU,RDDT,GME,CAR,SMCI,COIN,HOOD,ARM,CAVA,AAPL,MSFT,LLY,TSLA' });
+        const report = await api.runReadiness({ provider: 'real', ai, tickers: 'NVDA,PLTR,MU,RDDT,SMCI,COIN,HOOD,ARM,CAVA,AAPL,MSFT,LLY,TSLA,AMD,AVGO' });
         readiness.setData(report);
       }
       setMessage('Workflow completed. Restart the backend only after changing .env values.');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Workflow failed');
+      setError(err instanceof Error ? err : new Error('Workflow failed'));
     } finally {
       setWorkflowLoading('');
     }
@@ -859,20 +974,22 @@ function DataSources() {
     for (const [key, value] of form.entries()) {
       if (typeof value === 'string' && value.trim()) values[key] = value;
     }
-    setError('');
+    setError(null);
     try {
       const result = await api.updateLocalEnv(values);
       setMessage(result.message);
       event.currentTarget.reset();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not update .env');
+      setError(err instanceof Error ? err : new Error('Could not update .env'));
     }
   }
 
   return (
     <Page title="Data Sources" subtitle="Provider readiness, missing keys, degraded capabilities, and local .env setup.">
       {message && <Notice tone="good">{message}</Notice>}
-      {error && <Notice tone="bad">{error}</Notice>}
+      {(error || sources.error || doctor.error || readiness.error) && (
+        <ApiErrorPanel error={error ?? sources.error ?? doctor.error ?? readiness.error ?? new Error('Data source request failed')} onRetry={() => setError(null)} />
+      )}
       <Panel title="Recommended Free-First Setup">
         <div className="setup-grid">
           <DataHealthCard ready={sources.data?.summary.optional_ready ?? 0} missing={sources.data?.summary.optional_missing ?? 0} requiredMissing={sources.data?.summary.required_missing ?? 0} />
@@ -893,7 +1010,7 @@ function DataSources() {
             <li>Restart the FastAPI backend.</li>
           </ol>
           <CommandSnippet text="python3 -m tradebruv doctor --live --ai openai --ticker NVDA" />
-          <CommandSnippet text="python3 -m tradebruv readiness --universe config/outlier_watchlist.txt --provider real --tickers NVDA,PLTR,MU,RDDT,GME,CAR,SMCI,COIN,HOOD,ARM,CAVA,AAPL,MSFT,LLY,TSLA --ai mock" />
+          <CommandSnippet text="python3 -m tradebruv readiness --universe config/active_outlier_universe.txt --provider real --tickers NVDA,PLTR,MU,RDDT,SMCI,COIN,HOOD,ARM,CAVA,AAPL,MSFT,LLY,TSLA,AMD,AVGO --ai mock" />
           <button className="secondary" onClick={createTemplate}>Create .env from template</button>
         </Panel>
         <Panel title="Safe Local .env Editor">
@@ -963,16 +1080,23 @@ function Reports() {
   const appStatus = useAsync(api.appStatusLatest, []);
   const [debug, setDebug] = useState(false);
   const [statusLoading, setStatusLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
   async function refreshStatus() {
     setStatusLoading(true);
     try {
       appStatus.setData(await api.runAppStatus());
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error('App status refresh failed'));
     } finally {
       setStatusLoading(false);
     }
   }
   return (
     <Page title="Reports" subtitle="Latest scan, archive index, daily summary, alerts, and optional debug payloads.">
+      {(error || latest.error || archive.error || appStatus.error) && (
+        <ApiErrorPanel error={error ?? latest.error ?? archive.error ?? appStatus.error ?? new Error('Report request failed')} onRetry={() => setError(null)} />
+      )}
       <Panel title="App Status Report">
         <div className="action-strip">
           <button className="secondary" onClick={refreshStatus} disabled={statusLoading}>{statusLoading ? 'Writing' : 'Refresh App Status'}</button>
@@ -1014,7 +1138,7 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
   );
 }
 
-function Status({ label, value, tone = 'neutral' }: { label: string; value: string; tone?: 'neutral' | 'good' | 'warn' }) {
+function Status({ label, value, tone = 'neutral' }: { label: string; value: string; tone?: 'neutral' | 'good' | 'warn' | 'bad' }) {
   return (
     <div className={`status ${tone}`}>
       <span>{label}</span>
@@ -1053,8 +1177,47 @@ function Select({ name, label, options }: { name: string; label: string; options
   );
 }
 
+function UniverseField({ name, label, defaultValue, universes }: { name: string; label: string; defaultValue: string; universes: UniversesPayload | null }) {
+  const items = universes?.items ?? DEFAULT_UNIVERSES;
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <input name={name} defaultValue={defaultValue} list={`${name}-options`} />
+      <datalist id={`${name}-options`}>
+        {items.map((item) => <option key={item.path} value={item.path}>{item.label}</option>)}
+      </datalist>
+    </label>
+  );
+}
+
 function Notice({ tone, children }: { tone: 'good' | 'bad' | 'warn' | 'neutral'; children: React.ReactNode }) {
   return <div className={`notice ${tone}`}>{children}</div>;
+}
+
+function ApiErrorPanel({ error, onRetry, compact = false }: { error: Error; onRetry: () => void; compact?: boolean }) {
+  if (!isApiError(error)) {
+    return (
+      <Notice tone="bad">
+        {error.message}
+        <button className="ghost" onClick={onRetry}>Retry</button>
+      </Notice>
+    );
+  }
+  return (
+    <div className={compact ? 'api-error compact' : 'api-error'}>
+      <div className="provider-title">
+        <strong>{describeBackendStatus(error).label}</strong>
+        <button className="ghost" onClick={onRetry}><RefreshCcw size={14} /> Retry</button>
+      </div>
+      <div className="kv">
+        <div><span>Endpoint attempted</span><strong>{error.endpoint}</strong></div>
+        <div><span>API base URL</span><strong>{error.apiBaseUrl}</strong></div>
+        <div><span>Cause</span><strong>{error.causeText}</strong></div>
+        <div><span>Suggested fix</span><strong>{error.suggestedFix}</strong></div>
+      </div>
+      {error.backendBody ? <pre className="debug-json">{JSON.stringify(error.backendBody, null, 2)}</pre> : null}
+    </div>
+  );
 }
 
 function EmptyState({ title, action, onAction, children }: { title: string; action: string; onAction?: () => void; children: React.ReactNode }) {
@@ -1094,29 +1257,6 @@ function ProviderCard({ row }: { row: DataSourceRow }) {
   );
 }
 
-function CandidateList({ rows }: { rows: ScannerRow[] }) {
-  return (
-    <div className="candidate-list">
-      {rows.map((row) => (
-        <article className="candidate-card" key={row.ticker}>
-          <div>
-            <h3>{row.ticker}</h3>
-            <span>{row.company_name ?? row.outlier_type ?? 'Research candidate'}</span>
-          </div>
-          <div className="score-stack">
-            <ScoreBar label="Winner" value={Number(row.winner_score ?? 0)} />
-            <RiskBadge score={Number(row.risk_score ?? 0)} />
-          </div>
-          <p><StatusPill status={row.status_label} /> {row.outlier_type}</p>
-          <SignalStack row={row} />
-          {(row.warnings ?? []).slice(0, 2).map((warning) => <small className="risk" key={warning}><AlertTriangle size={13} /> {warning}</small>)}
-          <PaperTrackingForm scannerRow={row} compact />
-        </article>
-      ))}
-    </div>
-  );
-}
-
 function CoreInvestingCards({ rows }: { rows: ScannerRow[] }) {
   if (!rows.length) return <p className="muted">No names in this section yet.</p>;
   return (
@@ -1136,6 +1276,7 @@ function CoreInvestingCards({ rows }: { rows: ScannerRow[] }) {
             <Chip tone="neutral">{row.investing_time_horizon ?? 'Horizon n/a'}</Chip>
           </div>
           <p>{row.investing_reason ?? 'No regular investing reason returned.'}</p>
+          <PriceSanityBadge payload={row} />
           <KeyValue payload={{
             bear_case: row.investing_bear_case,
             invalidation: row.investing_invalidation,
@@ -1151,7 +1292,7 @@ function CoreInvestingCards({ rows }: { rows: ScannerRow[] }) {
 }
 
 function ScannerTable({ rows }: { rows: ScannerRow[] }) {
-  return <DataTable rows={rows} columns={['ticker', 'status_label', 'winner_score', 'outlier_score', 'risk_score', 'setup_quality_score', 'outlier_type', 'entry_zone']} />;
+  return <DataTable rows={rows} columns={['ticker', 'status_label', 'winner_score', 'outlier_score', 'risk_score', 'price_source', 'price_timestamp', 'entry_zone']} />;
 }
 
 function AlertList({ rows }: { rows: AlertRow[] }) {
@@ -1170,25 +1311,36 @@ function AlertList({ rows }: { rows: AlertRow[] }) {
   );
 }
 
-function filterStockRows(rows: ScannerRow[], tab: 'Outliers' | 'Velocity' | 'Long-Term' | 'Avoid') {
-  if (tab === 'Avoid') return rows.filter((row) => row.status_label === 'Avoid' || String(row.outlier_type).includes('Avoid'));
-  if (tab === 'Velocity') return rows.filter((row) => Number(row.velocity_score ?? 0) >= 35 && !String(row.velocity_type).includes('No High'));
-  if (tab === 'Long-Term') return rows.filter((row) => row.strategy_label === 'Long-Term Leader' || row.outlier_type === 'Long-Term Monster');
-  return rows.filter((row) => row.status_label !== 'Avoid');
+function filterDecisionRows(rows: UnifiedDecision[], tab: 'All Decisions' | 'Buy / Research' | 'Watch' | 'Hold / Add' | 'Trim / Sell' | 'Avoid' | 'Core Investing' | 'Outliers' | 'Velocity') {
+  if (tab === 'All Decisions') return rows;
+  if (tab === 'Buy / Research') return rows.filter((row) => row.primary_action === 'Research / Buy Candidate');
+  if (tab === 'Watch') return rows.filter((row) => row.primary_action === 'Watch');
+  if (tab === 'Hold / Add') return rows.filter((row) => ['Hold', 'Add'].includes(String(row.primary_action)));
+  if (tab === 'Trim / Sell') return rows.filter((row) => ['Trim', 'Sell / Exit Candidate', 'Watch Closely'].includes(String(row.primary_action)));
+  if (tab === 'Avoid') return rows.filter((row) => ['Avoid', 'Data Insufficient'].includes(String(row.primary_action)));
+  return rows.filter((row) => row.action_lane === tab.replace('Outliers', 'Outlier').replace('Core Investing', 'Core Investing'));
 }
 
-function SignalBrief({ rows }: { rows: ScannerRow[] }) {
+function filterScannerRows(rows: ScannerRow[], tab: 'All Decisions' | 'Buy / Research' | 'Watch' | 'Hold / Add' | 'Trim / Sell' | 'Avoid' | 'Core Investing' | 'Outliers' | 'Velocity') {
+  if (tab === 'Velocity') return rows.filter((row) => Number(row.velocity_score ?? 0) >= 35 && !String(row.velocity_type).includes('No High'));
+  if (tab === 'Avoid') return rows.filter((row) => row.status_label === 'Avoid' || String(row.outlier_type).includes('Avoid'));
+  if (tab === 'Core Investing') return rows.filter((row) => Number(row.regular_investing_score ?? 0) > 0);
+  if (tab === 'Outliers') return rows.filter((row) => Number(row.outlier_score ?? 0) > 0);
+  return rows;
+}
+
+function DecisionSummary({ rows }: { rows: UnifiedDecision[] }) {
   const row = rows[0];
-  if (!row) return <p className="muted">No row selected for this mode.</p>;
+  if (!row) return <p className="muted">No decision matched this lane yet.</p>;
   return (
     <div className="brief-grid">
       <div>
-        <span className="eyebrow">Actionable because</span>
-        <p>{row.why_it_passed?.[0] ?? row.trigger_reason ?? row.outlier_reason ?? 'The deterministic scanner has not produced a clean reason yet.'}</p>
+        <span className="eyebrow">Why it is here</span>
+        <p>{row.reason ?? 'No decision reason returned yet.'}</p>
       </div>
       <div>
-        <span className="eyebrow">Invalidates fast</span>
-        <p>{row.why_it_could_fail?.[0] ?? row.chase_warning ?? `Invalidation: ${row.invalidation_level ?? row.velocity_invalidation ?? 'unavailable'}`}</p>
+        <span className="eyebrow">What could block it</span>
+        <p>{row.why_not ?? 'No counter-thesis returned yet.'}</p>
       </div>
     </div>
   );
@@ -1211,7 +1363,89 @@ function VelocityCard({ row }: { row: ScannerRow }) {
       <p>{row.trigger_reason}</p>
       <Notice tone={String(row.chase_warning).includes('No special') ? 'neutral' : 'warn'}>{row.chase_warning ?? 'Use invalidation discipline.'}</Notice>
       <KeyValue payload={{ invalidation: row.velocity_invalidation, TP1: row.velocity_tp1, TP2: row.velocity_tp2 }} />
+      <PriceSanityBadge payload={row} />
     </article>
+  );
+}
+
+function DecisionList({ rows, empty }: { rows: UnifiedDecision[]; empty: string }) {
+  if (!rows.length) return <p className="muted">{empty}</p>;
+  return (
+    <div className="candidate-list">
+      {rows.map((row) => (
+        <article className="candidate-card decision-row" key={row.ticker}>
+          <div className="provider-title">
+            <div>
+              <h3>{row.ticker}</h3>
+              <span>{row.company ?? row.action_lane ?? 'Decision'}</span>
+            </div>
+            <ScoreRing value={Number(row.score ?? 0)} label="Score" />
+          </div>
+          <div className="pill-row">
+            <StatusPill status={row.primary_action} />
+            <Chip tone={String(row.risk_level).includes('High') ? 'warn' : 'neutral'}>{row.risk_level ?? 'Risk n/a'}</Chip>
+            <Chip tone="neutral">{row.confidence_label ?? 'Confidence n/a'}</Chip>
+          </div>
+          <p>{row.reason ?? 'No decision reason returned.'}</p>
+          <KeyValue payload={{ entry: row.entry_zone, stop: row.stop_loss, invalidation: row.invalidation, tp1: row.tp1, tp2: row.tp2, review: row.next_review_date }} />
+          <PriceSanityBadge payload={row.price_sanity} />
+          {row.why_not && <Notice tone="warn">{row.why_not}</Notice>}
+          {row.source_row && <PaperTrackingForm scannerRow={row.source_row} compact />}
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function DecisionBoard({ rows }: { rows: UnifiedDecision[] }) {
+  if (!rows.length) return <p className="muted">No actionable TP / SL rows yet.</p>;
+  return (
+    <DataTable
+      rows={rows.map((row) => ({
+        ticker: row.ticker,
+        action: row.primary_action,
+        entry: row.entry_zone,
+        stop: row.stop_loss,
+        TP1: row.tp1,
+        TP2: row.tp2,
+        reward_risk: row.reward_risk,
+        review_date: row.next_review_date,
+      }))}
+      columns={['ticker', 'action', 'entry', 'stop', 'TP1', 'TP2', 'reward_risk', 'review_date']}
+    />
+  );
+}
+
+function UniverseSummary({ payload }: { payload: UniversesPayload | null }) {
+  const items = payload?.items ?? DEFAULT_UNIVERSES;
+  return (
+    <div className="provider-grid">
+      {items.map((item) => (
+        <article className="provider-card" key={item.path}>
+          <div className="provider-title">
+            <strong>{item.label}</strong>
+            <Chip tone={item.available ? 'good' : 'warn'}>{item.available ? 'Ready' : 'Missing'}</Chip>
+          </div>
+          <p>{item.description}</p>
+          <code>{item.path}</code>
+        </article>
+      ))}
+      <Notice tone="warn">{payload?.warning ?? DEFAULT_UNIVERSE_WARNING}</Notice>
+    </div>
+  );
+}
+
+function ValidationContextCard({ context }: { context?: ValidationContext | null }) {
+  const messages = context?.messages ?? ['Not enough evidence yet.'];
+  return (
+    <div className="validation-context">
+      <div className="metric-grid compact">
+        <Metric label="Evidence" value={String(context?.evidence_strength ?? 'Not enough evidence yet')} sub="Plain-English validation context" />
+        <Metric label="Real-money reliance" value={context?.real_money_reliance ? 'Yes' : 'No'} sub="Should stay No" />
+      </div>
+      {messages.map((message) => <Notice tone="neutral" key={message}>{message}</Notice>)}
+      {context?.language_note && <p className="muted">{context.language_note}</p>}
+    </div>
   );
 }
 
@@ -1336,32 +1570,38 @@ function DualLineChart({ data }: { data: Record<string, unknown>[] }) {
   );
 }
 
-function ResearchView({ payload }: { payload: Record<string, unknown> }) {
+function ResearchView({ payload }: { payload: ResearchPayload }) {
   const decision = payload.decision_card as Record<string, unknown> | undefined;
-  const scanner = payload.scanner_row as ScannerRow | undefined;
+  const unifiedDecision = payload.unified_decision;
+  const scanner = payload.scanner_row;
   const regularView = payload.regular_investing_view as Record<string, unknown> | undefined;
   return (
     <div className="grid">
-      <Panel title="Hero Decision">
+      <Panel title="Primary Decision">
         <DecisionCard
-          label={String(decision?.recommendation_label ?? scanner?.status_label ?? 'Data Insufficient')}
-          status={String(scanner?.strategy_label ?? scanner?.outlier_type ?? 'Rule-based research')}
+          label={String(unifiedDecision?.primary_action ?? decision?.research_recommendation ?? scanner?.status_label ?? 'Data Insufficient')}
+          status={String(unifiedDecision?.reason ?? scanner?.strategy_label ?? scanner?.outlier_type ?? 'Rule-based research')}
           risk={String(scanner?.risk_score ?? 'Unknown')}
-          details={String(decision?.rationale ?? scanner?.alternative_data_summary ?? 'Deterministic scanner output remains primary.')}
+          details={String(unifiedDecision?.why_not ?? scanner?.alternative_data_summary ?? 'Deterministic scanner output remains primary.')}
         />
         <div className="metric-grid compact">
           <Metric label="Winner" value={String(scanner?.winner_score ?? payload.winner_score ?? 0)} sub="Rule score" />
           <Metric label="Outlier" value={String(scanner?.outlier_score ?? payload.outlier_score ?? 0)} sub="Outlier engine" />
           <Metric label="Risk" value={String(scanner?.risk_score ?? payload.risk_score ?? 0)} sub="Lower is better" />
+          <Metric label="Confidence" value={String(unifiedDecision?.confidence_label ?? scanner?.confidence_label ?? 'Low')} sub={String(unifiedDecision?.evidence_strength ?? 'No validation context')} />
         </div>
       </Panel>
       <div className="grid two">
-        <Panel title="Rule-Based Levels">
-          <KeyValue payload={{ entry: payload.entry_zone, invalidation: payload.invalidation, tp1: payload.tp1, tp2: payload.tp2 }} />
+        <Panel title="Action Setup">
+          <KeyValue payload={{ entry: unifiedDecision?.entry_zone ?? payload.entry_zone, stop: unifiedDecision?.stop_loss, invalidation: unifiedDecision?.invalidation ?? payload.invalidation, tp1: unifiedDecision?.tp1 ?? payload.tp1, tp2: unifiedDecision?.tp2 ?? payload.tp2, horizon: unifiedDecision?.holding_horizon }} />
         </Panel>
-        <Panel title="Why NOT to Buy">
+        <Panel title="Price Sanity">
+          <KeyValue payload={payload.price_sanity ?? scanner ?? {}} />
+          <PriceSanityBadge payload={payload.price_sanity ?? scanner} />
+        </Panel>
+        <Panel title="Why Not To Buy">
           <Notice tone="warn">
-            {listText(scanner?.why_it_could_fail ?? (payload.key_risks as unknown[] | undefined) ?? ['No explicit risk notes were returned. Refresh data before relying on the thesis.'])}
+            {String(unifiedDecision?.why_not ?? listText(scanner?.why_it_could_fail ?? (payload.key_risks as unknown[] | undefined) ?? ['No explicit risk notes were returned. Refresh data before relying on the thesis.']))}
           </Notice>
           <KeyValue payload={{ invalidation: payload.invalidation, warnings: scanner?.warnings, missing_data: scanner?.alternative_data_warnings }} />
         </Panel>
@@ -1389,6 +1629,9 @@ function ResearchView({ payload }: { payload: Record<string, unknown> }) {
             data_quality: regularView?.data_quality ?? scanner?.investing_data_quality,
           }} />
         </Panel>
+        <Panel title="Validation Context">
+          <ValidationContextCard context={payload.validation_context} />
+        </Panel>
         <Panel title="Insider / Politician Activity">
           <div className="alt-grid">
             <InsiderActivityCard row={scanner} />
@@ -1401,7 +1644,7 @@ function ResearchView({ payload }: { payload: Record<string, unknown> }) {
         <Panel title="Portfolio Context">
           <KeyValue payload={{ portfolio_context: payload.portfolio_context, journal_history: payload.journal_history }} />
         </Panel>
-        <Panel title="Validation History">
+        <Panel title="Historical Evidence">
           <p className="muted">Use Validation Lab to save this thesis and measure forward outcomes against SPY, QQQ, and random baselines.</p>
           {scanner && <PaperTrackingForm scannerRow={scanner} />}
         </Panel>
@@ -1412,7 +1655,7 @@ function ResearchView({ payload }: { payload: Record<string, unknown> }) {
 
 function PaperTrackingForm({ scannerRow, compact = false }: { scannerRow: ScannerRow; compact?: boolean }) {
   const [message, setMessage] = useState('');
-  const [error, setError] = useState('');
+  const [error, setError] = useState<Error | null>(null);
   const [saving, setSaving] = useState(false);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -1420,7 +1663,7 @@ function PaperTrackingForm({ scannerRow, compact = false }: { scannerRow: Scanne
     const form = new FormData(event.currentTarget);
     setSaving(true);
     setMessage('');
-    setError('');
+    setError(null);
     try {
       const prediction = await api.addPrediction({
         scanner_row: scannerRow,
@@ -1444,7 +1687,7 @@ function PaperTrackingForm({ scannerRow, compact = false }: { scannerRow: Scanne
       setMessage(`Saved ${prediction.prediction_id}. Next review: ${prediction.next_review_date ?? 'pending'}.`);
       event.currentTarget.reset();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not save prediction');
+      setError(err instanceof Error ? err : new Error('Could not save prediction'));
     } finally {
       setSaving(false);
     }
@@ -1462,7 +1705,7 @@ function PaperTrackingForm({ scannerRow, compact = false }: { scannerRow: Scanne
       <input type="hidden" name="ai_committee_recommendation" value="Data Insufficient" />
       <button className="primary" disabled={saving}>{saving ? 'Saving' : 'Save Prediction'}</button>
       {message && <Notice tone="good">{message}</Notice>}
-      {error && <Notice tone="bad">{error}</Notice>}
+      {error && <ApiErrorPanel error={error} onRetry={() => setError(null)} compact />}
     </form>
   );
 }
@@ -1492,21 +1735,6 @@ function ScoreRing({ value, label }: { value: number; label: string }) {
       </div>
     </div>
   );
-}
-
-function ScoreBar({ label, value }: { label: string; value: number }) {
-  const clamped = Math.max(0, Math.min(100, value));
-  return (
-    <div className="score-bar">
-      <span>{label}</span>
-      <div><i style={{ width: `${clamped}%` }} /></div>
-      <strong>{Math.round(clamped)}</strong>
-    </div>
-  );
-}
-
-function RiskBadge({ score }: { score: number }) {
-  return <Chip tone={score >= 70 ? 'bad' : score >= 45 ? 'warn' : 'good'}>Risk {Math.round(score)}</Chip>;
 }
 
 function StatusPill({ status }: { status?: string }) {
@@ -1543,16 +1771,6 @@ function DataHealthCard({ ready, missing, requiredMissing }: { ready: number; mi
         <strong>{ready} ready</strong>
         <span>{missing} optional missing · {requiredMissing} required missing</span>
       </div>
-    </div>
-  );
-}
-
-function WatchlistChangeCard({ label, value, note }: { label: string; value: string; note: string }) {
-  return (
-    <div className="watch-card">
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <p>{note}</p>
     </div>
   );
 }
@@ -1689,4 +1907,28 @@ function cell(value: unknown): string {
   if (typeof value === 'object' && value !== null) return `${Object.keys(value as Record<string, unknown>).length} fields`;
   if (typeof value === 'number') return Number.isInteger(value) ? String(value) : value.toFixed(2);
   return String(value ?? '');
+}
+
+function PriceSanityBadge({ payload }: { payload?: { price_warning?: string; price_source?: string; price_timestamp?: string; price_confidence?: string } | null }) {
+  if (!payload) return null;
+  return (
+    <div className="pill-row">
+      <Chip tone={String(payload.price_warning).includes('Sample') || String(payload.price_warning).includes('Stale') ? 'warn' : 'good'}>
+        {payload.price_source ?? 'Price source unavailable'}
+      </Chip>
+      <Chip tone="neutral">{compactDate(payload.price_timestamp)}</Chip>
+      <Chip tone="neutral">{payload.price_confidence ?? 'Confidence n/a'}</Chip>
+    </div>
+  );
+}
+
+function describeBackendStatus(error: Error | null) {
+  if (!error) return { label: 'Connected', tone: 'good' as const };
+  if (isApiError(error)) {
+    if (error.kind === 'disconnected') return { label: 'Disconnected', tone: 'bad' as const };
+    if (error.kind === 'wrong_api_url') return { label: 'Wrong API URL', tone: 'warn' as const };
+    if (error.kind === 'backend_error') return { label: 'Backend error', tone: 'bad' as const };
+    if (error.kind === 'request_timeout') return { label: 'Request timed out', tone: 'warn' as const };
+  }
+  return { label: 'Backend error', tone: 'bad' as const };
 }

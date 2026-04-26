@@ -45,7 +45,11 @@ from .scanner import DeterministicScanner
 
 
 DEFAULT_UNIVERSE_FILES = {
-    "Outlier watchlist": Path("config/outlier_watchlist.txt"),
+    "Active Core Investing": Path("config/active_core_investing_universe.txt"),
+    "Active Outliers": Path("config/active_outlier_universe.txt"),
+    "Active Velocity": Path("config/active_velocity_universe.txt"),
+    "Famous Case Studies": Path("config/famous_outlier_case_studies.txt"),
+    "Legacy Outlier Watchlist": Path("config/outlier_watchlist.txt"),
     "Momentum universe": Path("config/momentum_universe.txt"),
     "Mega-cap universe": Path("config/mega_cap_universe.txt"),
     "Sample universe": Path("config/sample_universe.txt"),
@@ -786,7 +790,18 @@ def _normalize_result(row: dict[str, Any]) -> dict[str, Any]:
         "outlier_reason": "unavailable",
         "chase_risk_warning": "unavailable",
         "provider_name": "unavailable",
-    }
+        "price_source": "unavailable",
+        "price_timestamp": "unavailable",
+        "provider": "unavailable",
+        "is_sample_data": False,
+        "is_adjusted_price": False,
+        "is_stale_price": False,
+        "last_market_date": "unavailable",
+        "latest_available_close": "unavailable",
+        "quote_price_if_available": "unavailable",
+        "price_warning": "No price sanity warning.",
+        "price_confidence": "Low",
+        }
     for key, value in defaults.items():
         normalized.setdefault(key, value)
     for key in (

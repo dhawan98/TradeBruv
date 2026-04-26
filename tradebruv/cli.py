@@ -521,9 +521,9 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--output-dir", type=Path, default=Path("outputs"))
 
     readiness = subparsers.add_parser("readiness", help="Check whether TradeBruv is operational as a research/paper-tracking workflow.")
-    readiness.add_argument("--universe", type=Path, default=Path("config/outlier_watchlist.txt"))
+    readiness.add_argument("--universe", type=Path, default=Path("config/active_outlier_universe.txt"))
     readiness.add_argument("--provider", choices=("sample", "local", "real"), default="sample")
-    readiness.add_argument("--tickers", default="NVDA,PLTR,MU,RDDT,GME,CAR")
+    readiness.add_argument("--tickers", default="NVDA,PLTR,MU,RDDT,SMCI,COIN,HOOD,ARM,CAVA,AAPL,MSFT,LLY,TSLA,AMD,AVGO")
     readiness.add_argument("--ai", choices=("mock", "openai", "gemini"), default="mock")
     readiness.add_argument("--output-dir", type=Path, default=Path("outputs"))
 

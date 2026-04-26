@@ -8,6 +8,7 @@ from typing import Any
 
 from .automation import DEFAULT_DAILY_OUTPUT_DIR, DEFAULT_SCAN_ARCHIVE_ROOT
 from .app_status import build_app_status_report, load_latest_app_status
+from .decision_engine import build_unified_decision, build_unified_decisions, build_validation_context
 from .cli import build_provider, load_universe
 from .alternative_data import DEFAULT_ALTERNATIVE_DATA_PATH, AlternativeDataOverlayProvider, load_alternative_data_repository
 from .dashboard_data import (
@@ -51,6 +52,7 @@ from .replay import (
 from .signal_quality import load_latest_signal_quality, run_case_study, run_signal_audit
 from .journal import DEFAULT_JOURNAL_PATH, add_journal_entry, journal_stats, update_journal_entry
 from .portfolio import DEFAULT_PORTFOLIO_PATH, delete_position, import_portfolio_csv, save_portfolio
+from .price_sanity import build_price_sanity_from_row
 from .reporting import write_csv_report, write_json_report
 from .validation_lab import (
     DEFAULT_PREDICTIONS_PATH,
@@ -62,6 +64,10 @@ from .validation_lab import (
 
 
 DEFAULT_UNIVERSE = Path("config/sample_universe.txt")
+ACTIVE_CORE_UNIVERSE = Path("config/active_core_investing_universe.txt")
+ACTIVE_OUTLIER_UNIVERSE = Path("config/active_outlier_universe.txt")
+ACTIVE_VELOCITY_UNIVERSE = Path("config/active_velocity_universe.txt")
+FAMOUS_CASE_STUDIES = Path("config/famous_outlier_case_studies.txt")
 
 
 def health() -> dict[str, Any]:
@@ -133,7 +139,18 @@ def run_scan(payload: dict[str, Any]) -> dict[str, Any]:
     stem = "velocity_scan_report" if mode == "velocity" else "outlier_scan_report" if mode == "outliers" else "scan_report"
     json_path = output_dir / f"{stem}.json"
     csv_path = output_dir / f"{stem}.csv"
-    result_objects = [SimpleNamespace(to_dict=lambda row=row: row) for row in report.results]
+    validation_context = _validation_context()
+    portfolio_rows = load_dashboard_portfolio(DEFAULT_PORTFOLIO_PATH)
+    enriched_results = _enrich_results(report.results, generated_at=report.generated_at, reference_date=analysis_date)
+    decisions = build_unified_decisions(
+        enriched_results,
+        portfolio_rows=portfolio_rows,
+        scan_generated_at=report.generated_at,
+        validation_context=validation_context,
+        reference_date=analysis_date,
+        preferred_lane=_preferred_lane_for_mode(mode),
+    )
+    result_objects = [SimpleNamespace(to_dict=lambda row=row: row) for row in enriched_results]
     write_json_report(result_objects, json_path, mode=mode)
     write_csv_report(result_objects, csv_path)
     return {
@@ -143,8 +160,10 @@ def run_scan(payload: dict[str, Any]) -> dict[str, Any]:
         "mode": report.mode,
         "source": report.source,
         "market_regime": report.market_regime,
-        "results": report.results,
-        "summary": build_daily_summary(report.results),
+        "results": enriched_results,
+        "summary": build_daily_summary(enriched_results),
+        "decisions": decisions,
+        "validation_context": validation_context,
         "json_path": str(json_path),
         "csv_path": str(csv_path),
     }
@@ -153,8 +172,17 @@ def run_scan(payload: dict[str, Any]) -> dict[str, Any]:
 def reports_latest() -> dict[str, Any]:
     latest = find_latest_report(Path("outputs"))
     if latest is None:
-        return {"available": False, "results": [], "generated_at": "unavailable"}
+        return {"available": False, "results": [], "decisions": [], "generated_at": "unavailable", "validation_context": _validation_context()}
     report = load_dashboard_report(latest)
+    validation_context = _validation_context()
+    enriched_results = _enrich_results(report.results, generated_at=report.generated_at)
+    decisions = build_unified_decisions(
+        enriched_results,
+        portfolio_rows=load_dashboard_portfolio(DEFAULT_PORTFOLIO_PATH),
+        scan_generated_at=report.generated_at,
+        validation_context=validation_context,
+        preferred_lane=_preferred_lane_for_mode(str(report.mode)),
+    )
     return {
         "available": True,
         "path": str(latest),
@@ -164,8 +192,10 @@ def reports_latest() -> dict[str, Any]:
         "mode": report.mode,
         "source": report.source,
         "market_regime": report.market_regime,
-        "results": report.results,
-        "summary": build_daily_summary(report.results),
+        "results": enriched_results,
+        "summary": build_daily_summary(enriched_results),
+        "decisions": decisions,
+        "validation_context": validation_context,
     }
 
 
@@ -204,13 +234,32 @@ def alerts() -> list[dict[str, Any]]:
 
 def deep_research(payload: dict[str, Any]) -> dict[str, Any]:
     provider = _provider(payload)
-    return run_dashboard_deep_research(
+    result = run_dashboard_deep_research(
         ticker=str(payload.get("ticker") or "").upper(),
         provider=provider,
         portfolio_rows=load_dashboard_portfolio(DEFAULT_PORTFOLIO_PATH),
         journal_rows=load_dashboard_journal(DEFAULT_JOURNAL_PATH),
         analysis_date=_parse_date(payload.get("as_of_date")),
     )
+    scanner_row = _enrich_result_row(
+        dict(result.get("scanner_row") or {}),
+        generated_at=datetime.utcnow().isoformat() + "Z",
+        reference_date=_parse_date(payload.get("as_of_date")) or date.today(),
+    )
+    validation_context = _validation_context()
+    unified_decision = build_unified_decision(
+        scanner_row,
+        portfolio_row=next((row for row in load_dashboard_portfolio(DEFAULT_PORTFOLIO_PATH) if str(row.get("ticker", "")).upper() == scanner_row.get("ticker")), None),
+        scan_generated_at=datetime.utcnow().isoformat() + "Z",
+        validation_context=validation_context,
+        reference_date=_parse_date(payload.get("as_of_date")) or date.today(),
+        preferred_lane=_preferred_lane_from_row(scanner_row),
+    )
+    result["scanner_row"] = scanner_row
+    result["price_sanity"] = build_price_sanity_from_row(scanner_row, reference_date=_parse_date(payload.get("as_of_date")) or date.today())
+    result["unified_decision"] = unified_decision
+    result["validation_context"] = validation_context
+    return result
 
 
 def portfolio_state() -> dict[str, Any]:
@@ -325,7 +374,7 @@ def case_study(payload: dict[str, Any]) -> dict[str, Any]:
 def replay_run(payload: dict[str, Any]) -> dict[str, Any]:
     return run_historical_replay(
         provider=_provider({**payload, "history_period": payload.get("history_period") or "max"}),
-        universe=load_universe(Path(str(payload.get("universe") or "config/outlier_watchlist.txt"))),
+        universe=load_universe(Path(str(payload.get("universe") or FAMOUS_CASE_STUDIES))),
         start_date=_parse_date(payload.get("start_date")) or date(2020, 1, 1),
         end_date=_parse_date(payload.get("end_date")) or date.today(),
         frequency=str(payload.get("frequency") or "weekly"),
@@ -407,7 +456,7 @@ def outlier_study_run(payload: dict[str, Any]) -> dict[str, Any]:
 def proof_report_run(payload: dict[str, Any]) -> dict[str, Any]:
     return run_proof_report(
         provider=_provider({**payload, "history_period": payload.get("history_period") or "max"}),
-        universe=load_universe(Path(str(payload.get("universe") or "config/outlier_watchlist.txt"))),
+        universe=load_universe(Path(str(payload.get("universe") or ACTIVE_OUTLIER_UNIVERSE))),
         start_date=_parse_date(payload.get("start_date")) or date(2020, 1, 1),
         end_date=_parse_date(payload.get("end_date")) or date.today(),
         include_famous_outliers=bool(payload.get("include_famous_outliers", True)),
@@ -490,10 +539,10 @@ def doctor_run(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def readiness_run(payload: dict[str, Any]) -> dict[str, Any]:
-    raw_tickers = str(payload.get("tickers") or "NVDA,PLTR,MU,RDDT,GME,CAR")
+    raw_tickers = str(payload.get("tickers") or "NVDA,PLTR,MU,RDDT,SMCI,COIN,HOOD,ARM,CAVA,AAPL,MSFT,LLY,TSLA,AMD,AVGO")
     tickers = [ticker.strip().upper() for ticker in raw_tickers.split(",") if ticker.strip()]
     return run_readiness(
-        universe=Path(str(payload.get("universe") or "config/outlier_watchlist.txt")),
+        universe=Path(str(payload.get("universe") or ACTIVE_OUTLIER_UNIVERSE)),
         provider=str(payload.get("provider") or "sample"),
         tickers=tickers,
         ai=str(payload.get("ai") or "mock"),
@@ -511,6 +560,22 @@ def signal_audit_run(payload: dict[str, Any]) -> dict[str, Any]:
 
 def signal_audit_latest() -> dict[str, Any]:
     return load_latest_signal_quality()
+
+
+def universes() -> dict[str, Any]:
+    items = [
+        {"label": "Active Core Investing", "path": str(ACTIVE_CORE_UNIVERSE), "description": "Quality compounders and practical portfolio research names."},
+        {"label": "Active Outliers", "path": str(ACTIVE_OUTLIER_UNIVERSE), "description": "Current high-growth and high-momentum research names."},
+        {"label": "Active Velocity", "path": str(ACTIVE_VELOCITY_UNIVERSE), "description": "High-volume / velocity monitor names."},
+        {"label": "Mega Cap", "path": "config/mega_cap_universe.txt", "description": "Large-cap leadership basket."},
+        {"label": "Momentum", "path": "config/momentum_universe.txt", "description": "Momentum-leaning universe."},
+        {"label": "Famous Case Studies", "path": str(FAMOUS_CASE_STUDIES), "description": "Historical validation names only."},
+    ]
+    return {
+        "items": [{**item, "available": Path(item["path"]).exists()} for item in items],
+        "warning": "Famous Case Studies are for historical validation, not active monitoring.",
+        "home_defaults": [str(ACTIVE_CORE_UNIVERSE), str(ACTIVE_OUTLIER_UNIVERSE)],
+    }
 
 
 def _provider(payload: dict[str, Any]):
@@ -560,6 +625,71 @@ def _ai_status(rows: list[dict[str, Any]]) -> dict[str, Any]:
     configured = [row["name"] for row in ai_rows if row.get("configured")]
     missing = {row["name"]: row.get("missing_env_vars_list", []) for row in ai_rows if not row.get("configured")}
     return {"configured": configured, "missing": missing, "any_configured": bool(configured)}
+
+
+def _enrich_results(
+    rows: list[dict[str, Any]],
+    *,
+    generated_at: str,
+    reference_date: date | None = None,
+) -> list[dict[str, Any]]:
+    return [_enrich_result_row(row, generated_at=generated_at, reference_date=reference_date) for row in rows]
+
+
+def _enrich_result_row(
+    row: dict[str, Any],
+    *,
+    generated_at: str,
+    reference_date: date | None = None,
+) -> dict[str, Any]:
+    enriched = dict(row)
+    enriched.update(
+        build_price_sanity_from_row(
+            enriched,
+            reference_date=reference_date or date.today(),
+            scan_generated_at=generated_at,
+        )
+    )
+    return enriched
+
+
+def _validation_context() -> dict[str, Any]:
+    return build_validation_context(
+        investing_proof_report=investing_proof_report_latest(),
+        proof_report=proof_report_latest(),
+        signal_quality_report=signal_audit_latest(),
+    )
+
+
+def _preferred_lane_for_mode(mode: str | None) -> str | None:
+    normalized = str(mode or "").strip().lower()
+    if normalized in {"investing", "core", "core investing"}:
+        return "Core Investing"
+    if normalized in {"outliers", "outlier"}:
+        return "Outlier"
+    if normalized == "velocity":
+        return "Velocity"
+    return None
+
+
+def _preferred_lane_from_row(row: dict[str, Any]) -> str | None:
+    velocity_score = _to_float(row.get("velocity_score"))
+    outlier_score = _to_float(row.get("outlier_score"))
+    investing_score = _to_float(row.get("regular_investing_score"))
+    if velocity_score >= max(outlier_score, investing_score) and velocity_score > 0:
+        return "Velocity"
+    if outlier_score >= max(velocity_score, investing_score) and outlier_score > 0:
+        return "Outlier"
+    if investing_score > 0:
+        return "Core Investing"
+    return None
+
+
+def _to_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _parse_date(value: Any) -> date | None:

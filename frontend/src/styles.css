@@ -275,6 +275,10 @@ h2 {
   color: #cdd9e8;
 }
 
+.topbar-retry {
+  margin-left: auto;
+}
+
 .candidate-list,
 .provider-grid {
   display: grid;
@@ -536,6 +540,34 @@ h2 {
 .notice.warn {
   border-color: #6a5628;
   color: #f3d38a;
+}
+
+.notice.neutral {
+  border-color: #27425c;
+  color: #c7d7e8;
+}
+
+.api-error {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+  border: 1px solid #6c4d54;
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(43, 18, 24, 0.96), rgba(21, 11, 15, 0.96));
+  padding: 16px;
+}
+
+.api-error.compact {
+  padding: 12px;
+}
+
+.decision-row {
+  gap: 12px;
+}
+
+.validation-context {
+  display: grid;
+  gap: 12px;
 }
 
 .table-wrap {

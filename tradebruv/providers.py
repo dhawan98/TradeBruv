@@ -130,6 +130,9 @@ class SampleMarketDataProvider:
             provider_name="sample",
             source_notes=["Source: built-in deterministic sample data."],
             data_notes=config.get("notes", []).copy(),
+            latest_available_close=bars[-1].close if bars else None,
+            last_market_date=bars[-1].date if bars else None,
+            is_adjusted_price=False,
         )
         self._cache[ticker] = security
         return security
@@ -172,12 +175,13 @@ class LocalFileMarketDataProvider:
         if not catalyst_tags and catalyst:
             catalyst_tags = infer_catalyst_tags(catalyst.description or "")
 
+        bars = self._load_bars(price_path)
         return SecurityData(
             ticker=ticker,
             company_name=meta.get("company_name"),
             sector=meta.get("sector"),
             industry=meta.get("industry"),
-            bars=self._load_bars(price_path),
+            bars=bars,
             market_cap=_coerce_float(meta.get("market_cap")),
             ipo_date=_parse_optional_date(meta.get("ipo_date")),
             fundamentals=_parse_fundamentals(meta.get("fundamentals")),
@@ -191,6 +195,9 @@ class LocalFileMarketDataProvider:
             provider_name="local",
             source_notes=list(meta.get("source_notes", ["Source: local prices CSV + metadata.json."])),
             data_notes=list(meta.get("data_notes", [])),
+            latest_available_close=bars[-1].close if bars else None,
+            last_market_date=bars[-1].date if bars else None,
+            is_adjusted_price=bool(meta.get("is_adjusted_price", False)),
         )
 
     @staticmethod
@@ -297,6 +304,11 @@ class YFinanceMarketDataProvider:
                 "Short interest, earnings, and news fields may be partial depending on Yahoo availability.",
             ],
             data_notes=[],
+            quote_price_if_available=_coerce_float(fast_info.get("last_price") or fast_info.get("lastPrice") or info.get("currentPrice")),
+            quote_timestamp=datetime.utcnow().isoformat() + "Z",
+            latest_available_close=bars[-1].close if bars else None,
+            last_market_date=bars[-1].date if bars else None,
+            is_adjusted_price=True,
         )
         self._cache[ticker] = security
         return security

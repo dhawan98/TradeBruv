@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Iterable
+from typing import Any, Iterable
 
 from .alternative_data import build_alternative_data_signal
 from .catalysts import build_catalyst_intelligence
 from .indicators import atr, average, clamp, close_location, pct_change, sample_stddev, sma
 from .models import ScannerResult, SecurityData, TradePlan
+from .price_sanity import build_price_snapshot
 from .providers import MarketDataProvider, SECTOR_BENCHMARKS
 
 
@@ -19,6 +20,15 @@ STRATEGIES = (
     "Confirmed Strength Reset",
     "Institutional Accumulation",
 )
+
+
+def _coerce_float_or_none(value: Any) -> float | None:
+    if value in (None, "", "unavailable"):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass
@@ -251,6 +261,7 @@ class DeterministicScanner:
             "market_cap": security.market_cap if security.market_cap is not None else "unavailable",
             "sector": security.sector or "unavailable",
             "industry": security.industry or "unavailable",
+            "next_earnings_date": security.next_earnings_date.isoformat() if security.next_earnings_date else "unavailable",
             "sector_benchmark": sector_symbol or "unavailable",
             "fundamentals_available": security.fundamentals is not None,
             "catalyst_available": security.catalyst is not None,
@@ -272,8 +283,18 @@ class DeterministicScanner:
             risk_score=risk_score,
             trade_plan=trade_plan,
         )
+        price_snapshot = build_price_snapshot(
+            provider_name=security.provider_name,
+            analysis_date=self.analysis_date,
+            latest_available_close=security.latest_available_close or features.current_price,
+            last_market_date=security.last_market_date or (security.bars[-1].date if security.bars else None),
+            quote_price_if_available=security.quote_price_if_available,
+            quote_timestamp=security.quote_timestamp,
+            is_adjusted_price=security.is_adjusted_price,
+        )
         data_used["regular_investing_components"] = investing["components"]
         data_used["regular_investing_note"] = investing["data_quality_note"]
+        data_used["price_snapshot"] = price_snapshot
 
         return ScannerResult(
             ticker=security.ticker,
@@ -339,6 +360,17 @@ class DeterministicScanner:
             investing_data_quality=investing["investing_data_quality"],
             regular_investing_components=investing["components"],
             regular_investing_fundamental_snapshot=investing["fundamental_snapshot"],
+            price_source=str(price_snapshot["price_source"]),
+            price_timestamp=str(price_snapshot["price_timestamp"]),
+            provider=str(price_snapshot["provider"]),
+            is_sample_data=bool(price_snapshot["is_sample_data"]),
+            is_adjusted_price=bool(price_snapshot["is_adjusted_price"]),
+            is_stale_price=bool(price_snapshot["is_stale_price"]),
+            last_market_date=str(price_snapshot["last_market_date"]),
+            latest_available_close=_coerce_float_or_none(price_snapshot["latest_available_close"]),
+            quote_price_if_available=_coerce_float_or_none(price_snapshot["quote_price_if_available"]),
+            price_warning=str(price_snapshot["price_warning"]),
+            price_confidence=str(price_snapshot["price_confidence"]),
         )
 
     def _failure_result(self, ticker: str, error: Exception) -> ScannerResult:
@@ -389,6 +421,17 @@ class DeterministicScanner:
             provider_name="unavailable",
             source_notes=[],
             data_used={"provider_error": message},
+            price_source="unavailable",
+            price_timestamp="unavailable",
+            provider="unavailable",
+            is_sample_data=False,
+            is_adjusted_price=False,
+            is_stale_price=True,
+            last_market_date="unavailable",
+            latest_available_close=None,
+            quote_price_if_available=None,
+            price_warning="Data Insufficient: price unavailable.",
+            price_confidence="Low",
         )
 
     def _append_availability_notes(self, notes: list[str], security: SecurityData) -> None:

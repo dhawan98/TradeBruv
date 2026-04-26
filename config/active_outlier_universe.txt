@@ -1,0 +1,15 @@
+# Active outlier universe
+NVDA
+AMD
+PLTR
+RDDT
+SMCI
+ARM
+COIN
+HOOD
+VRT
+CRWD
+NET
+CAVA
+CELH
+MU

@@ -46,6 +46,10 @@ def create_app() -> "FastAPI":
     def data_sources() -> dict[str, Any]:
         return services.data_sources()
 
+    @app.get("/api/universes")
+    def universes() -> dict[str, Any]:
+        return services.universes()
+
     @app.get("/api/env-template")
     def env_template() -> dict[str, Any]:
         return services.env_template()

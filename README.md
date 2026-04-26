@@ -116,6 +116,7 @@ TradeBruv currently supports:
 - no-lookahead historical replay using OHLCV truncated at each replay date
 - high-velocity trigger scanner mode for high-volume stock research candidates
 - famous outlier case studies for GME, CAR, NVDA, PLTR, MU, SMCI, COIN, HOOD, ARM, CAVA, RDDT, and TSLA
+- active daily universes split from historical case-study universes so old squeezes do not pollute the live cockpit
 - proof/evidence report that separates historical evidence from forward paper validation
 - React Replay Lab, Velocity Scanner, Outlier Case Study, and Proof Report viewer
 - AI output guardrails for unsupported claims, invented URLs, order-placement language, and deterministic Avoid conflicts
@@ -185,7 +186,7 @@ Run it with:
 
 ```bash
 python3 -m tradebruv scan \
-  --universe config/outlier_watchlist.txt \
+  --universe config/active_velocity_universe.txt \
   --provider real \
   --mode velocity
 ```
@@ -233,9 +234,90 @@ Included starter universes:
 - [sample_universe.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/sample_universe.txt)
 - [mega_cap_universe.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/mega_cap_universe.txt)
 - [momentum_universe.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/momentum_universe.txt)
-- [outlier_watchlist.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/outlier_watchlist.txt)
+- [active_core_investing_universe.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/active_core_investing_universe.txt)
+- [active_outlier_universe.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/active_outlier_universe.txt)
+- [active_velocity_universe.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/active_velocity_universe.txt)
+- [famous_outlier_case_studies.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/famous_outlier_case_studies.txt)
 
 These files are inputs only. The scanner does not hardcode any universe inside the ranking logic.
+
+Active daily workflow:
+- `Home` uses `active_core_investing_universe.txt` plus `active_outlier_universe.txt`.
+- `Stock Picker` defaults to the active universes, not GME/CAR-style historical examples.
+- `Outlier Case Study` and replay-style historical validation use `famous_outlier_case_studies.txt`.
+- `Deep Research` can still analyze any ticker manually, including famous historical names.
+
+Famous Case Studies are for historical validation, not active monitoring.
+
+## Pass 12 Decision Cockpit
+
+Pass 12 turns the React app into a one-screen daily decision cockpit instead of a scattered research dump.
+
+The Home screen now answers:
+- what to buy or research
+- what to watch
+- what to hold, add to, trim, or sell
+- what to avoid
+- TP1, TP2, stop, invalidation, and review date
+- confidence, risk, and data freshness
+- backend/data health and validation context
+
+TradeBruv now also adds fetch diagnostics and price sanity checks:
+- backend status is visible in the top bar
+- fetch failures show the endpoint attempted, API base URL, readable cause, suggested fix, and retry button
+- sample data is labeled as sample, not a real quote
+- stale scans and stale prices are called out
+- latest-close versus live-quote mismatches are flagged
+- missing prices stay `Data Insufficient` instead of showing fake precision
+
+### Daily Workflow
+
+1. Start the backend API.
+2. Start the frontend.
+3. Check the backend/data health row in the top bar.
+4. Run a fresh scan from `Core Investing`, `Stock Picker`, or `Velocity Scanner`.
+5. Review `Home` as the primary Decision Cockpit.
+6. Use `Deep Research` only for the top candidates you still need to understand better.
+7. Save paper predictions for names you want to track forward.
+8. Avoid acting on stale, sample-only, or failed-data states.
+
+### Backend / Frontend Troubleshooting
+
+If the UI cannot reach the backend, the app now distinguishes between:
+- `Connected`
+- `Disconnected`
+- `Wrong API URL`
+- `Backend error`
+- `Request timed out`
+
+Common fixes:
+- make sure the backend is running before the frontend
+- verify the API base URL shown in the top bar
+- use the Vite dev server proxy for `/api` when running locally
+- retry after fixing the backend instead of refreshing blind
+- inspect the error panel body when the backend returned JSON details
+
+### Price Sanity Checks
+
+Wherever a price appears, TradeBruv now surfaces:
+- `current_price`
+- `price_source`
+- `price_timestamp`
+- `provider`
+- `is_sample_data`
+- `is_adjusted_price`
+- `is_stale_price`
+- `last_market_date`
+- `latest_available_close`
+- `quote_price_if_available`
+- `price_warning`
+- `price_confidence`
+
+Interpretation:
+- `Sample data — not real price.` means the number is only for UI/testing flow checks.
+- `Stale scan.` means the scan is older than one trading day and confidence should be lower.
+- `Latest close, not live quote.` means you are seeing the most recent available close, not a streaming quote.
+- `Data Insufficient` means the app could not verify a usable price and should not generate a real decision from it.
 
 ## Quick Start
 
@@ -504,7 +586,7 @@ python3 -m tradebruv scan \
 
 ```bash
 python3 -m tradebruv scan \
-  --universe config/outlier_watchlist.txt \
+  --universe config/active_outlier_universe.txt \
   --provider real \
   --mode outliers
 ```
@@ -513,7 +595,7 @@ python3 -m tradebruv scan \
 
 ```bash
 python3 -m tradebruv scan \
-  --universe config/outlier_watchlist.txt \
+  --universe config/active_outlier_universe.txt \
   --provider local \
   --data-dir path/to/data
 ```
@@ -524,7 +606,7 @@ Normal scan output still writes `scan_report.json/csv` or `outlier_scan_report.j
 
 ```bash
 python3 -m tradebruv scan \
-  --universe config/outlier_watchlist.txt \
+  --universe config/active_outlier_universe.txt \
   --provider real \
   --mode outliers \
   --archive
@@ -552,7 +634,7 @@ The `daily` command runs a full deterministic workflow:
 
 ```bash
 python3 -m tradebruv daily \
-  --universe config/outlier_watchlist.txt \
+  --universe config/active_outlier_universe.txt \
   --provider real \
   --mode outliers
 ```
@@ -561,7 +643,7 @@ For deterministic sample checks:
 
 ```bash
 python3 -m tradebruv daily \
-  --universe config/outlier_watchlist.txt \
+  --universe config/active_outlier_universe.txt \
   --provider sample \
   --mode outliers \
   --as-of-date 2026-04-24
@@ -652,9 +734,9 @@ Readiness checks whether the system is operational as a stock picker/analyzer wo
 
 ```bash
 python3 -m tradebruv readiness \
-  --universe config/outlier_watchlist.txt \
+  --universe config/active_outlier_universe.txt \
   --provider real \
-  --tickers NVDA,PLTR,MU,RDDT,GME,CAR,SMCI,COIN,HOOD,ARM,CAVA,AAPL,MSFT,LLY,TSLA
+  --tickers NVDA,PLTR,MU,RDDT,SMCI,COIN,HOOD,ARM,CAVA,AAPL,MSFT,LLY,TSLA,AMD,AVGO
 ```
 
 Optional AI modes:
@@ -835,7 +917,7 @@ Pass 6 turns the dashboard into the main workflow for personal stock research:
 
 1. Use `Home / Daily Brief` for market regime, candidates, portfolio review prompts, open predictions, alerts, and data health.
 2. Use `Stock Picker` to run scanner-driven candidate triage and save names to journal, portfolio review, or Prediction Lab.
-3. Use `Deep Research` to type any ticker such as NVDA, PLTR, MU, RDDT, GME, CAR, AAPL and get a full deterministic research card.
+3. Use `Deep Research` to type any ticker such as NVDA, PLTR, MU, RDDT, AAPL, or even case-study names like GME/CAR when you want manual research on a specific ticker.
 4. Use `Portfolio` to manually enter holdings, import a CSV, refresh prices, inspect allocation, and export holdings.
 5. Use `Portfolio Analyst` to see hold/add/trim/sell/watch/review candidates based on scanner output and local position context.
 6. Use `AI Committee` only when you want an optional grounded debate layered beside deterministic rules.
@@ -1098,7 +1180,7 @@ python3 -m pip install '.[all]'
 In the sidebar:
 - Provider: `real`
 - Mode: `outliers` or `standard`
-- Universe file: `config/outlier_watchlist.txt`, `config/momentum_universe.txt`, or `config/mega_cap_universe.txt`
+- Universe file: `config/active_outlier_universe.txt`, `config/active_core_investing_universe.txt`, `config/active_velocity_universe.txt`, `config/momentum_universe.txt`, or `config/mega_cap_universe.txt`
 - History period: default `3y`
 - Catalyst CSV/JSON path: optional
 - Enable AI explanations: optional and requires an API key
@@ -1446,7 +1528,7 @@ Run historical replay:
 
 ```bash
 python3 -m tradebruv replay \
-  --universe config/outlier_watchlist.txt \
+  --universe config/famous_outlier_case_studies.txt \
   --provider real \
   --start-date 2020-01-01 \
   --end-date 2026-04-24 \
@@ -1459,7 +1541,7 @@ Daily top-N replay:
 
 ```bash
 python3 -m tradebruv replay \
-  --universe config/outlier_watchlist.txt \
+  --universe config/famous_outlier_case_studies.txt \
   --provider real \
   --start-date 2020-01-01 \
   --end-date 2026-04-24 \
@@ -1479,7 +1561,7 @@ Run the proof/evidence report:
 
 ```bash
 python3 -m tradebruv proof-report \
-  --universe config/outlier_watchlist.txt \
+  --universe config/active_outlier_universe.txt \
   --provider real \
   --start-date 2020-01-01 \
   --end-date 2026-04-24 \

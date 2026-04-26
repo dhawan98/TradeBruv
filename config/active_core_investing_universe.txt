@@ -1,0 +1,13 @@
+# Active core investing universe
+AAPL
+AMZN
+AVGO
+GOOGL
+LLY
+META
+MSFT
+NVDA
+AMD
+MU
+COST
+NFLX

@@ -22,7 +22,7 @@ DEFAULT_READINESS_MD = Path("outputs/readiness_report.md")
 
 def run_readiness(
     *,
-    universe: Path = Path("config/outlier_watchlist.txt"),
+    universe: Path = Path("config/active_outlier_universe.txt"),
     provider: str = "sample",
     tickers: list[str] | None = None,
     ai: str = "mock",
@@ -30,7 +30,7 @@ def run_readiness(
 ) -> dict[str, Any]:
     load_local_env()
     output_dir.mkdir(parents=True, exist_ok=True)
-    tickers = [ticker.upper() for ticker in (tickers or ["NVDA", "PLTR", "MU", "RDDT", "GME", "CAR"])]
+    tickers = [ticker.upper() for ticker in (tickers or ["NVDA", "PLTR", "MU", "RDDT", "SMCI", "COIN", "HOOD", "ARM", "CAVA", "AAPL", "MSFT", "LLY", "TSLA", "AMD", "AVGO"])]
     checks: list[dict[str, Any]] = []
     report_rows: list[dict[str, Any]] = []
     missing_data: list[str] = []

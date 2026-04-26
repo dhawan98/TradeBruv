@@ -105,7 +105,7 @@ class Pass5DailyTests(unittest.TestCase):
                 results=[result],
                 provider="sample",
                 mode="outliers",
-                universe_file=Path("config/outlier_watchlist.txt"),
+                universe_file=Path("config/active_outlier_universe.txt"),
                 catalyst_file=Path("config/catalysts_watchlist.csv"),
                 ai_enabled=False,
                 command_used="python3 -m tradebruv scan --archive",

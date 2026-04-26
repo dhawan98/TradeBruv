@@ -1,34 +1,165 @@
-const API_URL = import.meta.env.VITE_TRADEBRUV_API_URL ?? 'http://localhost:8000';
+const EXPLICIT_API_BASE_URL = (import.meta.env.VITE_TRADEBRUV_API_URL ?? '').trim().replace(/\/$/, '');
+
+const DEFAULT_TIMEOUT_MS = 15_000;
+const LONG_TIMEOUT_MS = 90_000;
+
+export type ApiErrorKind =
+  | 'disconnected'
+  | 'wrong_api_url'
+  | 'backend_error'
+  | 'request_timeout'
+  | 'http_error';
 
 export class ApiError extends Error {
   status: number;
+  kind: ApiErrorKind;
+  endpoint: string;
+  apiBaseUrl: string;
+  causeText: string;
+  suggestedFix: string;
+  backendBody?: unknown;
 
-  constructor(status: number, message: string) {
-    super(message);
+  constructor({
+    status,
+    kind,
+    endpoint,
+    apiBaseUrl,
+    causeText,
+    suggestedFix,
+    backendBody,
+  }: {
+    status: number;
+    kind: ApiErrorKind;
+    endpoint: string;
+    apiBaseUrl: string;
+    causeText: string;
+    suggestedFix: string;
+    backendBody?: unknown;
+  }) {
+    super(causeText);
     this.status = status;
+    this.kind = kind;
+    this.endpoint = endpoint;
+    this.apiBaseUrl = apiBaseUrl;
+    this.causeText = causeText;
+    this.suggestedFix = suggestedFix;
+    this.backendBody = backendBody;
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-    ...init,
-  });
-  if (!response.ok) {
-    let message = response.statusText;
-    try {
-      const payload = (await response.json()) as { detail?: string };
-      message = payload.detail ?? message;
-    } catch {
-      // Keep status text when the backend returns non-JSON errors.
+type RequestOptions = {
+  timeoutMs?: number;
+};
+
+function resolveApiUrl(path: string) {
+  return EXPLICIT_API_BASE_URL ? `${EXPLICIT_API_BASE_URL}${path}` : path;
+}
+
+export function getApiBaseUrl() {
+  if (EXPLICIT_API_BASE_URL) return EXPLICIT_API_BASE_URL;
+  if (typeof window !== 'undefined') return `${window.location.origin} (same-origin /api proxy)`;
+  return 'same-origin /api proxy';
+}
+
+export function isApiError(error: unknown): error is ApiError {
+  return error instanceof ApiError;
+}
+
+export async function request<T>(path: string, init?: RequestInit, options?: RequestOptions): Promise<T> {
+  const controller = new AbortController();
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const endpoint = path;
+  const apiBaseUrl = getApiBaseUrl();
+
+  try {
+    const response = await fetch(resolveApiUrl(path), {
+      headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+      ...init,
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const parsedBody = await parseErrorBody(response);
+      const causeText = parsedBody.message || response.statusText || 'Backend request failed.';
+      const kind = response.status >= 500 ? 'backend_error' : response.status === 404 && path === '/api/health' ? 'wrong_api_url' : 'http_error';
+      throw new ApiError({
+        status: response.status,
+        kind,
+        endpoint,
+        apiBaseUrl,
+        causeText,
+        suggestedFix: suggestionFor(kind, response.status),
+        backendBody: parsedBody.raw,
+      });
     }
-    throw new ApiError(response.status, message);
+
+    return (await response.json()) as T;
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new ApiError({
+        status: 0,
+        kind: 'request_timeout',
+        endpoint,
+        apiBaseUrl,
+        causeText: `Request timed out after ${Math.round(timeoutMs / 1000)}s.`,
+        suggestedFix: 'Retry the request. If it keeps timing out, confirm the backend is running and the selected provider is not hanging.',
+      });
+    }
+
+    const kind: ApiErrorKind = EXPLICIT_API_BASE_URL ? 'wrong_api_url' : 'disconnected';
+    throw new ApiError({
+      status: 0,
+      kind,
+      endpoint,
+      apiBaseUrl,
+      causeText: EXPLICIT_API_BASE_URL
+        ? 'Browser could not reach the configured API base URL.'
+        : 'Browser could not reach the TradeBruv backend.',
+      suggestedFix: EXPLICIT_API_BASE_URL
+        ? 'Check VITE_TRADEBRUV_API_URL, the backend host/port, and any local CORS mismatch.'
+        : 'Start the backend on port 8000, or verify the Vite proxy is forwarding /api requests.',
+      backendBody: String(error),
+    });
+  } finally {
+    clearTimeout(timeout);
   }
-  return (await response.json()) as T;
+}
+
+async function parseErrorBody(response: Response): Promise<{ message: string; raw: unknown }> {
+  const contentType = response.headers.get('content-type') ?? '';
+  if (contentType.includes('application/json')) {
+    try {
+      const payload = (await response.json()) as { detail?: string; message?: string; error?: string };
+      return {
+        message: payload.detail ?? payload.message ?? payload.error ?? response.statusText,
+        raw: payload,
+      };
+    } catch {
+      return { message: response.statusText || 'Backend returned invalid JSON.', raw: null };
+    }
+  }
+
+  try {
+    const text = await response.text();
+    return { message: text || response.statusText || 'Backend returned an empty error body.', raw: text };
+  } catch {
+    return { message: response.statusText || 'Backend request failed.', raw: null };
+  }
+}
+
+function suggestionFor(kind: ApiErrorKind, status: number) {
+  if (kind === 'backend_error') return 'Inspect the backend logs for the failing endpoint, then retry after fixing the root cause.';
+  if (kind === 'wrong_api_url') return 'Check the API base URL and confirm it points at the FastAPI server, not the Vite frontend.';
+  if (kind === 'request_timeout') return 'Retry the request. If it still times out, try a smaller universe or confirm the provider is healthy.';
+  if (status === 404) return 'Check that the backend exposes this endpoint and that the API base URL is correct.';
+  return 'Retry after checking backend health and local port configuration.';
 }
 
 export const api = {
   health: () => request<HealthPayload>('/api/health'),
+  universes: () => request<UniversesPayload>('/api/universes'),
   dataSources: () => request<DataSourcesPayload>('/api/data-sources'),
   createEnvTemplate: () => request<EnvCreatePayload>('/api/env/create-template', { method: 'POST', body: '{}' }),
   updateLocalEnv: (values: Record<string, string>) =>
@@ -38,52 +169,105 @@ export const api = {
   dailySummary: () => request<Record<string, unknown>>('/api/daily-summary'),
   alerts: () => request<AlertRow[]>('/api/alerts'),
   portfolio: () => request<PortfolioPayload>('/api/portfolio'),
-  scan: (payload: Record<string, unknown>) => request<ScanPayload>('/api/scan', { method: 'POST', body: JSON.stringify(payload) }),
+  scan: (payload: Record<string, unknown>) =>
+    request<ScanPayload>('/api/scan', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
   deepResearch: (payload: Record<string, unknown>) =>
-    request<ResearchPayload>('/api/deep-research', { method: 'POST', body: JSON.stringify(payload) }),
+    request<ResearchPayload>('/api/deep-research', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
   portfolioAnalyze: (payload: Record<string, unknown>) =>
-    request<Record<string, unknown>>('/api/portfolio/analyze', { method: 'POST', body: JSON.stringify(payload) }),
+    request<Record<string, unknown>>('/api/portfolio/analyze', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
   aiCommittee: (payload: Record<string, unknown>) =>
-    request<Record<string, unknown>>('/api/ai-committee', { method: 'POST', body: JSON.stringify(payload) }),
+    request<Record<string, unknown>>('/api/ai-committee', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
   predictions: () => request<PredictionRow[]>('/api/predictions'),
   predictionsSummary: () => request<Record<string, unknown>>('/api/predictions/summary'),
   addPrediction: (payload: Record<string, unknown>) =>
     request<PredictionRow>('/api/predictions', { method: 'POST', body: JSON.stringify(payload) }),
   updatePredictions: (payload: Record<string, unknown>) =>
-    request<Record<string, unknown>>('/api/predictions/update', { method: 'POST', body: JSON.stringify(payload) }),
+    request<Record<string, unknown>>('/api/predictions/update', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
   caseStudy: (payload: Record<string, unknown>) =>
-    request<Record<string, unknown>>('/api/case-study', { method: 'POST', body: JSON.stringify(payload) }),
+    request<Record<string, unknown>>('/api/case-study', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
   runReplay: (payload: Record<string, unknown>) =>
-    request<ReplayPayload>('/api/replay/run', { method: 'POST', body: JSON.stringify(payload) }),
+    request<ReplayPayload>('/api/replay/run', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
   latestReplay: (mode = 'outliers') => request<ReplayPayload>(`/api/replay/latest?mode=${encodeURIComponent(mode)}`),
   runInvestingReplay: (payload: Record<string, unknown>) =>
-    request<ReplayPayload>('/api/investing-replay/run', { method: 'POST', body: JSON.stringify(payload) }),
+    request<ReplayPayload>('/api/investing-replay/run', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
   latestInvestingReplay: () => request<ReplayPayload>('/api/investing-replay/latest'),
   runPortfolioReplay: (payload: Record<string, unknown>) =>
-    request<ReplayPayload>('/api/portfolio-replay/run', { method: 'POST', body: JSON.stringify(payload) }),
+    request<ReplayPayload>('/api/portfolio-replay/run', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
   latestPortfolioReplay: () => request<ReplayPayload>('/api/portfolio-replay/latest'),
   runOutlierStudy: (payload: Record<string, unknown>) =>
-    request<Record<string, unknown>>('/api/outlier-study/run', { method: 'POST', body: JSON.stringify(payload) }),
+    request<Record<string, unknown>>('/api/outlier-study/run', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
   runProofReport: (payload: Record<string, unknown>) =>
-    request<ProofReport>('/api/proof-report/run', { method: 'POST', body: JSON.stringify(payload) }),
+    request<ProofReport>('/api/proof-report/run', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
   latestProofReport: () => request<ProofReport>('/api/proof-report/latest'),
   runInvestingProofReport: (payload: Record<string, unknown>) =>
-    request<ProofReport>('/api/investing-proof-report/run', { method: 'POST', body: JSON.stringify(payload) }),
+    request<ProofReport>('/api/investing-proof-report/run', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
   latestInvestingProofReport: () => request<ProofReport>('/api/investing-proof-report/latest'),
   doctorLatest: () => request<WorkflowReport>('/api/doctor/latest'),
   runDoctor: (payload: Record<string, unknown>) =>
-    request<WorkflowReport>('/api/doctor/run', { method: 'POST', body: JSON.stringify(payload) }),
+    request<WorkflowReport>('/api/doctor/run', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
   readinessLatest: () => request<WorkflowReport>('/api/readiness/latest'),
   runReadiness: (payload: Record<string, unknown>) =>
-    request<WorkflowReport>('/api/readiness/run', { method: 'POST', body: JSON.stringify(payload) }),
+    request<WorkflowReport>('/api/readiness/run', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
   appStatusLatest: () => request<AppStatusReport>('/api/app-status/latest'),
-  runAppStatus: () => request<AppStatusReport>('/api/app-status/run', { method: 'POST', body: '{}' }),
+  runAppStatus: () => request<AppStatusReport>('/api/app-status/run', { method: 'POST', body: '{}' }, { timeoutMs: LONG_TIMEOUT_MS }),
   signalAuditLatest: () => request<WorkflowReport>('/api/signal-audit/latest'),
   runSignalAudit: (payload: Record<string, unknown>) =>
-    request<WorkflowReport>('/api/signal-audit/run', { method: 'POST', body: JSON.stringify(payload) }),
+    request<WorkflowReport>('/api/signal-audit/run', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
   journal: () => request<JournalPayload>('/api/journal'),
   addJournal: (payload: Record<string, unknown>) =>
     request<JournalPayload>('/api/journal', { method: 'POST', body: JSON.stringify(payload) }),
+};
+
+export type PriceSanity = {
+  price_source?: string;
+  price_timestamp?: string;
+  provider?: string;
+  is_sample_data?: boolean;
+  is_adjusted_price?: boolean;
+  is_stale_price?: boolean;
+  last_market_date?: string;
+  latest_available_close?: number | string;
+  quote_price_if_available?: number | string;
+  price_warning?: string;
+  price_confidence?: string;
+  scan_is_stale?: boolean;
+};
+
+export type UnifiedDecision = {
+  ticker: string;
+  company?: string;
+  primary_action?: string;
+  action_lane?: string;
+  score?: number;
+  confidence_label?: string;
+  evidence_strength?: string;
+  risk_level?: string;
+  entry_zone?: string;
+  stop_loss?: number | string;
+  invalidation?: number | string;
+  tp1?: number | string;
+  tp2?: number | string;
+  reward_risk?: number | string;
+  holding_horizon?: string;
+  reason?: string;
+  why_not?: string;
+  events_to_watch?: string[];
+  data_quality?: unknown;
+  data_freshness?: string;
+  price_sanity?: PriceSanity;
+  next_review_date?: string;
+  portfolio_context?: Record<string, unknown> | null;
+  validation_context?: ValidationContext;
+  source_row?: ScannerRow;
+};
+
+export type ValidationContext = {
+  evidence_strength?: string;
+  real_money_reliance?: boolean;
+  language_note?: string;
+  messages?: string[];
+  proof_report_path?: string | null;
+  signal_quality_path?: string | null;
 };
 
 export type HealthPayload = {
@@ -116,6 +300,9 @@ export type DataSourceRow = {
   last_checked: string;
 };
 
+export type UniverseItem = { label: string; path: string; description: string; available: boolean };
+export type UniversesPayload = { items: UniverseItem[]; warning: string; home_defaults: string[] };
+
 export type DataSourcesPayload = {
   rows: DataSourceRow[];
   summary: HealthPayload['data_source_health'] & { degraded_capabilities: string[] };
@@ -126,7 +313,7 @@ export type DataSourcesPayload = {
 export type EnvCreatePayload = { created: boolean; exists: boolean; message: string; path: string };
 export type EnvUpdatePayload = { updated: boolean; updated_keys: string[]; message: string };
 
-export type ScannerRow = {
+export type ScannerRow = PriceSanity & {
   ticker: string;
   company_name?: string;
   current_price?: number;
@@ -142,6 +329,7 @@ export type ScannerRow = {
   confidence_label?: string;
   entry_zone?: string;
   invalidation_level?: number | string;
+  stop_loss_reference?: number | string;
   tp1?: number | string;
   tp2?: number | string;
   reward_risk?: number | string;
@@ -195,10 +383,18 @@ export type ScanPayload = {
   results: ScannerRow[];
   summary: Record<string, unknown>;
   market_regime: Record<string, unknown>;
+  decisions?: UnifiedDecision[];
+  validation_context?: ValidationContext;
 };
 
 export type LatestReport = ScanPayload & { available: boolean; path?: string };
-export type ResearchPayload = Record<string, unknown> & { scanner_row?: ScannerRow; decision_card?: Record<string, unknown> };
+export type ResearchPayload = Record<string, unknown> & {
+  scanner_row?: ScannerRow;
+  decision_card?: Record<string, unknown>;
+  price_sanity?: PriceSanity;
+  unified_decision?: UnifiedDecision;
+  validation_context?: ValidationContext;
+};
 export type AlertRow = { ticker?: string; severity?: string; alert_type?: string; explanation?: string; recommended_action_label?: string };
 export type PositionRow = { ticker: string; company_name?: string; market_value?: number; position_weight_pct?: number; unrealized_gain_loss_pct?: number; decision_status?: string };
 export type PortfolioPayload = { positions: PositionRow[]; summary: Record<string, number | string | unknown[]> };

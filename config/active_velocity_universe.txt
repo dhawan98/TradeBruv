@@ -1,0 +1,14 @@
+# Active velocity universe
+NVDA
+AMD
+PLTR
+SMCI
+ARM
+COIN
+HOOD
+RDDT
+VRT
+CAVA
+CELH
+MU
+TSLA

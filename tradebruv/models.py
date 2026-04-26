@@ -181,6 +181,11 @@ class SecurityData:
     provider_name: str = "unavailable"
     source_notes: list[str] = field(default_factory=list)
     data_notes: list[str] = field(default_factory=list)
+    quote_price_if_available: float | None = None
+    quote_timestamp: str | None = None
+    latest_available_close: float | None = None
+    last_market_date: date | None = None
+    is_adjusted_price: bool = False
 
 
 @dataclass(frozen=True)
@@ -265,6 +270,17 @@ class ScannerResult:
     investing_data_quality: str = "Weak"
     regular_investing_components: dict[str, int] = field(default_factory=dict)
     regular_investing_fundamental_snapshot: dict[str, Any] = field(default_factory=dict)
+    price_source: str = "unavailable"
+    price_timestamp: str = "unavailable"
+    provider: str = "unavailable"
+    is_sample_data: bool = False
+    is_adjusted_price: bool = False
+    is_stale_price: bool = False
+    last_market_date: str = "unavailable"
+    latest_available_close: float | None = None
+    quote_price_if_available: float | None = None
+    price_warning: str = "No price sanity warning."
+    price_confidence: str = "Low"
 
     def to_dict(self) -> dict[str, Any]:
         catalyst_intelligence = _default_catalyst_intelligence() | self.catalyst_intelligence
@@ -377,6 +393,17 @@ class ScannerResult:
             "investing_data_quality": self.investing_data_quality,
             "regular_investing_components": self.regular_investing_components,
             "regular_investing_fundamental_snapshot": self.regular_investing_fundamental_snapshot,
+            "price_source": self.price_source,
+            "price_timestamp": self.price_timestamp,
+            "provider": self.provider,
+            "is_sample_data": self.is_sample_data,
+            "is_adjusted_price": self.is_adjusted_price,
+            "is_stale_price": self.is_stale_price,
+            "last_market_date": self.last_market_date,
+            "latest_available_close": _format_number(self.latest_available_close),
+            "quote_price_if_available": _format_number(self.quote_price_if_available),
+            "price_warning": self.price_warning,
+            "price_confidence": self.price_confidence,
         }
 
 
