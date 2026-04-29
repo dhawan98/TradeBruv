@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
+from .actionability import build_actionability_profile, evidence_pill
 from .analysis import build_portfolio_recommendation
 from .portfolio import _as_position
 from .price_sanity import build_price_sanity_from_row
@@ -33,6 +34,8 @@ def build_unified_decisions(
     return sorted(
         decisions,
         key=lambda row: (
+            _actionability_priority(str(row.get("actionability_label") or "Data Insufficient")),
+            -_to_float(row.get("actionability_score"), default=0),
             _priority(row["primary_action"]),
             -_to_float(row.get("score"), default=0),
             row["ticker"],
@@ -51,22 +54,29 @@ def build_unified_decision(
 ) -> dict[str, Any]:
     ticker = str(row.get("ticker") or "UNKNOWN").upper()
     price_sanity = build_price_sanity_from_row(row, reference_date=reference_date, scan_generated_at=scan_generated_at)
-    levels_visible = bool(price_sanity.get("levels_allowed"))
     owned = portfolio_row is not None
     portfolio_decision = build_portfolio_recommendation(position=portfolio_row, scanner_row=row) if owned else None
     action_lane = _action_lane(row, portfolio_decision, preferred_lane=preferred_lane)
-    primary_action = _primary_action(row, portfolio_decision, price_sanity, owned=owned)
     risk_level = _risk_level(row, portfolio_decision)
+    actionability = build_actionability_profile(
+        row,
+        price_sanity=price_sanity,
+        risk_level=risk_level,
+        portfolio_decision=portfolio_decision,
+    )
+    levels_visible = actionability["level_status"] != "Hidden"
+    primary_action = _primary_action(row, portfolio_decision, price_sanity, actionability, owned=owned)
     confidence_label = _confidence_label(row, price_sanity, validation_context)
     evidence_strength = str((validation_context or {}).get("evidence_strength") or "Not enough evidence yet")
-    entry_zone = str(row.get("entry_zone") or "unavailable") if levels_visible else "unavailable"
-    stop_loss = (row.get("stop_loss_reference") or row.get("invalidation_level") or "unavailable") if levels_visible else "unavailable"
-    invalidation = (portfolio_decision.get("invalidation_level") if portfolio_decision else row.get("invalidation_level", "unavailable")) if levels_visible else "unavailable"
+    base_entry_zone = str(row.get("entry_zone") or "unavailable")
+    base_stop_loss = row.get("stop_loss_reference") or row.get("invalidation_level") or "unavailable"
+    base_invalidation = portfolio_decision.get("invalidation_level") if portfolio_decision else row.get("invalidation_level", "unavailable")
+    entry_zone = base_entry_zone if levels_visible else "unavailable"
+    stop_loss = base_stop_loss if levels_visible else "unavailable"
+    invalidation = base_invalidation if levels_visible else "unavailable"
     next_review_date = _next_review_date(primary_action, price_sanity)
-    reason = _reason(row, portfolio_decision, primary_action, validation_context)
-    why_not = _why_not(row, portfolio_decision, price_sanity)
-    if not levels_visible:
-        reason = "No validated live price. Levels hidden."
+    reason = _reason(row, portfolio_decision, primary_action, validation_context, actionability)
+    why_not = _why_not(row, portfolio_decision, price_sanity, actionability)
 
     return {
         "ticker": ticker,
@@ -97,7 +107,20 @@ def build_unified_decision(
         "latest_market_date": price_sanity.get("last_market_date"),
         "price_validation_status": price_sanity.get("price_validation_status"),
         "price_validation_reason": price_sanity.get("price_validation_reason"),
-        "is_actionable": levels_visible and primary_action != "Data Insufficient",
+        "is_actionable": actionability["actionability_label"] == "Actionable Today",
+        "is_conditional": actionability["level_status"] == "Conditional",
+        "is_preliminary": actionability["level_status"] == "Preliminary",
+        "actionability_score": actionability["actionability_score"],
+        "actionability_label": actionability["actionability_label"],
+        "actionability_reason": actionability["actionability_reason"],
+        "actionability_blockers": actionability["actionability_blockers"],
+        "action_trigger": actionability["action_trigger"],
+        "trigger_needed": actionability["trigger_needed"],
+        "current_setup_state": actionability["current_setup_state"],
+        "level_status": actionability["level_status"],
+        "entry_label": actionability["entry_label"],
+        "levels_explanation": actionability["levels_explanation"],
+        "evidence_pill": evidence_pill(validation_context),
         "price_sanity": price_sanity,
         "next_review_date": next_review_date,
         "portfolio_context": portfolio_decision,
@@ -150,6 +173,7 @@ def _primary_action(
     row: dict[str, Any],
     portfolio_decision: dict[str, Any] | None,
     price_sanity: dict[str, Any],
+    actionability: dict[str, Any],
     *,
     owned: bool,
 ) -> str:
@@ -168,12 +192,17 @@ def _primary_action(
             "Data Insufficient": "Data Insufficient",
         }
         return mapping.get(str(portfolio_decision.get("recommendation_label")), "Hold")
-    if str(row.get("status_label")) == "Avoid":
+    label = str(actionability.get("actionability_label") or "Data Insufficient")
+    if label == "Data Insufficient":
+        return "Data Insufficient"
+    if label == "Avoid / Do Not Chase" or str(row.get("status_label")) == "Avoid":
         return "Avoid"
-    if str(row.get("investing_action_label")) in {"High Priority Research", "Buy Candidate"}:
+    if label in {"Actionable Today", "Research First"}:
         return "Research / Buy Candidate"
-    if str(row.get("investing_action_label")) == "Hold":
+    if label in {"Wait for Better Entry", "Watch for Trigger"}:
         return "Watch" if not owned else "Hold"
+    if str(row.get("investing_action_label")) == "Hold":
+        return "Hold" if owned else "Watch"
     if _to_float(row.get("velocity_score"), default=0) >= 45:
         return "Watch"
     if _to_float(row.get("outlier_score"), default=0) >= 50:
@@ -220,6 +249,7 @@ def _reason(
     portfolio_decision: dict[str, Any] | None,
     primary_action: str,
     validation_context: dict[str, Any] | None,
+    actionability: dict[str, Any],
 ) -> str:
     if primary_action == "Data Insufficient" and row.get("ticker"):
         return "No validated live price. Levels hidden."
@@ -228,17 +258,28 @@ def _reason(
             value = str(portfolio_decision.get(key) or "")
             if value and "not confirmed" not in value.lower() and "no " not in value.lower():
                 return value
+    label = str(actionability.get("actionability_label") or "")
+    if label == "Actionable Today":
+        return str(row.get("investing_reason") or row.get("outlier_reason") or "Validated price and current setup make this actionable today.")
+    if label == "Research First":
+        return str(actionability.get("actionability_reason") or "Worth researching first, but not clean enough for an immediate entry.")
+    if label == "Wait for Better Entry":
+        return str(actionability.get("actionability_reason") or "Valid price, but the setup is extended and needs a better entry.")
+    if label == "Watch for Trigger":
+        return str(actionability.get("actionability_reason") or "Interesting setup, but it needs a trigger before it becomes actionable.")
     if primary_action == "Avoid":
         return str(row.get("investing_bear_case") or row.get("outlier_reason") or "Risk/reward is not clean enough.")
     if primary_action == "Research / Buy Candidate":
         return str(row.get("investing_reason") or row.get("outlier_reason") or "Deterministic setup is worth deeper research.")
-    validation_messages = (validation_context or {}).get("messages") or []
-    if validation_messages:
-        return str(validation_messages[0])
-    return str(row.get("trigger_reason") or row.get("outlier_reason") or "Wait for clearer confirmation.")
+    return str(actionability.get("action_trigger") or row.get("trigger_reason") or row.get("outlier_reason") or "Wait for clearer confirmation.")
 
 
-def _why_not(row: dict[str, Any], portfolio_decision: dict[str, Any] | None, price_sanity: dict[str, Any]) -> str:
+def _why_not(
+    row: dict[str, Any],
+    portfolio_decision: dict[str, Any] | None,
+    price_sanity: dict[str, Any],
+    actionability: dict[str, Any],
+) -> str:
     warnings = list(row.get("warnings") or []) + list(row.get("why_it_could_fail") or [])
     if portfolio_decision:
         warnings.extend(
@@ -246,14 +287,25 @@ def _why_not(row: dict[str, Any], portfolio_decision: dict[str, Any] | None, pri
             for key in ("concentration_warning", "valuation_or_overextension_warning", "broken_trend_warning")
             if portfolio_decision.get(key)
         )
-    warnings.extend(price_sanity.get("price_warnings") or [])
+    warnings.extend(
+        warning
+        for warning in (price_sanity.get("price_warnings") or [])
+        if "Sample data" not in str(warning)
+    )
     validation_reason = str(price_sanity.get("price_validation_reason") or "")
-    if validation_reason and validation_reason != "Validated live price.":
+    if validation_reason and validation_reason != "Validated live price." and actionability.get("actionability_label") == "Data Insufficient":
         warnings.append(validation_reason)
-    warnings = [warning for warning in warnings if warning and "No " not in str(warning)]
+    warnings.extend(actionability.get("actionability_blockers") or [])
+    warnings = [
+        warning
+        for warning in warnings
+        if warning
+        and "No " not in str(warning)
+        and "strategy beat" not in str(warning).lower()
+    ]
     if not warnings:
         return "No major counter-thesis beyond routine review discipline."
-    return " | ".join(dict.fromkeys(str(warning) for warning in warnings[:4]))
+    return " | ".join(dict.fromkeys(str(warning) for warning in warnings[:2]))
 
 
 def _next_review_date(primary_action: str, price_sanity: dict[str, Any]) -> str:
@@ -277,6 +329,18 @@ def _priority(action: str) -> int:
         "Data Insufficient": 8,
     }
     return order.get(action, 9)
+
+
+def _actionability_priority(label: str) -> int:
+    order = {
+        "Actionable Today": 0,
+        "Research First": 1,
+        "Wait for Better Entry": 2,
+        "Watch for Trigger": 3,
+        "Avoid / Do Not Chase": 4,
+        "Data Insufficient": 5,
+    }
+    return order.get(label, 6)
 
 
 def _to_float(value: Any, default: float | None = None) -> float | None:

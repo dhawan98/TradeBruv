@@ -377,6 +377,76 @@ python3 -m tradebruv price-debug \
 
 These reports show the live quote, latest close, scanner/displayed price, provider, latest market date, validation status, stale/sample/report flags, split-mismatch warning, and any source report file that contributed historical context.
 
+### Actionability Ranking and Minimal Daily Pick
+
+Pass 14 adds a second layer on top of raw scanner scores: `actionability_score`.
+
+`actionability_score` answers a different question than winner/outlier/core scores:
+- `Is this actually actionable today?`
+
+It combines:
+- validated live price / latest close gate
+- primary score strength
+- setup quality
+- reward/risk quality
+- current price vs entry zone
+- overextension / chase risk
+- catalyst support when available
+- portfolio or long-term fit
+- data completeness
+
+Hard blockers force the row away from a live pick:
+- no validated price
+- sample/demo mode
+- stale data
+- hard `Avoid`
+- missing entry or invalidation
+- poor reward/risk
+- severe overextension / pump-risk behavior
+
+Decision labels now separate actionability from raw research quality:
+- `Actionable Today`
+- `Research First`
+- `Wait for Better Entry`
+- `Watch for Trigger`
+- `Avoid / Do Not Chase`
+- `Data Insufficient`
+
+Important behavior changes:
+- A valid price can still become `Watch` if the setup is extended, chase-risky, or still needs a clean trigger.
+- `Data Insufficient` is now reserved for critical missing/failed data such as invalid live price or missing core levels.
+- Missing catalyst confirmation is shown as missing/unclear catalyst context, not as `Data Insufficient`, when price and core setup data are otherwise usable.
+
+Levels now depend on the action label:
+- `Actionable`: live entry, stop/invalidation, TP1, TP2, reward/risk
+- `Preliminary`: research zone and preliminary invalidation
+- `Conditional`: trigger or better-entry zone, with conditional levels
+- `Hidden`: no live decision levels because the setup failed the gate
+
+`Watch` names do not present the current price as an actionable entry. They show:
+- a `Trigger / Better Entry`
+- a `Conditional` level status
+- the reason the setup is not buyable yet
+
+UI simplification in Pass 14:
+- cards show a compact evidence pill such as `Evidence: Mixed`
+- full validation sentences stay in drill-down views and reports
+- the Home / Decision Cockpit shows one best idea, up to 3 research names, up to 5 watch names, up to 5 avoid names, and a compact TP/SL-or-trigger board
+- repeated inline paper-tracking forms are removed; each candidate now exposes a single `Track` button that opens the tracking form in a modal
+
+The daily markdown is intentionally short. `outputs/daily/decision_today.md` is meant to be readable in under a minute, not to dump every validated row. If there is no clean live candidate, it explicitly says `No Clean Candidate Today` and explains why.
+
+Deep Research is now the drill-down page, not the first-read page. It synthesizes:
+- final decision
+- actionability label
+- current setup state
+- thesis / why now / why not
+- trigger or entry
+- stop / invalidation
+- TP1 / TP2 only when appropriate
+- events to watch
+- data quality and evidence context
+
 ## Quick Start
 
 ## Pass 7/8 Primary UI and API

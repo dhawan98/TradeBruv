@@ -317,6 +317,18 @@ h2 {
   margin-top: 10px;
 }
 
+.score-stack.compact {
+  display: grid;
+  gap: 2px;
+  justify-items: end;
+  text-align: right;
+}
+
+.score-stack.compact strong {
+  font-size: 28px;
+  line-height: 1;
+}
+
 .tabs {
   margin-bottom: 16px;
   border-bottom: 1px solid #1d2d3f;
@@ -565,6 +577,11 @@ h2 {
   gap: 12px;
 }
 
+.featured-decision {
+  display: grid;
+  gap: 14px;
+}
+
 .validation-context {
   display: grid;
   gap: 12px;
@@ -721,6 +738,25 @@ th {
 
 .paper-form.compact {
   grid-template-columns: 1fr;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  background: rgba(4, 8, 13, 0.82);
+  padding: 24px;
+}
+
+.modal-card {
+  width: min(760px, 100%);
+  border: 1px solid #213247;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(17, 29, 43, 0.98), rgba(10, 18, 28, 0.98));
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+  padding: 18px;
 }
 
 .command-snippet {

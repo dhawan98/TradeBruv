@@ -255,6 +255,17 @@ export type UnifiedDecision = {
   primary_action?: string;
   action_lane?: string;
   score?: number;
+  actionability_score?: number;
+  actionability_label?: string;
+  actionability_reason?: string;
+  actionability_blockers?: string[];
+  action_trigger?: string;
+  trigger_needed?: boolean;
+  current_setup_state?: string;
+  level_status?: 'Actionable' | 'Preliminary' | 'Conditional' | 'Hidden' | string;
+  entry_label?: string;
+  levels_explanation?: string;
+  evidence_pill?: string;
   confidence_label?: string;
   evidence_strength?: string;
   risk_level?: string;
@@ -275,6 +286,8 @@ export type UnifiedDecision = {
   price_validation_status?: string;
   price_validation_reason?: string;
   is_actionable?: boolean;
+  is_conditional?: boolean;
+  is_preliminary?: boolean;
   price_sanity?: PriceSanity;
   next_review_date?: string;
   portfolio_context?: Record<string, unknown> | null;
@@ -415,7 +428,20 @@ export type ScanPayload = {
 };
 
 export type LatestReport = ScanPayload & { available: boolean; path?: string };
-export type DecisionSnapshotPayload = ScanPayload & { available: boolean; path?: string; json_path?: string; markdown_path?: string };
+export type DecisionSnapshotPayload = ScanPayload & {
+  available: boolean;
+  path?: string;
+  json_path?: string;
+  markdown_path?: string;
+  quality_review_path?: string;
+  top_candidate?: UnifiedDecision | null;
+  research_candidates?: UnifiedDecision[];
+  watch_candidates?: UnifiedDecision[];
+  avoid_candidates?: UnifiedDecision[];
+  portfolio_actions?: UnifiedDecision[];
+  compact_board?: UnifiedDecision[];
+  no_clean_candidate_reason?: string;
+};
 export type ResearchPayload = Record<string, unknown> & {
   scanner_row?: ScannerRow;
   decision_card?: Record<string, unknown>;

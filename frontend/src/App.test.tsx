@@ -45,6 +45,14 @@ vi.stubGlobal(
             primary_action: 'Research / Buy Candidate',
             action_lane: 'Outlier',
             score: 82,
+            actionability_score: 84,
+            actionability_label: 'Actionable Today',
+            actionability_reason: 'Validated price, acceptable risk/reward, and current setup all line up.',
+            action_trigger: 'Already in range near 95 - 100.',
+            current_setup_state: 'In Entry Zone',
+            level_status: 'Actionable',
+            entry_label: 'Entry',
+            evidence_pill: 'Mixed',
             confidence_label: 'Medium',
             evidence_strength: 'Not enough evidence yet',
             risk_level: 'Low',
@@ -62,6 +70,7 @@ vi.stubGlobal(
             latest_market_date: '2026-04-24',
             price_validation_status: 'PASS',
             price_validation_reason: 'Validated live price.',
+            data_freshness: 'Fresh enough',
             source_row: {
               ticker: 'NVDA',
               status_label: 'Hold / Watch',
@@ -79,6 +88,14 @@ vi.stubGlobal(
             primary_action: 'Data Insufficient',
             action_lane: 'Outlier',
             score: 55,
+            actionability_score: 0,
+            actionability_label: 'Data Insufficient',
+            actionability_reason: 'Critical live-price validation failed, so this cannot become a daily pick.',
+            action_trigger: 'Wait for data refresh.',
+            current_setup_state: 'Data Insufficient',
+            level_status: 'Hidden',
+            entry_label: 'Hidden',
+            evidence_pill: 'Not enough evidence',
             confidence_label: 'Low',
             evidence_strength: 'Not enough evidence yet',
             risk_level: 'Medium',
@@ -98,6 +115,69 @@ vi.stubGlobal(
             price_validation_reason: 'Displayed price mismatches validated price by 12.3%.',
           },
         ],
+        top_candidate: {
+          ticker: 'NVDA',
+          company: 'NVIDIA',
+          primary_action: 'Research / Buy Candidate',
+          action_lane: 'Outlier',
+          score: 82,
+          actionability_score: 84,
+          actionability_label: 'Actionable Today',
+          actionability_reason: 'Validated price, acceptable risk/reward, and current setup all line up.',
+          action_trigger: 'Already in range near 95 - 100.',
+          current_setup_state: 'In Entry Zone',
+          level_status: 'Actionable',
+          entry_label: 'Entry',
+          evidence_pill: 'Mixed',
+          confidence_label: 'Medium',
+          evidence_strength: 'Not enough evidence yet',
+          risk_level: 'Low',
+          entry_zone: '95 - 100',
+          stop_loss: 90,
+          invalidation: 90,
+          tp1: 110,
+          tp2: 120,
+          reward_risk: 2,
+          holding_horizon: '12+ months',
+          reason: 'Quality long-term candidate.',
+          why_not: 'Valuation can reset.',
+          next_review_date: '2026-04-30',
+          price_source: 'live quote',
+          latest_market_date: '2026-04-24',
+          price_validation_status: 'PASS',
+          price_validation_reason: 'Validated live price.',
+          data_freshness: 'Fresh enough',
+          source_row: {
+            ticker: 'NVDA',
+            status_label: 'Hold / Watch',
+            winner_score: 70,
+            outlier_score: 65,
+            risk_score: 35,
+            price_validation_status: 'PASS',
+          },
+        },
+        research_candidates: [],
+        watch_candidates: [],
+        avoid_candidates: [],
+        portfolio_actions: [],
+        compact_board: [
+          {
+            ticker: 'NVDA',
+            primary_action: 'Research / Buy Candidate',
+            actionability_label: 'Actionable Today',
+            level_status: 'Actionable',
+            entry_label: 'Entry',
+            action_trigger: 'Already in range near 95 - 100.',
+            entry_zone: '95 - 100',
+            stop_loss: 90,
+            tp1: 110,
+            tp2: 120,
+            reward_risk: 2,
+            latest_market_date: '2026-04-24',
+            trigger_needed: false,
+          },
+        ],
+        no_clean_candidate_reason: '',
       },
       '/api/reports/latest': { available: false, results: [], market_regime: {}, summary: {}, decisions: [], validation_context: { messages: ['Not enough evidence yet.'] } },
       '/api/universes': {
@@ -286,6 +366,15 @@ vi.stubGlobal(
             primary_action: 'Research / Buy Candidate',
             action_lane: 'Core Investing',
             score: 82,
+            actionability_score: 72,
+            actionability_label: 'Research First',
+            actionability_reason: 'Price is valid and the thesis is interesting, but confirmation is not clean enough for a same-day entry.',
+            action_trigger: 'Research around 95 - 100, then reassess catalyst, risk, and execution discipline.',
+            trigger_needed: true,
+            current_setup_state: 'In Entry Zone',
+            level_status: 'Preliminary',
+            entry_label: 'Research Zone',
+            evidence_pill: 'Mixed',
             confidence_label: 'Medium',
             evidence_strength: 'Not enough evidence yet',
             risk_level: 'Low',
@@ -349,10 +438,24 @@ vi.stubGlobal(
         unified_decision: {
           ticker: 'NVDA',
           primary_action: 'Research / Buy Candidate',
+          actionability_label: 'Research First',
+          actionability_score: 72,
+          actionability_reason: 'Price is valid and the thesis is interesting, but confirmation is not clean enough for a same-day entry.',
+          current_setup_state: 'In Entry Zone',
+          action_trigger: 'Research around 95 - 100, then reassess catalyst, risk, and execution discipline.',
+          trigger_needed: true,
+          level_status: 'Preliminary',
+          entry_label: 'Research Zone',
+          entry_zone: '95 - 100',
+          stop_loss: 90,
+          tp1: 110,
+          tp2: 120,
+          evidence_pill: 'Mixed',
           reason: 'Quality long-term candidate.',
           why_not: 'Valuation can reset.',
           confidence_label: 'Medium',
           evidence_strength: 'Not enough evidence yet',
+          events_to_watch: ['Earnings'],
         },
         price_sanity: {
           price_source: 'sample latest close',
@@ -432,10 +535,12 @@ describe('App', () => {
 
   it('renders the stock picker empty state on the home screen', async () => {
     render(<App />);
-    expect(await screen.findByText('Quick TP / SL Board')).toBeInTheDocument();
+    expect(await screen.findByText("Today's Best Idea")).toBeInTheDocument();
+    expect(screen.getByText('Compact TP / SL or Trigger Board')).toBeInTheDocument();
     expect(screen.getByText('Data Issues')).toBeInTheDocument();
     expect(screen.getAllByText('NVDA').length).toBeGreaterThan(0);
     expect(screen.getAllByText('PLTR')).toHaveLength(1);
+    expect(screen.queryByText('This strategy beat SPY/QQQ but did not beat random baseline.')).not.toBeInTheDocument();
     expect(screen.queryByText('No live daily decision loaded')).not.toBeInTheDocument();
   });
 
@@ -448,11 +553,14 @@ describe('App', () => {
     expect(screen.getByText('Run Readiness')).toBeInTheDocument();
   });
 
-  it('shows paper tracking workflow after a scan', async () => {
+  it('hides repeated paper tracking forms and opens tracking in a modal', async () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: /Stock Picker/i }));
     fireEvent.click(await screen.findByRole('button', { name: /Run Scan/i }));
-    expect(await screen.findByText('Start Paper Tracking')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /^Track$/i })).toBeInTheDocument();
+    expect(screen.queryByText('Start Paper Tracking')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^Track$/i }));
+    expect(await screen.findByText('Track this idea')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Save Prediction/i })).toBeInTheDocument();
   });
 
@@ -489,8 +597,9 @@ describe('App', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Deep Research/i }));
     fireEvent.click(await screen.findByRole('button', { name: /^Research$/i }));
-    expect(await screen.findByText('Regular Investing View')).toBeInTheDocument();
-    expect(screen.getAllByText('Buy Candidate').length).toBeGreaterThan(0);
+    expect(await screen.findByText('Decision Synthesis')).toBeInTheDocument();
+    expect(screen.getAllByText('Quality Growth Leader').length).toBeGreaterThan(0);
+    expect(screen.getByText(/Evidence: Mixed/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Portfolio Analyst/i }));
     expect(await screen.findByText('Strong Hold')).toBeInTheDocument();

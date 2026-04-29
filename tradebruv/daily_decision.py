@@ -81,6 +81,7 @@ def run_daily_decision(
     merged_rows = _dedupe_rows(combined_rows)
     merged_decisions = _dedupe_decisions(combined_decisions)
     data_issues = [decision for decision in merged_decisions if decision.get("price_validation_status") != "PASS"]
+    picker_view = _build_picker_view(merged_decisions, data_issues=data_issues)
     payload = {
         "available": True,
         "generated_at": datetime.utcnow().isoformat() + "Z",
@@ -92,6 +93,13 @@ def run_daily_decision(
         "summary": build_daily_summary(merged_rows),
         "decisions": merged_decisions,
         "data_issues": data_issues,
+        "top_candidate": picker_view["top_candidate"],
+        "research_candidates": picker_view["research_candidates"],
+        "watch_candidates": picker_view["watch_candidates"],
+        "avoid_candidates": picker_view["avoid_candidates"],
+        "portfolio_actions": picker_view["portfolio_actions"],
+        "compact_board": picker_view["compact_board"],
+        "no_clean_candidate_reason": picker_view["no_clean_candidate_reason"],
         "validation_context": validation_context,
         "market_regime": _pick_market_regime(scan_summaries),
         "scans": scan_summaries,
@@ -102,10 +110,13 @@ def run_daily_decision(
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "decision_today.json"
     markdown_path = output_dir / "decision_today.md"
+    quality_review_path = output_dir / "decision_quality_review.md"
     json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     markdown_path.write_text(_build_daily_decision_markdown(payload), encoding="utf-8")
+    quality_review_path.write_text(_build_decision_quality_review(payload), encoding="utf-8")
     payload["json_path"] = str(json_path)
     payload["markdown_path"] = str(markdown_path)
+    payload["quality_review_path"] = str(quality_review_path)
     json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return payload
 
@@ -122,6 +133,13 @@ def load_daily_decision(path: Path = DEFAULT_DAILY_DECISION_JSON_PATH) -> dict[s
             "summary": {},
             "decisions": [],
             "data_issues": [],
+            "top_candidate": None,
+            "research_candidates": [],
+            "watch_candidates": [],
+            "avoid_candidates": [],
+            "portfolio_actions": [],
+            "compact_board": [],
+            "no_clean_candidate_reason": "No live daily decision has been built yet.",
             "validation_context": build_validation_context(),
             "market_regime": {},
             "demo_mode": False,
@@ -233,29 +251,144 @@ def _universe_for_lane(
 
 
 def _build_daily_decision_markdown(payload: dict[str, Any]) -> str:
+    top_candidate = payload.get("top_candidate")
+    research_candidates = payload.get("research_candidates", [])
+    watch_candidates = payload.get("watch_candidates", [])
+    avoid_candidates = payload.get("avoid_candidates", [])
+    data_issues = payload.get("data_issues", [])
     lines = [
-        "# Daily Decision",
+        "# TradeBruv Daily Pick",
         "",
         f"- Generated: {payload.get('generated_at', 'unavailable')}",
         f"- Analysis date: {payload.get('analysis_date', 'unavailable')}",
         f"- Provider: {payload.get('provider', 'unavailable')}",
         f"- Demo mode: {payload.get('demo_mode', False)}",
         "",
-        "## Actionable TP / SL Rows",
     ]
-    actionable = [row for row in payload.get("decisions", []) if row.get("price_validation_status") == "PASS"]
-    if not actionable:
-        lines.append("- No validated live rows.")
+    if top_candidate:
+        lines.extend(
+            [
+                "## Top Candidate",
+                f"Ticker: {top_candidate.get('ticker')}",
+                f"Action: {top_candidate.get('primary_action')}",
+                f"Actionability: {top_candidate.get('actionability_label')} ({top_candidate.get('actionability_score')})",
+                f"Why now: {top_candidate.get('actionability_reason') or top_candidate.get('reason')}",
+                f"Why not: {top_candidate.get('why_not')}",
+                f"{top_candidate.get('entry_label', 'Entry')}: {top_candidate.get('entry_zone')}",
+                f"Stop: {top_candidate.get('stop_loss')}",
+                f"TP1: {top_candidate.get('tp1')}",
+                f"TP2: {top_candidate.get('tp2')}",
+                f"Data freshness: {top_candidate.get('data_freshness')}",
+                "",
+            ]
+        )
     else:
-        for row in actionable[:15]:
-            lines.append(
-                f"- {row.get('ticker')}: {row.get('primary_action')} | entry {row.get('entry_zone')} | stop {row.get('stop_loss')} | TP1 {row.get('tp1')} | TP2 {row.get('tp2')}"
-            )
-    lines.extend(["", "## Data Issues"])
-    issues = payload.get("data_issues", [])
-    if not issues:
+        lines.extend(
+            [
+                "# No Clean Candidate Today",
+                f"Reason: {payload.get('no_clean_candidate_reason') or 'No validated setup passed the actionability gate.'}",
+                "",
+                "Best Watch Names:",
+            ]
+        )
+        if watch_candidates:
+            for row in watch_candidates[:5]:
+                lines.append(f"- {row.get('ticker')}: {row.get('action_trigger')}")
+        else:
+            lines.append("- None.")
+    lines.extend(["", "## Next 3 Research Candidates"])
+    if not research_candidates:
         lines.append("- None.")
     else:
-        for row in issues[:20]:
+        for row in research_candidates[:3]:
+            lines.append(
+                f"- {row.get('ticker')}: {row.get('actionability_label')} | {row.get('reason')} | {row.get('entry_label')}: {row.get('entry_zone')}"
+            )
+    lines.extend(["", "## Watch / Wait"])
+    if not watch_candidates:
+        lines.append("- None.")
+    else:
+        for row in watch_candidates[:5]:
+            lines.append(f"- {row.get('ticker')}: {row.get('actionability_label')} | trigger {row.get('action_trigger')}")
+    lines.extend(["", "## Avoid / Do Not Chase"])
+    if not avoid_candidates:
+        lines.append("- None.")
+    else:
+        for row in avoid_candidates[:5]:
+            lines.append(f"- {row.get('ticker')}: {row.get('why_not') or row.get('reason')}")
+    if data_issues:
+        lines.extend(["", "## Data Issues"])
+        for row in data_issues[:10]:
             lines.append(f"- {row.get('ticker')}: {row.get('price_validation_reason') or row.get('reason')}")
     return "\n".join(lines)
+
+
+def _build_decision_quality_review(payload: dict[str, Any]) -> str:
+    top_candidate = payload.get("top_candidate")
+    research_candidates = payload.get("research_candidates", [])
+    watch_candidates = payload.get("watch_candidates", [])
+    decisions = payload.get("decisions", [])
+    excluded = [row for row in decisions if row.get("actionability_label") in {"Avoid / Do Not Chase", "Data Insufficient"}]
+    tracked = {str(row.get("ticker")): row for row in decisions}
+    excluded_summary = ", ".join(
+        f"{row.get('ticker')} ({row.get('actionability_label')})"
+        for row in excluded[:10]
+    ) or "None"
+    ticker_summary = "; ".join(
+        f"{ticker}: {tracked.get(ticker, {}).get('actionability_label', 'missing')}"
+        for ticker in ("NVDA", "PLTR", "MU")
+    )
+    watch_trigger_summary = (
+        "N/A (no watch names)"
+        if not watch_candidates
+        else "Yes" if all(row.get("action_trigger") for row in watch_candidates) else "No"
+    )
+    lines = [
+        "# Decision Quality Review",
+        "",
+        f"- Did the system produce a top candidate? {'Yes' if top_candidate else 'No'}",
+        f"- If not, why not? {payload.get('no_clean_candidate_reason') or 'A top candidate was available.'}",
+        f"- What are the top 3 research candidates? {', '.join(str(row.get('ticker')) for row in research_candidates[:3]) or 'None'}",
+        f"- What are the best watch names? {', '.join(str(row.get('ticker')) for row in watch_candidates[:5]) or 'None'}",
+        f"- Which names were excluded and why? {excluded_summary}",
+        f"- Are NVDA/PLTR/MU classified clearly? {ticker_summary}",
+        f"- Are 'Watch' names given triggers? {watch_trigger_summary}",
+        f"- Are TP/SL levels hidden/conditional/actionable correctly? {'Yes' if all(row.get('level_status') in {'Actionable', 'Preliminary', 'Conditional', 'Hidden'} for row in decisions) else 'No'}",
+        f"- Is the output readable in under 60 seconds? {'Yes' if len(research_candidates) <= 3 and len(watch_candidates) <= 5 else 'No'}",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _build_picker_view(decisions: list[dict[str, Any]], *, data_issues: list[dict[str, Any]]) -> dict[str, Any]:
+    actionable = [row for row in decisions if row.get("actionability_label") == "Actionable Today" and row.get("primary_action") == "Research / Buy Candidate"]
+    research = [row for row in decisions if row.get("actionability_label") == "Research First" and row.get("primary_action") == "Research / Buy Candidate"]
+    watch = [row for row in decisions if row.get("actionability_label") in {"Wait for Better Entry", "Watch for Trigger"}]
+    avoid = [row for row in decisions if row.get("actionability_label") == "Avoid / Do Not Chase"]
+    portfolio_actions = [row for row in decisions if row.get("action_lane") == "Portfolio" and row.get("primary_action") not in {"Data Insufficient", "Avoid"}][:5]
+    top_candidate = actionable[0] if actionable else None
+    research_candidates = [row for row in actionable[1:]] + research
+    compact_board = [
+        row
+        for row in decisions
+        if row.get("level_status") in {"Actionable", "Preliminary", "Conditional"}
+    ][:8]
+    no_clean_candidate_reason = ""
+    if not top_candidate:
+        if data_issues and len(data_issues) == len(decisions):
+            no_clean_candidate_reason = "Every candidate failed the live price or freshness gate."
+        elif watch:
+            no_clean_candidate_reason = "The best names are valid, but they still need a trigger or a better entry."
+        elif research:
+            no_clean_candidate_reason = "There are research names, but none are clean enough to call actionable today."
+        else:
+            no_clean_candidate_reason = "No validated setup passed the actionability threshold."
+    return {
+        "top_candidate": top_candidate,
+        "research_candidates": research_candidates[:3],
+        "watch_candidates": watch[:5],
+        "avoid_candidates": avoid[:5],
+        "portfolio_actions": portfolio_actions,
+        "compact_board": compact_board,
+        "no_clean_candidate_reason": no_clean_candidate_reason,
+    }

@@ -199,47 +199,38 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
   const portfolio = useAsync(api.portfolio, []);
   const sources = useAsync(api.dataSources, []);
   const universes = useAsync(api.universes, []);
-  const decisions = (latest.data?.decisions ?? []).filter((row) => row.price_validation_status === 'PASS');
+  const decisions = latest.data?.decisions ?? [];
   const dataIssues = latest.data?.data_issues ?? [];
-  const validation = latest.data?.validation_context;
-  const buyResearch = decisions.filter((row) => row.primary_action === 'Research / Buy Candidate').slice(0, 6);
-  const watch = decisions.filter((row) => row.primary_action === 'Watch').slice(0, 6);
-  const holdAdd = decisions.filter((row) => ['Hold', 'Add'].includes(String(row.primary_action))).slice(0, 6);
-  const trimSell = decisions.filter((row) => ['Trim', 'Sell / Exit Candidate', 'Watch Closely'].includes(String(row.primary_action))).slice(0, 6);
-  const avoid = decisions.filter((row) => ['Avoid', 'Data Insufficient'].includes(String(row.primary_action))).slice(0, 6);
-  const tpBoard = decisions.filter((row) => row.entry_zone && row.entry_zone !== 'unavailable').slice(0, 10);
+  const topCandidate = latest.data?.top_candidate ?? null;
+  const research = latest.data?.research_candidates ?? [];
+  const watch = latest.data?.watch_candidates ?? [];
+  const avoid = latest.data?.avoid_candidates ?? [];
+  const portfolioActions = latest.data?.portfolio_actions ?? [];
+  const compactBoard = latest.data?.compact_board ?? [];
+  const actionableCount = decisions.filter((row) => row.actionability_label === 'Actionable Today').length;
 
   return (
-    <Page title="Home" subtitle="One-screen daily decision cockpit for what to research, watch, hold, add to, trim, sell, and avoid.">
+    <Page title="Home" subtitle="A short daily stock-picker view: best idea, next research names, watch triggers, and avoid reasons.">
       {latest.error && <ApiErrorPanel error={latest.error} onRetry={latest.retry} />}
       {sources.error && <ApiErrorPanel error={sources.error} onRetry={sources.retry} compact />}
       {latest.data?.demo_mode && <Notice tone="warn">DEMO MODE. Demo sample data — not real prices.</Notice>}
       {latest.data?.report_snapshot && <Notice tone="warn">Report Snapshot. Saved reports stay historical and do not populate the live TP / SL board.</Notice>}
       {latest.data?.stale_data && <Notice tone="warn">Stale Data. Rows with stale prices are excluded from actionable decisions.</Notice>}
       <div className="metric-grid">
-        <Metric label="Buy / Research" value={String(buyResearch.length)} sub="Highest-priority current candidates" />
+        <Metric label="Actionable today" value={String(actionableCount)} sub="Clean same-day ideas after price validation" />
+        <Metric label="Research next" value={String(research.length)} sub="Worth deeper work, not instant entries" />
         <Metric label="Watch" value={String(watch.length)} sub="Interesting, not actionable yet" />
-        <Metric label="Hold / Add / Trim" value={String(holdAdd.length + trimSell.length)} sub="Portfolio-aware labels when available" />
         <Metric label="Data issues" value={String(dataIssues.length)} sub="Rows hidden until live price validates" />
       </div>
       <div className="grid two">
-        <Panel title="Market / Data Health">
-          <DecisionCard
-            label={String(latest.data?.market_regime?.regime ?? 'Unavailable')}
-            status={String(latest.data?.market_regime?.provider ?? 'No market regime loaded')}
-            risk={String(avoid.length ? 55 : 30)}
-            details={listText((latest.data?.validation_context?.messages as string[] | undefined) ?? ['Run a fresh scan, then use Deep Research only on the top names.'])}
-          />
-          <div className="metric-grid compact">
-            <Metric label="Last scan" value={compactDate(latest.data?.generated_at)} sub={latest.data?.provider ?? 'unavailable'} />
-            <Metric label="Portfolio loaded" value={(portfolio.data?.positions?.length ?? 0) ? 'Yes' : 'No'} sub={(portfolio.data?.positions?.length ?? 0) ? 'Portfolio-aware labels active' : 'Import or add positions for hold/add/trim/sell labels'} />
-            <Metric label="Universe defaults" value={String((universes.data?.home_defaults ?? []).length)} sub="Home uses active universes only" />
-          </div>
-          <div className="action-strip">
-            <button className="primary" onClick={() => setPage('Stock Picker')}><RefreshCcw size={16} /> Run Scan</button>
-            <button className="secondary" onClick={() => setPage('Deep Research')}><Search size={16} /> Deep Research</button>
-            <button className="secondary" onClick={() => setPage('Validation Lab')}><FlaskConical size={16} /> Validation Context</button>
-          </div>
+        <Panel title="Today&apos;s Best Idea">
+          {topCandidate ? (
+            <FeaturedDecisionCard row={topCandidate} />
+          ) : (
+            <EmptyState title="No Clean Candidate Today" action="Open Stock Picker" onAction={() => setPage('Stock Picker')}>
+              {latest.data?.no_clean_candidate_reason ?? 'No validated setup passed the actionability gate today.'}
+            </EmptyState>
+          )}
         </Panel>
         <Panel title="Active Universes">
           <UniverseSummary payload={universes.data} />
@@ -248,43 +239,33 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
       {latest.data?.available ? (
         <>
           <div className="grid two">
-            <Panel title="Buy / Research Candidates">
-              <DecisionList rows={buyResearch} empty="Run a fresh active-universe scan to fill this lane." />
+            <Panel title="Next Best Research Candidates">
+              <DecisionList rows={research.slice(0, 3)} empty="No research-first names right now." />
             </Panel>
-            <Panel title="Watchlist / Wait">
-              <DecisionList rows={watch} empty="No watch-only names right now." />
+            <Panel title="Watch / Wait">
+              <DecisionList rows={watch.slice(0, 5)} empty="No watch-only names right now." />
             </Panel>
-            <Panel title="Hold / Add">
+            <Panel title="Avoid / Do Not Chase">
+              <DecisionList rows={avoid.slice(0, 5)} empty="No avoid names right now." />
+            </Panel>
+            <Panel title="Portfolio Actions">
               {portfolio.data?.positions?.length ? (
-                <DecisionList rows={holdAdd} empty="No hold/add names right now." />
+                <DecisionList rows={portfolioActions.slice(0, 5)} empty="No portfolio actions right now." />
               ) : (
                 <EmptyState title="No portfolio loaded" action="Open Portfolio" onAction={() => setPage('Portfolio')}>
                   Import a portfolio or add positions manually to activate Hold / Add / Trim / Sell decisions.
                 </EmptyState>
               )}
             </Panel>
-            <Panel title="Trim / Sell / Watch Closely">
-              {portfolio.data?.positions?.length ? (
-                <DecisionList rows={trimSell} empty="No trim or sell candidates right now." />
-              ) : (
-                <EmptyState title="Portfolio decisions need holdings" action="Open Portfolio" onAction={() => setPage('Portfolio')}>
-                  Portfolio-aware actions stay empty until a portfolio is loaded.
-                </EmptyState>
-              )}
-            </Panel>
-            <Panel title="Avoid / Risk">
-              <DecisionList rows={avoid} empty="No avoid candidates right now." />
-            </Panel>
-            <Panel title="Data Issues">
-              <DecisionList rows={dataIssues} empty="No price-validation issues right now." />
-            </Panel>
-            <Panel title="Validation Context">
-              <ValidationContextCard context={validation} />
-            </Panel>
           </div>
-          <Panel title="Quick TP / SL Board">
-            <DecisionBoard rows={tpBoard} />
+          <Panel title="Compact TP / SL or Trigger Board">
+            <DecisionBoard rows={compactBoard} />
           </Panel>
+          {dataIssues.length ? (
+            <Panel title="Data Issues">
+              <DecisionList rows={dataIssues.slice(0, 5)} empty="No price-validation issues right now." />
+            </Panel>
+          ) : null}
         </>
       ) : (
         <EmptyState title="No live daily decision loaded" action="Open scanner" onAction={() => setPage('Stock Picker')}>
@@ -298,7 +279,7 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
 function StockPicker() {
   const universes = useAsync(api.universes, []);
   const [scan, setScan] = useState<ScanState | null>(null);
-  const [tab, setTab] = useState<'All Decisions' | 'Buy / Research' | 'Watch' | 'Hold / Add' | 'Trim / Sell' | 'Avoid' | 'Core Investing' | 'Outliers' | 'Velocity'>('All Decisions');
+  const [tab, setTab] = useState<'Best Ideas' | 'Research' | 'Watch' | 'Avoid' | 'All'>('Best Ideas');
   const [error, setError] = useState<Error | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -325,7 +306,7 @@ function StockPicker() {
   const rows = filterDecisionRows(scan?.decisions ?? [], tab);
 
   return (
-    <Page title="Stock Picker" subtitle="Run one scan, then filter decisions by action instead of jumping across scattered tabs.">
+    <Page title="Stock Picker" subtitle="Run one scan, then sort names into best ideas, research, watch, and avoid with minimal cards.">
       {universes.error && <ApiErrorPanel error={universes.error} onRetry={universes.retry} compact />}
       <form className="toolbar" onSubmit={submit}>
         <Select name="provider" label="Provider" options={['real', 'local', 'sample']} />
@@ -343,7 +324,7 @@ function StockPicker() {
       {loading && <Notice tone="neutral">Running the scanner can take a bit with the real provider. Results will appear here without changing your data.</Notice>}
       {scan?.decisions?.length ? (
         <div className="tabs">
-          {(['All Decisions', 'Buy / Research', 'Watch', 'Hold / Add', 'Trim / Sell', 'Avoid', 'Core Investing', 'Outliers', 'Velocity'] as const).map((item) => (
+          {(['Best Ideas', 'Research', 'Watch', 'Avoid', 'All'] as const).map((item) => (
             <button className={tab === item ? 'active' : ''} key={item} onClick={() => setTab(item)}>{item}</button>
           ))}
         </div>
@@ -353,19 +334,19 @@ function StockPicker() {
       ) : scan?.decisions?.length ? (
         <div className="grid">
           <Panel title={tab}>
-            <DecisionList rows={rows.slice(0, 10)} empty="No names match this tab right now." />
+            <DecisionList rows={rows.slice(0, 12)} empty="No names match this tab right now." />
           </Panel>
-          <Panel title="Why This Lane Is Actionable">
+          <Panel title="Lane Summary">
             <DecisionSummary rows={rows} />
           </Panel>
           <Panel title="Validated TP / SL Table">
             <DecisionBoard rows={rows} />
           </Panel>
           <Panel title="Data Issues">
-            <DecisionList rows={(scan.data_issues ?? []).slice(0, 10)} empty="No price-validation issues in this scan." />
+            <DecisionList rows={(scan.data_issues ?? []).slice(0, 5)} empty="No price-validation issues in this scan." />
           </Panel>
           <Panel title="Raw Scanner Table">
-            <ScannerTable rows={filterScannerRows(scan.results ?? [], tab)} />
+            <ScannerTable rows={filterScannerRows(scan.results ?? [], tab === 'All' ? 'All Decisions' : tab === 'Best Ideas' || tab === 'Research' ? 'Buy / Research' : tab)} />
           </Panel>
         </div>
       ) : (
@@ -1330,10 +1311,18 @@ function AlertList({ rows }: { rows: AlertRow[] }) {
   );
 }
 
-function filterDecisionRows(rows: UnifiedDecision[], tab: 'All Decisions' | 'Buy / Research' | 'Watch' | 'Hold / Add' | 'Trim / Sell' | 'Avoid' | 'Core Investing' | 'Outliers' | 'Velocity') {
-  if (tab === 'All Decisions') return rows;
-  if (tab === 'Buy / Research') return rows.filter((row) => row.primary_action === 'Research / Buy Candidate');
-  if (tab === 'Watch') return rows.filter((row) => row.primary_action === 'Watch');
+function filterDecisionRows(
+  rows: UnifiedDecision[],
+  tab: 'Best Ideas' | 'Research' | 'Watch' | 'Avoid' | 'All' | 'All Decisions' | 'Buy / Research' | 'Hold / Add' | 'Trim / Sell' | 'Core Investing' | 'Outliers' | 'Velocity',
+) {
+  if (tab === 'All' || tab === 'All Decisions') return rows;
+  if (tab === 'Best Ideas') {
+    return rows.filter((row) => row.actionability_label === 'Actionable Today' || row.actionability_label === 'Research First');
+  }
+  if (tab === 'Research' || tab === 'Buy / Research') {
+    return rows.filter((row) => row.primary_action === 'Research / Buy Candidate' && row.actionability_label === 'Research First');
+  }
+  if (tab === 'Watch') return rows.filter((row) => ['Watch', 'Watch Closely', 'Hold'].includes(String(row.primary_action)) && !!row.trigger_needed);
   if (tab === 'Hold / Add') return rows.filter((row) => ['Hold', 'Add'].includes(String(row.primary_action)));
   if (tab === 'Trim / Sell') return rows.filter((row) => ['Trim', 'Sell / Exit Candidate', 'Watch Closely'].includes(String(row.primary_action)));
   if (tab === 'Avoid') return rows.filter((row) => ['Avoid', 'Data Insufficient'].includes(String(row.primary_action)));
@@ -1354,12 +1343,12 @@ function DecisionSummary({ rows }: { rows: UnifiedDecision[] }) {
   return (
     <div className="brief-grid">
       <div>
-        <span className="eyebrow">Why it is here</span>
-        <p>{row.reason ?? 'No decision reason returned yet.'}</p>
+        <span className="eyebrow">What stands out</span>
+        <p>{row.actionability_reason ?? row.reason ?? 'No decision reason returned yet.'}</p>
       </div>
       <div>
-        <span className="eyebrow">What could block it</span>
-        <p>{row.why_not ?? 'No counter-thesis returned yet.'}</p>
+        <span className="eyebrow">What still blocks it</span>
+        <p>{row.why_not ?? row.action_trigger ?? 'No counter-thesis returned yet.'}</p>
       </div>
     </div>
   );
@@ -1396,21 +1385,36 @@ function DecisionList({ rows, empty }: { rows: UnifiedDecision[]; empty: string 
           <div className="provider-title">
             <div>
               <h3>{row.ticker}</h3>
-              <span>{row.company ?? row.action_lane ?? 'Decision'}</span>
+              <span>{row.company ?? row.action_lane ?? 'Decision'}{row.action_lane ? ` • ${row.action_lane}` : ''}</span>
             </div>
-            <ScoreRing value={Number(row.score ?? 0)} label="Score" />
+            <div className="score-stack compact">
+              <strong>{Math.round(Number(row.actionability_score ?? row.score ?? 0))}</strong>
+              <span>Actionability</span>
+            </div>
           </div>
           <div className="pill-row">
-            <StatusPill status={row.primary_action} />
+            <StatusPill status={row.actionability_label ?? row.primary_action} />
+            {row.primary_action && row.actionability_label !== row.primary_action ? <Chip tone="neutral">{row.primary_action}</Chip> : null}
             <Chip tone={String(row.risk_level).includes('High') ? 'warn' : 'neutral'}>{row.risk_level ?? 'Risk n/a'}</Chip>
-            <Chip tone="neutral">{row.confidence_label ?? 'Confidence n/a'}</Chip>
+            <Chip tone="neutral">Evidence: {row.evidence_pill ?? 'Not enough evidence'}</Chip>
           </div>
-          <p>{row.reason ?? 'No decision reason returned.'}</p>
-          <p className="muted">{row.price_source ?? 'Price source unavailable'} | {compactDate(row.latest_market_date)}</p>
-          <KeyValue payload={{ entry: row.entry_zone, stop: row.stop_loss, invalidation: row.invalidation, tp1: row.tp1, tp2: row.tp2, review: row.next_review_date }} />
-          <PriceSanityBadge payload={row.price_sanity} />
-          {row.why_not && <Notice tone="warn">{row.why_not}</Notice>}
-          {row.source_row && row.price_validation_status === 'PASS' ? <PaperTrackingForm scannerRow={row.source_row} compact /> : null}
+          <p>{row.actionability_reason ?? row.reason ?? 'No decision reason returned.'}</p>
+          <p className="muted">{row.price_source ?? 'Price source unavailable'} • {compactDate(row.latest_market_date)} • {row.data_freshness ?? 'Freshness n/a'}</p>
+          <div className="brief-grid">
+            <div>
+              <span className="eyebrow">Why not</span>
+              <p>{row.why_not ?? 'No major counter-thesis beyond routine review discipline.'}</p>
+            </div>
+            <div>
+              <span className="eyebrow">{row.trigger_needed ? 'Trigger / Better Entry' : (row.entry_label ?? 'Entry')}</span>
+              <p>{row.trigger_needed ? (row.action_trigger ?? row.entry_zone ?? 'Wait for refreshed setup.') : (row.entry_zone ?? 'No level')}</p>
+            </div>
+          </div>
+          <LevelPreview row={row} />
+          <div className="action-strip">
+            <Chip tone={row.level_status === 'Actionable' ? 'good' : row.level_status === 'Hidden' ? 'bad' : 'warn'}>{row.level_status ?? 'Hidden'}</Chip>
+            {row.source_row && row.price_validation_status === 'PASS' ? <TrackPredictionButton scannerRow={row.source_row} /> : null}
+          </div>
         </article>
       ))}
     </div>
@@ -1418,23 +1422,24 @@ function DecisionList({ rows, empty }: { rows: UnifiedDecision[]; empty: string 
 }
 
 function DecisionBoard({ rows }: { rows: UnifiedDecision[] }) {
-  const actionable = rows.filter((row) => row.price_validation_status === 'PASS');
+  const actionable = rows.filter((row) => row.level_status && row.level_status !== 'Hidden');
   if (!actionable.length) return <p className="muted">No validated TP / SL rows yet.</p>;
   return (
     <DataTable
       rows={actionable.map((row) => ({
         ticker: row.ticker,
-        action: row.primary_action,
-        entry: row.entry_zone,
-        stop: row.stop_loss,
-        TP1: row.tp1,
-        TP2: row.tp2,
+        actionability: row.actionability_label,
+        level_status: row.level_status,
+        entry_label: row.entry_label,
+        entry_or_trigger: row.trigger_needed ? row.action_trigger : row.entry_zone,
+        stop_or_invalidation: row.stop_loss ?? row.invalidation,
+        TP1: row.level_status === 'Actionable' ? row.tp1 : row.level_status === 'Conditional' ? `Conditional ${row.tp1 ?? 'n/a'}` : row.tp1,
+        TP2: row.level_status === 'Actionable' ? row.tp2 : row.level_status === 'Conditional' ? `Conditional ${row.tp2 ?? 'n/a'}` : row.tp2,
         reward_risk: row.reward_risk,
-        price_source: row.price_source,
+        trigger_needed: row.trigger_needed ? 'Yes' : 'No',
         latest_market_date: row.latest_market_date,
-        review_date: row.next_review_date,
       }))}
-      columns={['ticker', 'action', 'entry', 'stop', 'TP1', 'TP2', 'reward_risk', 'price_source', 'latest_market_date', 'review_date']}
+      columns={['ticker', 'actionability', 'level_status', 'entry_label', 'entry_or_trigger', 'stop_or_invalidation', 'TP1', 'TP2', 'reward_risk', 'trigger_needed', 'latest_market_date']}
     />
   );
 }
@@ -1463,10 +1468,17 @@ function ValidationContextCard({ context }: { context?: ValidationContext | null
   return (
     <div className="validation-context">
       <div className="metric-grid compact">
-        <Metric label="Evidence" value={String(context?.evidence_strength ?? 'Not enough evidence yet')} sub="Plain-English validation context" />
-        <Metric label="Real-money reliance" value={context?.real_money_reliance ? 'Yes' : 'No'} sub="Should stay No" />
+        <Metric label="Evidence" value={String(context?.evidence_strength ?? 'Not enough evidence yet')} sub="Compact evidence pill summary" />
+        <Metric label="Use for" value={context?.real_money_reliance ? 'Real money' : 'Paper-track only'} sub="Actionability still comes from the live setup" />
       </div>
-      {messages.map((message) => <Notice tone="neutral" key={message}>{message}</Notice>)}
+      <div className="brief-grid">
+        {messages.slice(0, 2).map((message) => (
+          <div key={message}>
+            <span className="eyebrow">Evidence note</span>
+            <p>{message}</p>
+          </div>
+        ))}
+      </div>
       {context?.language_note && <p className="muted">{context.language_note}</p>}
     </div>
   );
@@ -1593,31 +1605,132 @@ function DualLineChart({ data }: { data: Record<string, unknown>[] }) {
   );
 }
 
+function FeaturedDecisionCard({ row }: { row: UnifiedDecision }) {
+  return (
+    <article className="candidate-card featured-decision">
+      <div className="provider-title">
+        <div>
+          <span className="eyebrow">Today&apos;s best idea</span>
+          <h3>{row.ticker}</h3>
+          <p>{row.company ?? row.action_lane ?? 'Decision'}</p>
+        </div>
+        <div className="score-stack compact">
+          <strong>{Math.round(Number(row.actionability_score ?? row.score ?? 0))}</strong>
+          <span>Actionability</span>
+        </div>
+      </div>
+      <div className="pill-row">
+        <StatusPill status={row.actionability_label ?? row.primary_action} />
+        <Chip tone="neutral">Evidence: {row.evidence_pill ?? 'Not enough evidence'}</Chip>
+        <Chip tone={String(row.risk_level).includes('High') ? 'warn' : 'neutral'}>{row.risk_level ?? 'Risk n/a'}</Chip>
+      </div>
+      <div className="brief-grid">
+        <div>
+          <span className="eyebrow">Why now</span>
+          <p>{row.actionability_reason ?? row.reason ?? 'No current thesis returned.'}</p>
+        </div>
+        <div>
+          <span className="eyebrow">Why not</span>
+          <p>{row.why_not ?? 'No major counter-thesis beyond routine review discipline.'}</p>
+        </div>
+      </div>
+      <LevelPreview row={row} />
+      <p className="muted">{row.price_source ?? 'Price source unavailable'} • {compactDate(row.latest_market_date)} • {row.data_freshness ?? 'Freshness n/a'}</p>
+      <div className="action-strip">
+        <Chip tone={row.level_status === 'Actionable' ? 'good' : row.level_status === 'Conditional' ? 'warn' : 'neutral'}>{row.level_status ?? 'Hidden'}</Chip>
+        {row.source_row && row.price_validation_status === 'PASS' ? <TrackPredictionButton scannerRow={row.source_row} /> : null}
+      </div>
+    </article>
+  );
+}
+
+function LevelPreview({ row }: { row: UnifiedDecision }) {
+  if (row.level_status === 'Hidden' || row.actionability_label === 'Data Insufficient') {
+    return <Notice tone="warn">{row.levels_explanation ?? 'Levels hidden.'}</Notice>;
+  }
+
+  if (row.level_status === 'Conditional') {
+    return (
+      <div className="brief-grid">
+        <div>
+          <span className="eyebrow">{row.entry_label ?? 'Trigger / Better Entry'}</span>
+          <p>{row.action_trigger ?? row.entry_zone ?? 'Wait for the trigger.'}</p>
+        </div>
+        <div>
+          <span className="eyebrow">Conditional levels</span>
+          <p>Invalidation {cell(row.stop_loss ?? row.invalidation)} • TP1 {cell(row.tp1)} • TP2 {cell(row.tp2)}</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="brief-grid">
+      <div>
+        <span className="eyebrow">{row.entry_label ?? 'Entry'}</span>
+        <p>{row.entry_zone ?? 'unavailable'}</p>
+      </div>
+      <div>
+        <span className="eyebrow">{row.level_status === 'Preliminary' ? 'Preliminary levels' : 'Levels'}</span>
+        <p>Stop {cell(row.stop_loss ?? row.invalidation)} • TP1 {cell(row.tp1)} • TP2 {cell(row.tp2)}</p>
+      </div>
+    </div>
+  );
+}
+
 function ResearchView({ payload }: { payload: ResearchPayload }) {
   const decision = payload.decision_card as Record<string, unknown> | undefined;
   const unifiedDecision = payload.unified_decision;
   const scanner = payload.scanner_row;
   const regularView = payload.regular_investing_view as Record<string, unknown> | undefined;
+  const fallbackDecision: UnifiedDecision = {
+    ticker: String(payload.ticker ?? 'Unknown'),
+    actionability_label: 'Data Insufficient',
+    level_status: 'Hidden',
+  };
   return (
     <div className="grid">
-      <Panel title="Primary Decision">
-        <DecisionCard
-          label={String(unifiedDecision?.primary_action ?? decision?.research_recommendation ?? scanner?.status_label ?? 'Data Insufficient')}
-          status={String(unifiedDecision?.reason ?? scanner?.strategy_label ?? scanner?.outlier_type ?? 'Rule-based research')}
-          risk={String(scanner?.risk_score ?? 'Unknown')}
-          details={String(unifiedDecision?.why_not ?? scanner?.alternative_data_summary ?? 'Deterministic scanner output remains primary.')}
-        />
-        <div className="metric-grid compact">
-          <Metric label="Winner" value={String(scanner?.winner_score ?? payload.winner_score ?? 0)} sub="Rule score" />
-          <Metric label="Outlier" value={String(scanner?.outlier_score ?? payload.outlier_score ?? 0)} sub="Outlier engine" />
-          <Metric label="Risk" value={String(scanner?.risk_score ?? payload.risk_score ?? 0)} sub="Lower is better" />
-          <Metric label="Confidence" value={String(unifiedDecision?.confidence_label ?? scanner?.confidence_label ?? 'Low')} sub={String(unifiedDecision?.evidence_strength ?? 'No validation context')} />
+      <Panel title="Decision Synthesis">
+        <div className="provider-title">
+          <div>
+            <span className="eyebrow">Final decision</span>
+            <h3>{String(unifiedDecision?.ticker ?? payload.ticker ?? 'Unknown')}</h3>
+            <p>{String(unifiedDecision?.actionability_label ?? unifiedDecision?.primary_action ?? decision?.research_recommendation ?? scanner?.status_label ?? 'Data Insufficient')}</p>
+          </div>
+          <div className="score-stack compact">
+            <strong>{Math.round(Number(unifiedDecision?.actionability_score ?? unifiedDecision?.score ?? 0))}</strong>
+            <span>Actionability</span>
+          </div>
         </div>
+        <div className="pill-row">
+          <StatusPill status={unifiedDecision?.actionability_label ?? unifiedDecision?.primary_action} />
+          <Chip tone={String(unifiedDecision?.risk_level).includes('High') ? 'warn' : 'neutral'}>{unifiedDecision?.risk_level ?? 'Risk n/a'}</Chip>
+          <Chip tone="neutral">State: {unifiedDecision?.current_setup_state ?? 'Unknown'}</Chip>
+          <Chip tone="neutral">Evidence: {unifiedDecision?.evidence_pill ?? 'Not enough evidence'}</Chip>
+        </div>
+        <p>{String(decision?.why_this_recommendation ?? unifiedDecision?.actionability_reason ?? unifiedDecision?.reason ?? 'Deterministic scanner output remains primary.')}</p>
+        <div className="brief-grid">
+          <div>
+            <span className="eyebrow">Why now</span>
+            <p>{unifiedDecision?.actionability_reason ?? unifiedDecision?.reason ?? 'No current setup explanation returned.'}</p>
+          </div>
+          <div>
+            <span className="eyebrow">Why not</span>
+            <p>{unifiedDecision?.why_not ?? 'No major counter-thesis beyond routine review discipline.'}</p>
+          </div>
+        </div>
+        <LevelPreview row={unifiedDecision ?? fallbackDecision} />
+        <KeyValue payload={{
+          trigger_or_entry: unifiedDecision?.trigger_needed ? unifiedDecision?.action_trigger : unifiedDecision?.entry_zone,
+          stop_or_invalidation: unifiedDecision?.stop_loss ?? unifiedDecision?.invalidation ?? payload.invalidation,
+          tp1: unifiedDecision?.level_status === 'Actionable' ? unifiedDecision?.tp1 : undefined,
+          tp2: unifiedDecision?.level_status === 'Actionable' ? unifiedDecision?.tp2 : undefined,
+          events_to_watch: unifiedDecision?.events_to_watch ?? payload.events_to_watch,
+          data_quality: payload.price_sanity?.price_validation_status === 'PASS' ? 'Validated live price' : payload.price_sanity?.price_validation_reason,
+        }} />
+        {scanner && scanner.price_validation_status === 'PASS' ? <TrackPredictionButton scannerRow={scanner} /> : null}
       </Panel>
       <div className="grid two">
-        <Panel title="Action Setup">
-          <KeyValue payload={{ entry: unifiedDecision?.entry_zone ?? payload.entry_zone, stop: unifiedDecision?.stop_loss, invalidation: unifiedDecision?.invalidation ?? payload.invalidation, tp1: unifiedDecision?.tp1 ?? payload.tp1, tp2: unifiedDecision?.tp2 ?? payload.tp2, horizon: unifiedDecision?.holding_horizon }} />
-        </Panel>
         <Panel title="Price Validation">
           <KeyValue payload={{
             live_quote: payload.price_sanity?.quote_price_if_available,
@@ -1627,68 +1740,91 @@ function ResearchView({ payload }: { payload: ResearchPayload }) {
             source: payload.price_sanity?.validated_price_source ?? payload.price_sanity?.price_source,
             latest_market_date: payload.price_sanity?.last_market_date,
             validation_status: payload.price_sanity?.price_validation_status,
-            validation_reason: payload.price_sanity?.price_validation_reason,
           }} />
-          <PriceSanityBadge payload={payload.price_sanity ?? scanner} />
-          {payload.price_sanity?.price_validation_status !== 'PASS' && (
-            <Notice tone="bad">Do not use TP/SL levels. Price validation failed.</Notice>
-          )}
+          {payload.price_sanity?.price_validation_status !== 'PASS' && <Notice tone="bad">Do not use TP/SL levels. Price validation failed.</Notice>}
         </Panel>
-        <Panel title="Why Not To Buy">
-          <Notice tone="warn">
-            {String(unifiedDecision?.why_not ?? listText(scanner?.why_it_could_fail ?? (payload.key_risks as unknown[] | undefined) ?? ['No explicit risk notes were returned. Refresh data before relying on the thesis.']))}
-          </Notice>
-          <KeyValue payload={{ invalidation: payload.invalidation, warnings: scanner?.warnings, missing_data: scanner?.alternative_data_warnings }} />
-        </Panel>
-        <Panel title="Bull Case">
-          <KeyValue payload={{ bull_case: payload.bull_case ?? scanner?.why_it_passed, big_winner_case: scanner?.why_it_passed }} />
-        </Panel>
-        <Panel title="Bear Case">
-          <KeyValue payload={{ bear_case: payload.bear_case ?? scanner?.why_it_could_fail, key_risks: payload.key_risks ?? scanner?.warnings }} />
-        </Panel>
-        <Panel title="Regular Investing View">
-          <div className="metric-grid compact">
-            <Metric label="Core score" value={String(regularView?.regular_investing_score ?? scanner?.regular_investing_score ?? 0)} sub="0-100 regular investing" />
-            <Metric label="Action" value={String(regularView?.investing_action_label ?? scanner?.investing_action_label ?? 'Data Insufficient')} sub="Research label only" />
-            <Metric label="Risk" value={String(regularView?.investing_risk ?? scanner?.investing_risk ?? 'Unknown')} sub="Not an order" />
-          </div>
+        <Panel title="Core Investing">
           <KeyValue payload={{
+            score: regularView?.regular_investing_score ?? scanner?.regular_investing_score,
+            action: regularView?.investing_action_label ?? scanner?.investing_action_label,
             style: regularView?.investing_style ?? scanner?.investing_style,
+            risk: regularView?.investing_risk ?? scanner?.investing_risk,
             horizon: regularView?.investing_time_horizon ?? scanner?.investing_time_horizon,
-            bull_case: regularView?.bull_case ?? scanner?.investing_reason,
-            bear_case: regularView?.bear_case ?? scanner?.investing_bear_case,
-            invalidation: regularView?.invalidation ?? scanner?.investing_invalidation,
-            events_to_watch: regularView?.events_to_watch ?? scanner?.investing_events_to_watch,
-            value_trap_warning: regularView?.value_trap_warning ?? scanner?.value_trap_warning,
             thesis_quality: regularView?.thesis_quality ?? scanner?.thesis_quality,
-            data_quality: regularView?.data_quality ?? scanner?.investing_data_quality,
           }} />
         </Panel>
-        <Panel title="Validation Context">
+        <Panel title="Outlier">
+          <KeyValue payload={{
+            outlier_score: scanner?.outlier_score ?? payload.outlier_score,
+            setup_quality: scanner?.setup_quality_score ?? payload.setup_quality,
+            bull_case: payload.bull_case ?? scanner?.why_it_passed,
+            bear_case: payload.bear_case ?? scanner?.why_it_could_fail,
+            catalyst: payload.catalyst_news_social_summary,
+          }} />
+        </Panel>
+        <Panel title="Velocity">
+          <KeyValue payload={{
+            velocity_score: scanner?.velocity_score,
+            velocity_type: scanner?.velocity_type,
+            trigger_reason: scanner?.trigger_reason,
+            chase_warning: scanner?.chase_warning,
+          }} />
+        </Panel>
+        <Panel title="Portfolio">
+          <KeyValue payload={{ portfolio_context: payload.portfolio_context, journal_history: payload.journal_history }} />
+        </Panel>
+        <Panel title="AI">
+          <KeyValue payload={{
+            recommended_next_step: decision?.next_review_trigger,
+            what_would_change: decision?.what_would_change_the_recommendation,
+            safety: decision?.safety,
+          }} />
+        </Panel>
+        <Panel title="Evidence">
           <ValidationContextCard context={payload.validation_context} />
         </Panel>
-        <Panel title="Insider / Politician Activity">
+        <Panel title="Events To Watch">
+          <KeyValue payload={{
+            events_to_watch: unifiedDecision?.events_to_watch ?? payload.events_to_watch,
+            key_risks: payload.key_risks ?? scanner?.warnings,
+            alt_data_quality: scanner?.alternative_data_quality,
+          }} />
+        </Panel>
+        <Panel title="Alt Data">
           <div className="alt-grid">
             <InsiderActivityCard row={scanner} />
             <PoliticianActivityCard row={scanner} />
           </div>
-        </Panel>
-        <Panel title="Data Quality">
-          <KeyValue payload={{ alternative_data_quality: scanner?.alternative_data_quality, alternative_sources: scanner?.alternative_data_source_count, disclosure_lag: scanner?.disclosure_lag_warning, data_notes: scanner?.warnings }} />
-        </Panel>
-        <Panel title="Portfolio Context">
-          <KeyValue payload={{ portfolio_context: payload.portfolio_context, journal_history: payload.journal_history }} />
-        </Panel>
-        <Panel title="Historical Evidence">
-          <p className="muted">Use Validation Lab to save this thesis and measure forward outcomes against SPY, QQQ, and random baselines.</p>
-          {scanner && scanner.price_validation_status === 'PASS' ? <PaperTrackingForm scannerRow={scanner} /> : <Notice tone="warn">Paper tracking stays disabled until the price validation gate passes.</Notice>}
         </Panel>
       </div>
     </div>
   );
 }
 
-function PaperTrackingForm({ scannerRow, compact = false }: { scannerRow: ScannerRow; compact?: boolean }) {
+function TrackPredictionButton({ scannerRow }: { scannerRow: ScannerRow }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button className="secondary" onClick={() => setOpen(true)} type="button">Track</button>
+      {open ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal-card">
+            <div className="provider-title">
+              <div>
+                <strong>Track {scannerRow.ticker}</strong>
+                <span>Save one paper-tracking record without the inline form clutter.</span>
+              </div>
+              <button className="ghost" onClick={() => setOpen(false)} type="button">Close</button>
+            </div>
+            <PaperTrackingForm scannerRow={scannerRow} onSaved={() => setOpen(false)} />
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function PaperTrackingForm({ scannerRow, compact = false, onSaved }: { scannerRow: ScannerRow; compact?: boolean; onSaved?: () => void }) {
   const [message, setMessage] = useState('');
   const [error, setError] = useState<Error | null>(null);
   const [saving, setSaving] = useState(false);
@@ -1721,6 +1857,7 @@ function PaperTrackingForm({ scannerRow, compact = false }: { scannerRow: Scanne
       });
       setMessage(`Saved ${prediction.prediction_id}. Next review: ${prediction.next_review_date ?? 'pending'}.`);
       event.currentTarget.reset();
+      onSaved?.();
     } catch (err) {
       setError(err instanceof Error ? err : new Error('Could not save prediction'));
     } finally {
@@ -1730,7 +1867,7 @@ function PaperTrackingForm({ scannerRow, compact = false }: { scannerRow: Scanne
 
   return (
     <form className={compact ? 'paper-form compact' : 'paper-form'} onSubmit={submit}>
-      <strong>Start Paper Tracking</strong>
+      <strong>Track this idea</strong>
       <Select name="expected_holding_period" label="Horizon" options={['5D', '10D', '20D', '1D']} />
       <Field name="thesis" label="Thesis" defaultValue={scannerRow.why_it_passed?.[0] ?? ''} />
       <Field name="invalidation" label="Invalidation" defaultValue={String(scannerRow.invalidation_level ?? '')} />
@@ -1742,21 +1879,6 @@ function PaperTrackingForm({ scannerRow, compact = false }: { scannerRow: Scanne
       {message && <Notice tone="good">{message}</Notice>}
       {error && <ApiErrorPanel error={error} onRetry={() => setError(null)} compact />}
     </form>
-  );
-}
-
-function DecisionCard({ label, status, risk, details }: { label: string; status: string; risk: string; details: string }) {
-  const riskNumber = Number(risk);
-  return (
-    <div className="decision-card">
-      <div>
-        <span className="eyebrow">Decision</span>
-        <h3>{label}</h3>
-        <p>{status}</p>
-      </div>
-      <ScoreRing value={Number.isFinite(riskNumber) ? Math.max(0, 100 - riskNumber) : 50} label="Risk-adjusted" />
-      <Notice tone={riskNumber >= 60 ? 'bad' : riskNumber >= 40 ? 'warn' : 'neutral'}>{details}</Notice>
-    </div>
   );
 }
 
@@ -1920,11 +2042,6 @@ function money(value: number) {
 
 function labelize(value: string) {
   return value.replaceAll('_', ' ').replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
-function listText(value: unknown[] | string) {
-  if (Array.isArray(value)) return value.map((item) => String(item)).join(' | ');
-  return String(value);
 }
 
 function cell(value: unknown): string {
