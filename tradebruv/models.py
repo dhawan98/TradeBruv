@@ -299,7 +299,9 @@ class ScannerResult:
     distribution_signal: str = "No Clean Signal"
     signal_summary: str = "No Clean Signal"
     signal_grade: str = "F"
+    signal_explanation: str = "Signal data unavailable."
     price_change_1d_pct: float | None = None
+    price_change_5d_pct: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         catalyst_intelligence = _default_catalyst_intelligence() | self.catalyst_intelligence
@@ -441,7 +443,9 @@ class ScannerResult:
             "distribution_signal": self.distribution_signal,
             "signal_summary": self.signal_summary,
             "signal_grade": self.signal_grade,
+            "signal_explanation": self.signal_explanation,
             "price_change_1d_pct": _format_number(self.price_change_1d_pct),
+            "price_change_5d_pct": _format_number(self.price_change_5d_pct),
         }
 
 

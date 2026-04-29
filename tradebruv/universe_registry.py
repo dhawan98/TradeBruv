@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .tracked import DEFAULT_TRACKED_TICKERS
+from .ticker_symbols import display_ticker
 
 
 @dataclass(frozen=True)
@@ -59,7 +61,7 @@ TOP1000_STYLE_STARTER = tuple(dict.fromkeys(
 UNIVERSE_DEFINITIONS: dict[str, UniverseDefinition] = {
     "sp500": UniverseDefinition(
         source="sp500",
-        label="S&P 500 Starter",
+        label="Large Cap Starter",
         description="Static curated large-cap U.S. starter universe with broad sector coverage.",
         starter_note="Static curated starter file. Refresh periodically; dynamic membership refresh remains future/degraded.",
         tickers=SP500_STARTER,
@@ -122,3 +124,44 @@ def get_universe_definition(source: str) -> UniverseDefinition:
 def universe_text(source: str) -> str:
     definition = get_universe_definition(source)
     return "\n".join(definition.tickers) + "\n"
+
+
+def validate_universe_file(path: Path) -> dict[str, Any]:
+    rows = [
+        display_ticker(line.strip())
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    row_count = len(rows)
+    file_name = path.name.lower()
+    universe_label = "Custom Universe"
+    expected_universe_size = row_count
+    if "sp500" in file_name:
+        expected_universe_size = 500
+        universe_label = "Large Cap Starter" if row_count < 450 else "S&P 500"
+    elif "nasdaq100" in file_name:
+        expected_universe_size = 100
+        universe_label = "Nasdaq 100"
+    elif "top1000" in file_name or "russell1000" in file_name:
+        expected_universe_size = 1000
+        universe_label = "Top 1000 Style Starter"
+    elif "large_cap_starter" in file_name:
+        expected_universe_size = 500
+        universe_label = "Large Cap Starter"
+    coverage_percent = round((row_count / expected_universe_size) * 100, 1) if expected_universe_size else 100.0
+    is_partial_universe = expected_universe_size > 0 and row_count < expected_universe_size
+    universe_warning = ""
+    if "sp500" in file_name and row_count < 450:
+        universe_warning = "This file is a Large Cap Starter, not a full live S&P 500 membership list."
+    elif is_partial_universe and expected_universe_size > row_count:
+        universe_warning = "Universe file is a partial starter list and should not be treated as complete market coverage."
+    return {
+        "universe_label": universe_label,
+        "universe_file": str(path),
+        "universe_row_count": row_count,
+        "expected_universe_size": expected_universe_size,
+        "coverage_percent": coverage_percent,
+        "is_partial_universe": is_partial_universe,
+        "universe_warning": universe_warning,
+        "sample_tickers": rows[:10],
+    }

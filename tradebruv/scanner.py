@@ -391,7 +391,9 @@ class DeterministicScanner:
             distribution_signal=str(signal_snapshot.get("distribution_signal") or "No Clean Signal"),
             signal_summary=str(signal_snapshot.get("signal_summary") or "No Clean Signal"),
             signal_grade=str(signal_snapshot.get("signal_grade") or "F"),
+            signal_explanation=str(signal_snapshot.get("signal_explanation") or "Signal data unavailable."),
             price_change_1d_pct=(round(features.return_1d * 100, 2) if features.return_1d is not None else None),
+            price_change_5d_pct=(round(features.return_5d * 100, 2) if features.return_5d is not None else None),
         )
 
     def _failure_result(self, ticker: str, error: Exception) -> ScannerResult:
@@ -461,7 +463,9 @@ class DeterministicScanner:
             distribution_signal="No Clean Signal",
             signal_summary="No Clean Signal",
             signal_grade="F",
+            signal_explanation="Signal data unavailable.",
             price_change_1d_pct=None,
+            price_change_5d_pct=None,
         )
 
     def _append_availability_notes(self, notes: list[str], security: SecurityData) -> None:

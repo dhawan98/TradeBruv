@@ -72,6 +72,7 @@ from .replay import (
 )
 from .scanner import DeterministicScanner
 from .signal_quality import run_case_study, run_signal_audit
+from .ticker_symbols import display_ticker
 from .validation_lab import DEFAULT_PREDICTIONS_PATH, load_predictions, save_predictions, update_prediction_outcomes, validation_metrics
 
 
@@ -154,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "universe":
-        from .universe_registry import list_universe_definitions, universe_text
+        from .universe_registry import list_universe_definitions, universe_text, validate_universe_file
 
         if args.universe_command == "list":
             for definition in list_universe_definitions():
@@ -165,6 +166,9 @@ def main(argv: list[str] | None = None) -> int:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(content, encoding="utf-8")
             print(f"Wrote {args.output}")
+            return 0
+        if args.universe_command == "validate":
+            print(json.dumps(validate_universe_file(args.path), indent=2))
             return 0
 
     if args.command == "tracked":
@@ -576,6 +580,8 @@ def build_parser() -> argparse.ArgumentParser:
     universe_build = universe_subparsers.add_parser("build", help="Write a curated starter universe file.")
     universe_build.add_argument("--source", choices=("sp500", "nasdaq100", "top1000", "liquid_growth", "ai_semis_software", "tracked"), required=True)
     universe_build.add_argument("--output", type=Path, required=True)
+    universe_validate = universe_subparsers.add_parser("validate", help="Validate universe coverage labels and expected size.")
+    universe_validate.add_argument("path", type=Path)
 
     tracked = subparsers.add_parser("tracked", help="Manage the tracked-tickers watchlist file.")
     tracked_subparsers = tracked.add_subparsers(dest="tracked_command", required=True)
@@ -782,7 +788,7 @@ def load_universe(path: Path) -> list[str]:
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        tickers.append(line.upper())
+        tickers.append(display_ticker(line))
     return tickers
 
 

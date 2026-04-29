@@ -262,6 +262,12 @@ export type UnifiedDecision = {
   primary_action?: string;
   action_lane?: string;
   source_group?: string;
+  source_groups?: string[];
+  best_source_group?: string;
+  valid_source_groups?: string[];
+  failed_source_groups?: string[];
+  merge_warnings?: string[];
+  has_conflicting_source_rows?: boolean;
   score?: number;
   actionability_score?: number;
   actionability_label?: string;
@@ -301,6 +307,12 @@ export type UnifiedDecision = {
   portfolio_context?: Record<string, unknown> | null;
   validation_context?: ValidationContext;
   source_row?: ScannerRow;
+  decision_notices?: DecisionNotice[];
+};
+
+export type DecisionNotice = {
+  severity: 'critical' | 'warning' | 'info' | 'debug' | string;
+  message: string;
 };
 
 export type ValidationContext = {
@@ -360,6 +372,7 @@ export type ScannerRow = PriceSanity & {
   company_name?: string;
   current_price?: number;
   price_change_1d_pct?: number | string;
+  price_change_5d_pct?: number | string;
   ema_21?: number | string;
   ema_50?: number | string;
   ema_150?: number | string;
@@ -374,6 +387,7 @@ export type ScannerRow = PriceSanity & {
   distribution_signal?: string;
   signal_summary?: string;
   signal_grade?: string;
+  signal_explanation?: string;
   winner_score?: number;
   outlier_score?: number;
   risk_score?: number;
@@ -471,6 +485,7 @@ export type DecisionSnapshotPayload = ScanPayload & {
   signal_table?: SignalTableRow[];
   no_clean_candidate_reason?: string;
   data_coverage_status?: Record<string, unknown>;
+  workspace?: WorkspacePayload;
 };
 export type ResearchPayload = Record<string, unknown> & {
   scanner_row?: ScannerRow;
@@ -485,9 +500,11 @@ export type SignalTableRow = {
   source?: string;
   price?: number | string;
   price_change_1d_pct?: number | string;
+  price_change_5d_pct?: number | string;
   relative_volume_20d?: number | string;
   ema_stack?: string;
   signal?: string;
+  signal_explanation?: string;
   actionability?: string;
   risk?: string;
   entry_or_trigger?: string;
@@ -522,6 +539,27 @@ export type ChartPayload = {
   demo_mode?: boolean;
   cache?: Record<string, unknown>;
   reason?: string;
+};
+export type WorkspacePayload = {
+  selected_ticker?: string;
+  canonical_rows?: UnifiedDecision[];
+  top_candidates?: UnifiedDecision[];
+  tracked_rows?: UnifiedDecision[];
+  broad_rows?: UnifiedDecision[];
+  watch_rows?: UnifiedDecision[];
+  avoid_rows?: UnifiedDecision[];
+  signal_table_rows?: SignalTableRow[];
+  decision_by_ticker?: Record<string, UnifiedDecision>;
+  chart_data_by_ticker?: Record<string, ChartPayload>;
+  coverage_status?: Record<string, unknown>;
+  data_issues?: UnifiedDecision[];
+  source_aware_top?: {
+    overall_top_setup?: UnifiedDecision | null;
+    best_tracked_setup?: UnifiedDecision | null;
+    best_broad_setup?: UnifiedDecision | null;
+  };
+  selected_ticker_consistency_status?: 'PASS' | 'FAIL' | string;
+  selected_ticker_consistency_reason?: string;
 };
 export type TrackedPayload = {
   path: string;

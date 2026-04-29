@@ -237,6 +237,7 @@ Included starter universes:
 - [active_core_investing_universe.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/active_core_investing_universe.txt)
 - [active_outlier_universe.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/active_outlier_universe.txt)
 - [active_velocity_universe.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/active_velocity_universe.txt)
+- [universe_large_cap_starter.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_large_cap_starter.txt)
 - [universe_sp500.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_sp500.txt)
 - [universe_nasdaq100.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_nasdaq100.txt)
 - [universe_russell1000_or_top1000.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_russell1000_or_top1000.txt)
@@ -536,6 +537,94 @@ Recommended workflow:
 4. Check the compact signal table for EMA / relative-volume context.
 5. Use `Deep Research` only for the top 2-3 names.
 6. Save paper predictions with `Track`.
+
+### Pass 16 Workspace Cleanup
+
+Pass 16 cleans up the cockpit so the app behaves more like one market workspace and less like several unrelated panels.
+
+What changed:
+- `Home` is now `Decision Cockpit` in the primary navigation
+- the default nav is intentionally small:
+  1. Decision Cockpit
+  2. Stock Picker
+  3. Deep Research
+  4. Portfolio
+  5. Data Sources
+  6. Reports
+- advanced pages stay available under a collapsed `Advanced` section
+- the workspace is driven by one canonical selected ticker, so the chart, right-hand decision panel, and bottom screener stay in sync
+
+Canonical ticker merge:
+- duplicate ticker rows from `Tracked`, `Broad`, `Portfolio`, `Core Investing`, `Outlier`, and `Velocity` are merged through a canonical merge layer
+- if any source row for a ticker has `price_validation_status = PASS`, that valid row wins over failed duplicates
+- failed duplicate rows become merge diagnostics instead of separate UI rows
+- source provenance is preserved through:
+  - `source_groups`
+  - `best_source_group`
+  - `valid_source_groups`
+  - `failed_source_groups`
+  - `merge_warnings`
+
+This prevents cases like:
+- the same ticker showing up twice from tracked + broad sources
+- a `0`-price failed row appearing next to a valid live row
+- the chart using one row while the decision panel uses another
+
+TradingView-style cockpit rules:
+- left rail: compact watchlist/scanner rows
+- center: large chart with EMA 21 / 50 / 150 / 200 legend plus signal explanation
+- right rail: compact decision summary for the selected ticker only
+- bottom: dense screener/signal table instead of cards
+- diagnostics/debug fields stay hidden unless you open diagnostics
+
+Signal presentation:
+- the chart legend now shows exact latest EMA values
+- signal language is intentionally short:
+  - `Bullish Trend Stack`
+  - `Breakout with Volume`
+  - `Pullback to EMA 21`
+  - `Pullback to EMA 50`
+  - `Reclaiming EMA 21`
+  - `Reclaiming EMA 50`
+  - `Distribution Warning`
+  - `Below 200D / Avoid`
+  - `Extended / Wait`
+  - `No Clean Signal`
+- a compact one-line signal explanation now sits below the chart
+
+Warning severity:
+- `critical` and `warning` items are shown in the decision panel
+- `info` items stay lightweight
+- `debug` items are hidden from the main panel
+- example: split-adjusted-price notes are treated as debug/info when live price validation already passed cleanly
+
+Stock Picker:
+- the Stock Picker page now renders a screener-style table instead of a card wall
+- row details expand inline
+- paper tracking still exists, but it opens from a single `Track` action instead of repeating inline forms
+
+Universe honesty and validation:
+- [universe_large_cap_starter.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_large_cap_starter.txt) is included as an explicit starter file
+- if [universe_sp500.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_sp500.txt) has materially fewer than 500 members, TradeBruv labels it as `Large Cap Starter`, not a full S&P 500
+- validate any universe file with:
+
+```bash
+python3 -m tradebruv universe validate config/universe_sp500.txt
+```
+
+Universe validation returns:
+- `universe_label`
+- `universe_file`
+- `universe_row_count`
+- `expected_universe_size`
+- `coverage_percent`
+- `is_partial_universe`
+- `universe_warning`
+
+Class ticker mapping:
+- display can stay in dotted class-share form such as `BRK.B`
+- yfinance/provider fetches use provider-safe symbols such as `BRK-B`
+- this mapping is handled automatically during scans, chart loads, and universe ingestion
 
 ## Quick Start
 

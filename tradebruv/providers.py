@@ -18,6 +18,7 @@ from .models import (
     ShortInterestSnapshot,
     SocialAttentionSnapshot,
 )
+from .ticker_symbols import display_ticker, provider_ticker
 from .taxonomy import infer_catalyst_tags, infer_theme_tags
 
 
@@ -244,13 +245,14 @@ class YFinanceMarketDataProvider:
         self._yf = importlib.import_module("yfinance")
 
     def get_security_data(self, ticker: str) -> SecurityData:
-        ticker = ticker.upper()
+        ticker = display_ticker(ticker)
         if ticker in self._cache:
             return self._cache[ticker]
-        benchmark_symbol = ticker in BENCHMARK_SYMBOLS
+        provider_symbol = provider_ticker(ticker)
+        benchmark_symbol = provider_symbol in BENCHMARK_SYMBOLS or ticker in BENCHMARK_SYMBOLS
 
         try:
-            instrument = self._yf.Ticker(ticker)
+            instrument = self._yf.Ticker(provider_symbol)
             history = instrument.history(period=self.history_period, interval="1d", auto_adjust=True)
         except Exception as exc:
             raise ProviderFetchError(f"Could not fetch {ticker} history from yfinance: {exc}") from exc
@@ -300,7 +302,7 @@ class YFinanceMarketDataProvider:
             catalyst_tags=catalyst_tags,
             provider_name="real",
             source_notes=[
-                "Source: yfinance history/info/earnings/news endpoints.",
+                f"Source: yfinance history/info/earnings/news endpoints ({provider_symbol}).",
                 "Short interest, earnings, and news fields may be partial depending on Yahoo availability.",
             ],
             data_notes=[],

@@ -12,11 +12,13 @@ from .dashboard_data import (
     load_dashboard_portfolio,
     run_dashboard_scan,
 )
+from .decision_merge import merge_canonical_rows
 from .decision_engine import build_unified_decisions, build_validation_context
 from .market_cache import DEFAULT_MARKET_CACHE_DIR, FileCacheMarketDataProvider
 from .price_sanity import build_price_sanity_from_row
 from .scanner import DeterministicScanner
 from .tracked import DEFAULT_TRACKED_TICKERS_PATH, list_tracked_tickers
+from .universe_registry import validate_universe_file
 
 DEFAULT_DAILY_DECISION_OUTPUT_DIR = Path("outputs/daily")
 DEFAULT_DAILY_DECISION_JSON_PATH = DEFAULT_DAILY_DECISION_OUTPUT_DIR / "decision_today.json"
@@ -178,10 +180,49 @@ def run_daily_decision(
             }
         )
 
-    merged_rows = _dedupe_rows(combined_rows)
-    merged_decisions = _dedupe_decisions(combined_decisions)
+    merged = merge_canonical_rows(combined_rows, combined_decisions)
+    merged_rows = merged["canonical_rows"]
+    merged_decisions = merged["canonical_decisions"]
     data_issues = [decision for decision in merged_decisions if decision.get("price_validation_status") != "PASS"]
     picker_view = _build_picker_view(merged_decisions, data_issues=data_issues)
+    broad_universe_status = validate_universe_file(broad_universe) if broad_universe else {
+        "universe_label": "Tracked + Active",
+        "universe_file": "active configured universes",
+        "universe_row_count": 0,
+        "expected_universe_size": 0,
+        "coverage_percent": 100.0,
+        "is_partial_universe": False,
+        "universe_warning": "",
+    }
+    coverage_status = {
+        "universe_scanned": [item["source_group"] for item in scans],
+        "scan_groups": [
+            {
+                "source_group": item["source_group"],
+                "lane": item["lane"],
+                "universe": item["universe"],
+                "result_count": len(item["scan"].results),
+            }
+            for item in scans
+        ],
+        "tickers_attempted": coverage_attempted,
+        "tickers_successfully_scanned": coverage_success,
+        "tickers_failed": coverage_failed,
+        "tracked_tickers_count": len(tracked_tickers),
+        "portfolio_tickers_count": len(portfolio_tickers),
+        "last_broad_scan_time": next((item["generated_at"] for item in scan_summaries if item["source_group"] == "Broad"), "not run"),
+        "provider": provider_name,
+        "cache_age_ttl_minutes": cache_stats.get("ttl_minutes", "unavailable"),
+        "cache_hits": cache_stats.get("hits", 0),
+        "cache_misses": cache_stats.get("misses", 0),
+        **broad_universe_status,
+    }
+    workspace = _build_workspace_payload(
+        merged_decisions,
+        coverage_status=coverage_status,
+        data_issues=data_issues,
+        top_n=top_n,
+    )
     payload = {
         "available": True,
         "generated_at": datetime.utcnow().isoformat() + "Z",
@@ -206,34 +247,14 @@ def run_daily_decision(
         "broad_scan_top_table": _compact_signal_table(merged_decisions, source_group="Broad", limit=top_n),
         "signal_table": _compact_signal_table(merged_decisions, source_group=None, limit=max(top_n, 25)),
         "no_clean_candidate_reason": picker_view["no_clean_candidate_reason"],
-        "data_coverage_status": {
-            "universe_scanned": [item["source_group"] for item in scans],
-            "scan_groups": [
-                {
-                    "source_group": item["source_group"],
-                    "lane": item["lane"],
-                    "universe": item["universe"],
-                    "result_count": len(item["scan"].results),
-                }
-                for item in scans
-            ],
-            "tickers_attempted": coverage_attempted,
-            "tickers_successfully_scanned": coverage_success,
-            "tickers_failed": coverage_failed,
-            "tracked_tickers_count": len(tracked_tickers),
-            "portfolio_tickers_count": len(portfolio_tickers),
-            "last_broad_scan_time": next((item["generated_at"] for item in scan_summaries if item["source_group"] == "Broad"), "not run"),
-            "provider": provider_name,
-            "cache_age_ttl_minutes": cache_stats.get("ttl_minutes", "unavailable"),
-            "cache_hits": cache_stats.get("hits", 0),
-            "cache_misses": cache_stats.get("misses", 0),
-        },
+        "data_coverage_status": coverage_status,
         "validation_context": validation_context,
         "market_regime": _pick_market_regime(scan_summaries),
         "scans": scan_summaries,
         "demo_mode": provider_name == "sample",
         "report_snapshot": False,
         "stale_data": any(bool(decision.get("price_sanity", {}).get("is_stale")) for decision in merged_decisions),
+        "workspace": workspace,
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "decision_today.json"
@@ -280,6 +301,7 @@ def load_daily_decision(path: Path = DEFAULT_DAILY_DECISION_JSON_PATH) -> dict[s
             "demo_mode": False,
             "report_snapshot": False,
             "stale_data": False,
+            "workspace": {},
         }
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -423,23 +445,25 @@ def _run_custom_scan(
 
 
 def _best_from_source(decisions: list[dict[str, Any]], source_group: str) -> dict[str, Any] | None:
-    rows = [row for row in decisions if row.get("source_group") == source_group and row.get("price_validation_status") == "PASS"]
+    rows = [row for row in decisions if _has_source_group(row, source_group) and row.get("price_validation_status") == "PASS"]
     return rows[0] if rows else None
 
 
 def _compact_signal_table(decisions: list[dict[str, Any]], *, source_group: str | None, limit: int) -> list[dict[str, Any]]:
-    rows = [row for row in decisions if source_group is None or row.get("source_group") == source_group]
+    rows = [row for row in decisions if source_group is None or _has_source_group(row, source_group)]
     table = []
     for row in rows[:limit]:
         table.append(
             {
                 "ticker": row.get("ticker"),
-                "source": row.get("source_group"),
+                "source": " + ".join(row.get("source_groups") or [row.get("source_group")]),
                 "price": row.get("source_row", {}).get("current_price"),
                 "price_change_1d_pct": row.get("source_row", {}).get("price_change_1d_pct"),
+                "price_change_5d_pct": row.get("source_row", {}).get("price_change_5d_pct"),
                 "relative_volume_20d": row.get("source_row", {}).get("relative_volume_20d"),
                 "ema_stack": row.get("source_row", {}).get("ema_stack"),
                 "signal": row.get("source_row", {}).get("signal_summary"),
+                "signal_explanation": row.get("source_row", {}).get("signal_explanation"),
                 "actionability": row.get("actionability_label"),
                 "risk": row.get("risk_level"),
                 "entry_or_trigger": row.get("action_trigger") if row.get("trigger_needed") else row.get("entry_zone"),
@@ -449,6 +473,65 @@ def _compact_signal_table(decisions: list[dict[str, Any]], *, source_group: str 
             }
         )
     return table
+
+
+def _build_workspace_payload(
+    decisions: list[dict[str, Any]],
+    *,
+    coverage_status: dict[str, Any],
+    data_issues: list[dict[str, Any]],
+    top_n: int,
+) -> dict[str, Any]:
+    picker_view = _build_picker_view(decisions, data_issues=data_issues)
+    top_candidates = [row for row in decisions if row.get("actionability_label") in {"Actionable Today", "Research First"}][:4]
+    tracked_rows = [row for row in decisions if _has_source_group(row, "Tracked")]
+    broad_rows = [row for row in decisions if _has_source_group(row, "Broad")]
+    watch_rows = [row for row in decisions if row.get("actionability_label") in {"Wait for Better Entry", "Watch for Trigger"}][:5]
+    avoid_rows = [row for row in decisions if row.get("actionability_label") == "Avoid / Do Not Chase"][:5]
+    selected_ticker = (
+        (picker_view.get("top_candidate") or {}).get("ticker")
+        or (_best_from_source(decisions, "Tracked") or {}).get("ticker")
+        or (_best_from_source(decisions, "Broad") or {}).get("ticker")
+        or (decisions[0] or {}).get("ticker")
+        or ""
+    )
+    decision_by_ticker = {str(row.get("ticker")): row for row in decisions if row.get("ticker")}
+    selected_decision = decision_by_ticker.get(str(selected_ticker))
+    consistency_status = "PASS" if selected_decision else "FAIL"
+    consistency_reason = (
+        "Selected ticker is canonical and drives the workspace panels."
+        if selected_decision
+        else "Selected ticker was not found in canonical rows."
+    )
+    if selected_decision and selected_decision.get("price_validation_status") == "PASS":
+        consistency_reason = "Selected ticker uses the canonical validated row across the chart, decision panel, and screener."
+    return {
+        "selected_ticker": selected_ticker,
+        "canonical_rows": decisions,
+        "top_candidates": top_candidates,
+        "tracked_rows": tracked_rows[:10],
+        "broad_rows": broad_rows[:top_n],
+        "watch_rows": watch_rows,
+        "avoid_rows": avoid_rows,
+        "signal_table_rows": _compact_signal_table(decisions, source_group=None, limit=max(25, top_n)),
+        "decision_by_ticker": decision_by_ticker,
+        "chart_data_by_ticker": {},
+        "coverage_status": coverage_status,
+        "data_issues": data_issues,
+        "source_aware_top": {
+            "overall_top_setup": picker_view.get("top_candidate"),
+            "best_tracked_setup": _best_from_source(decisions, "Tracked"),
+            "best_broad_setup": _best_from_source(decisions, "Broad"),
+        },
+        "selected_ticker_consistency_status": consistency_status,
+        "selected_ticker_consistency_reason": consistency_reason,
+    }
+
+
+def _has_source_group(row: dict[str, Any], source_group: str) -> bool:
+    if row.get("source_group") == source_group:
+        return True
+    return source_group in list(row.get("source_groups") or [])
 
 
 def _build_daily_decision_markdown(payload: dict[str, Any]) -> str:

@@ -76,7 +76,8 @@ def build_unified_decision(
     invalidation = base_invalidation if levels_visible else "unavailable"
     next_review_date = _next_review_date(primary_action, price_sanity)
     reason = _reason(row, portfolio_decision, primary_action, validation_context, actionability)
-    why_not = _why_not(row, portfolio_decision, price_sanity, actionability)
+    decision_notices = _decision_notices(row, portfolio_decision, price_sanity, actionability)
+    why_not = _why_not(decision_notices, actionability=actionability, price_sanity=price_sanity)
 
     return {
         "ticker": ticker,
@@ -122,6 +123,7 @@ def build_unified_decision(
         "levels_explanation": actionability["levels_explanation"],
         "evidence_pill": evidence_pill(validation_context),
         "price_sanity": price_sanity,
+        "decision_notices": decision_notices,
         "next_review_date": next_review_date,
         "source_group": row.get("scan_source_group") or action_lane,
         "portfolio_context": portfolio_decision,
@@ -275,38 +277,76 @@ def _reason(
     return str(actionability.get("action_trigger") or row.get("trigger_reason") or row.get("outlier_reason") or "Wait for clearer confirmation.")
 
 
-def _why_not(
+def _decision_notices(
     row: dict[str, Any],
     portfolio_decision: dict[str, Any] | None,
     price_sanity: dict[str, Any],
     actionability: dict[str, Any],
-) -> str:
-    warnings = list(row.get("warnings") or []) + list(row.get("why_it_could_fail") or [])
+) -> list[dict[str, str]]:
+    raw_messages = list(row.get("warnings") or []) + list(row.get("why_it_could_fail") or [])
     if portfolio_decision:
-        warnings.extend(
+        raw_messages.extend(
             str(portfolio_decision.get(key))
             for key in ("concentration_warning", "valuation_or_overextension_warning", "broken_trend_warning")
             if portfolio_decision.get(key)
         )
-    warnings.extend(
+    raw_messages.extend(
         warning
         for warning in (price_sanity.get("price_warnings") or [])
-        if "Sample data" not in str(warning)
+        if "sample data" not in str(warning).lower()
     )
     validation_reason = str(price_sanity.get("price_validation_reason") or "")
     if validation_reason and validation_reason != "Validated live price." and actionability.get("actionability_label") == "Data Insufficient":
-        warnings.append(validation_reason)
-    warnings.extend(actionability.get("actionability_blockers") or [])
-    warnings = [
-        warning
-        for warning in warnings
-        if warning
-        and "No " not in str(warning)
-        and "strategy beat" not in str(warning).lower()
-    ]
-    if not warnings:
+        raw_messages.append(validation_reason)
+    raw_messages.extend(actionability.get("actionability_blockers") or [])
+    notices: list[dict[str, str]] = []
+    mismatch_pct = _to_float(price_sanity.get("price_mismatch_pct"), default=0) or 0
+    validation_passed = price_sanity.get("price_validation_status") == "PASS"
+    for raw in raw_messages:
+        message = str(raw or "").strip()
+        if not message or "strategy beat" in message.lower():
+            continue
+        lower = message.lower()
+        severity = "warning"
+        if any(token in lower for token in ("validated live price", "no major")):
+            severity = "debug"
+        elif "adjusted price series" in lower:
+            severity = "debug" if validation_passed and mismatch_pct == 0 else "info"
+        elif "catalyst unavailable" in lower or "catalyst not confirmed" in lower:
+            severity = "info"
+            message = "No fresh catalyst loaded."
+        elif "alt-data unavailable" in lower or "alternative data unavailable" in lower:
+            severity = "info"
+        elif "latest market price is stale" in lower or "no validated live price" in lower:
+            severity = "critical"
+        elif any(token in lower for token in ("extended", "chase", "broken", "failed breakout", "below a declining 200-day")):
+            severity = "warning"
+        elif "no clean signal" in lower:
+            severity = "debug"
+        notices.append({"severity": severity, "message": message})
+    deduped: list[dict[str, str]] = []
+    for notice in notices:
+        if not any(existing["message"] == notice["message"] and existing["severity"] == notice["severity"] for existing in deduped):
+            deduped.append(notice)
+    return deduped
+
+
+def _why_not(
+    notices: list[dict[str, str]],
+    *,
+    actionability: dict[str, Any],
+    price_sanity: dict[str, Any],
+) -> str:
+    visible = [notice["message"] for notice in notices if notice.get("severity") in {"critical", "warning", "info"}]
+    if (
+        price_sanity.get("price_validation_status") == "PASS"
+        and visible
+        and all(message == "No fresh catalyst loaded." for message in visible)
+    ):
+        return "No fresh catalyst loaded; setup depends on trend holding above invalidation."
+    if not visible:
         return "No major counter-thesis beyond routine review discipline."
-    return " | ".join(dict.fromkeys(str(warning) for warning in warnings[:2]))
+    return " | ".join(visible[:2])
 
 
 def _next_review_date(primary_action: str, price_sanity: dict[str, Any]) -> str:

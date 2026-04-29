@@ -66,6 +66,10 @@ vi.stubGlobal(
             holding_horizon: '12+ months',
             reason: 'Quality long-term candidate.',
             why_not: 'Valuation can reset.',
+            decision_notices: [
+              { severity: 'debug', message: 'Adjusted price series may include split-adjusted closes.' },
+              { severity: 'info', message: 'No fresh catalyst loaded.' },
+            ],
             next_review_date: '2026-04-30',
             price_source: 'live quote',
             latest_market_date: '2026-04-24',
@@ -182,6 +186,7 @@ vi.stubGlobal(
             relative_volume_20d: 1.8,
             ema_stack: 'Bullish Stack',
             signal: 'Breakout with Volume',
+            signal_explanation: 'Breakout with Volume: price cleared recent highs with relative volume around 1.80.',
             actionability: 'Actionable Today',
             risk: 'Low',
             entry_or_trigger: '95 - 100',
@@ -191,6 +196,9 @@ vi.stubGlobal(
           },
         ],
         data_coverage_status: {
+          universe_label: 'Large Cap Starter',
+          universe_row_count: 120,
+          coverage_percent: 24,
           tickers_attempted: 2,
           tickers_successfully_scanned: 1,
           tickers_failed: 1,
@@ -220,6 +228,168 @@ vi.stubGlobal(
           },
         ],
         no_clean_candidate_reason: '',
+        workspace: {
+          selected_ticker: 'NVDA',
+          canonical_rows: [
+            {
+              ticker: 'NVDA',
+              company: 'NVIDIA',
+              primary_action: 'Research / Buy Candidate',
+              action_lane: 'Outlier',
+              source_group: 'Tracked',
+              source_groups: ['Tracked', 'Broad'],
+              actionability_score: 84,
+              actionability_label: 'Actionable Today',
+              reason: 'Quality long-term candidate.',
+              why_not: 'Valuation can reset.',
+              decision_notices: [
+                { severity: 'debug', message: 'Adjusted price series may include split-adjusted closes.' },
+                { severity: 'info', message: 'No fresh catalyst loaded.' },
+              ],
+              entry_zone: '95 - 100',
+              stop_loss: 90,
+              tp1: 110,
+              source_row: {
+                ticker: 'NVDA',
+                current_price: 100,
+                price_change_1d_pct: 2.4,
+                relative_volume_20d: 1.8,
+                ema_stack: 'Bullish Stack',
+                signal_summary: 'Breakout with Volume',
+                signal_explanation: 'Breakout with Volume: price cleared recent highs with relative volume around 1.80.',
+              },
+            },
+          ],
+          top_candidates: [
+            {
+              ticker: 'NVDA',
+              company: 'NVIDIA',
+              primary_action: 'Research / Buy Candidate',
+              action_lane: 'Outlier',
+              source_group: 'Tracked',
+              source_groups: ['Tracked', 'Broad'],
+              actionability_score: 84,
+              actionability_label: 'Actionable Today',
+              reason: 'Quality long-term candidate.',
+              why_not: 'Valuation can reset.',
+              decision_notices: [
+                { severity: 'debug', message: 'Adjusted price series may include split-adjusted closes.' },
+                { severity: 'info', message: 'No fresh catalyst loaded.' },
+              ],
+              entry_zone: '95 - 100',
+              stop_loss: 90,
+              tp1: 110,
+              source_row: {
+                ticker: 'NVDA',
+                current_price: 100,
+                price_change_1d_pct: 2.4,
+                relative_volume_20d: 1.8,
+                ema_stack: 'Bullish Stack',
+                signal_summary: 'Breakout with Volume',
+                signal_explanation: 'Breakout with Volume: price cleared recent highs with relative volume around 1.80.',
+              },
+            },
+          ],
+          tracked_rows: [
+            {
+              ticker: 'NVDA',
+              company: 'NVIDIA',
+              primary_action: 'Research / Buy Candidate',
+              action_lane: 'Outlier',
+              source_group: 'Tracked',
+              source_groups: ['Tracked', 'Broad'],
+              actionability_score: 84,
+              actionability_label: 'Actionable Today',
+              reason: 'Quality long-term candidate.',
+              why_not: 'Valuation can reset.',
+              decision_notices: [
+                { severity: 'debug', message: 'Adjusted price series may include split-adjusted closes.' },
+                { severity: 'info', message: 'No fresh catalyst loaded.' },
+              ],
+              entry_zone: '95 - 100',
+              stop_loss: 90,
+              tp1: 110,
+              source_row: {
+                ticker: 'NVDA',
+                current_price: 100,
+                price_change_1d_pct: 2.4,
+                relative_volume_20d: 1.8,
+                ema_stack: 'Bullish Stack',
+                signal_summary: 'Breakout with Volume',
+                signal_explanation: 'Breakout with Volume: price cleared recent highs with relative volume around 1.80.',
+              },
+            },
+          ],
+          broad_rows: [],
+          watch_rows: [],
+          avoid_rows: [],
+          signal_table_rows: [
+            {
+              ticker: 'NVDA',
+              source: 'Tracked + Broad',
+              price: 100,
+              price_change_1d_pct: 2.4,
+              relative_volume_20d: 1.8,
+              ema_stack: 'Bullish Stack',
+              signal: 'Breakout with Volume',
+              signal_explanation: 'Breakout with Volume: price cleared recent highs with relative volume around 1.80.',
+              actionability: 'Actionable Today',
+              risk: 'Low',
+              entry_or_trigger: '95 - 100',
+              stop: 90,
+              tp1: 110,
+              updated: '2026-04-24',
+            },
+          ],
+          decision_by_ticker: {
+            NVDA: {
+              ticker: 'NVDA',
+              company: 'NVIDIA',
+              primary_action: 'Research / Buy Candidate',
+              action_lane: 'Outlier',
+              source_group: 'Tracked',
+              source_groups: ['Tracked', 'Broad'],
+              actionability_score: 84,
+              actionability_label: 'Actionable Today',
+              reason: 'Quality long-term candidate.',
+              why_not: 'Valuation can reset.',
+              entry_zone: '95 - 100',
+              stop_loss: 90,
+              tp1: 110,
+              source_row: {
+                ticker: 'NVDA',
+                current_price: 100,
+                price_change_1d_pct: 2.4,
+                relative_volume_20d: 1.8,
+                ema_stack: 'Bullish Stack',
+                signal_summary: 'Breakout with Volume',
+                signal_explanation: 'Breakout with Volume: price cleared recent highs with relative volume around 1.80.',
+              },
+            },
+          },
+          chart_data_by_ticker: {},
+          coverage_status: {
+            universe_label: 'Large Cap Starter',
+            tickers_attempted: 2,
+            tickers_successfully_scanned: 1,
+            tickers_failed: 1,
+            tracked_tickers_count: 2,
+            portfolio_tickers_count: 0,
+            provider: 'real',
+            cache_age_ttl_minutes: 60,
+            cache_hits: 1,
+            cache_misses: 1,
+            scan_groups: [{ source_group: 'Tracked', universe: 'config/tracked_tickers.txt', result_count: 2 }],
+          },
+          data_issues: [],
+          source_aware_top: {
+            overall_top_setup: { ticker: 'NVDA', source_groups: ['Tracked', 'Broad'], actionability_label: 'Actionable Today', actionability_score: 84 },
+            best_tracked_setup: { ticker: 'NVDA', actionability_label: 'Actionable Today', actionability_score: 84 },
+            best_broad_setup: null,
+          },
+          selected_ticker_consistency_status: 'PASS',
+          selected_ticker_consistency_reason: 'Selected ticker uses the canonical validated row across the chart, summary panel, and signal table.',
+        },
       },
       '/api/reports/latest': { available: false, results: [], market_regime: {}, summary: {}, decisions: [], validation_context: { messages: ['Not enough evidence yet.'] } },
       '/api/tracked': {
@@ -240,7 +410,7 @@ vi.stubGlobal(
           { date: '2026-04-24', close: 100, volume: 1500, ema_21: 98, ema_50: 96, ema_150: 91, ema_200: 89 },
         ],
         markers: [{ date: '2026-04-24', label: 'Breakout', tone: 'good' }],
-        signals: { ema_stack: 'Bullish Stack', signal_summary: 'Breakout with Volume', relative_volume_20d: 1.8 },
+        signals: { ema_stack: 'Bullish Stack', signal_summary: 'Breakout with Volume', relative_volume_20d: 1.8, signal_explanation: 'Breakout with Volume: price cleared recent highs with relative volume around 1.80.' },
       },
       '/api/universes': {
         items: [
@@ -597,10 +767,12 @@ describe('App', () => {
 
   it('renders the stock picker empty state on the home screen', async () => {
     render(<App />);
-    expect(await screen.findByText('Tracked Watchlist')).toBeInTheDocument();
-    expect(screen.getByText('Market Chart')).toBeInTheDocument();
-    expect(screen.getByText('Signal Table')).toBeInTheDocument();
-    expect(screen.getByText('Coverage Status')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: /Decision Cockpit/i })).toBeInTheDocument();
+    expect(screen.getByText(/Overall Top:/i)).toBeInTheDocument();
+    expect(screen.getByText(/Tracked tickers are monitored every daily run/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Large Cap Starter/i).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText((_, element) => element?.textContent?.includes('EMA 21:') ?? false)).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Adjusted price series may include split-adjusted closes\./i)).not.toBeInTheDocument();
     expect(screen.getAllByText('NVDA').length).toBeGreaterThan(0);
     expect(screen.getAllByText('PLTR')).toHaveLength(1);
     expect(screen.queryByText('This strategy beat SPY/QQQ but did not beat random baseline.')).not.toBeInTheDocument();
@@ -620,6 +792,8 @@ describe('App', () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: /Stock Picker/i }));
     fireEvent.click(await screen.findByRole('button', { name: /Run Scan/i }));
+    expect(await screen.findByRole('columnheader', { name: /Company/i })).toBeInTheDocument();
+    fireEvent.click((await screen.findAllByText('NVDA'))[0]);
     expect(await screen.findByRole('button', { name: /^Track$/i })).toBeInTheDocument();
     expect(screen.queryByText('Start Paper Tracking')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /^Track$/i }));
@@ -636,6 +810,7 @@ describe('App', () => {
 
   it('renders Replay Lab, Velocity Scanner, and Outlier Case Study', async () => {
     render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: /Advanced/i }));
     fireEvent.click(await screen.findByRole('button', { name: /Replay Lab/i }));
     expect(await screen.findByRole('heading', { name: /Replay Lab/i })).toBeInTheDocument();
     expect(screen.getByText('OHLCV-only replay.')).toBeInTheDocument();
@@ -653,6 +828,7 @@ describe('App', () => {
 
   it('renders Core Investing, Deep Research regular view, portfolio decision, and validation workflows', async () => {
     render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: /Advanced/i }));
     fireEvent.click(await screen.findByRole('button', { name: /Core Investing/i }));
     expect(await screen.findByRole('heading', { name: /Core Investing/i })).toBeInTheDocument();
     expect(screen.getByText('Long-Term Candidates')).toBeInTheDocument();

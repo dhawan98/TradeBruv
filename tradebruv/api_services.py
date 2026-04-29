@@ -252,6 +252,39 @@ def daily_decision_latest() -> dict[str, Any]:
     payload.setdefault("report_snapshot", False)
     payload.setdefault("demo_mode", False)
     payload.setdefault("stale_data", False)
+    workspace = payload.setdefault("workspace", {})
+    selected_ticker = str(workspace.get("selected_ticker") or "")
+    preload_tickers = [
+        selected_ticker,
+        str(((workspace.get("source_aware_top") or {}).get("overall_top_setup") or {}).get("ticker") or ""),
+        str(((workspace.get("source_aware_top") or {}).get("best_tracked_setup") or {}).get("ticker") or ""),
+        str(((workspace.get("source_aware_top") or {}).get("best_broad_setup") or {}).get("ticker") or ""),
+    ]
+    chart_data_by_ticker: dict[str, Any] = {}
+    for ticker in dict.fromkeys(ticker for ticker in preload_tickers if ticker):
+        try:
+            chart_data_by_ticker[ticker] = chart_data(
+                ticker,
+                provider_name=str(payload.get("provider") or "sample"),
+            )
+        except Exception as exc:
+            chart_data_by_ticker[ticker] = {
+                "ticker": ticker,
+                "available": False,
+                "reason": str(exc),
+                "series": [],
+                "markers": [],
+                "signals": {},
+                "available_timeframes": ["3M", "6M", "1Y", "2Y"],
+            }
+    workspace["chart_data_by_ticker"] = chart_data_by_ticker
+    selected_decision = (workspace.get("decision_by_ticker") or {}).get(selected_ticker)
+    if selected_ticker and selected_decision and selected_decision.get("price_validation_status") == "PASS":
+        workspace["selected_ticker_consistency_status"] = "PASS"
+        workspace["selected_ticker_consistency_reason"] = "Selected ticker uses the canonical validated row across the chart, summary panel, and signal table."
+    elif selected_ticker:
+        workspace["selected_ticker_consistency_status"] = "FAIL"
+        workspace["selected_ticker_consistency_reason"] = "Selected ticker is missing a canonical validated row or chart payload."
     return payload
 
 
@@ -337,7 +370,7 @@ def deep_research(payload: dict[str, Any]) -> dict[str, Any]:
             "series": [],
             "markers": [],
             "signals": {},
-            "available_timeframes": ["6M", "1Y", "2Y"],
+            "available_timeframes": ["3M", "6M", "1Y", "2Y"],
         }
     return result
 
@@ -695,6 +728,7 @@ def universes() -> dict[str, Any]:
         {"label": "Active Velocity", "path": str(ACTIVE_VELOCITY_UNIVERSE), "description": "High-volume / velocity monitor names."},
         {"label": "Mega Cap", "path": "config/mega_cap_universe.txt", "description": "Large-cap leadership basket."},
         {"label": "Momentum", "path": "config/momentum_universe.txt", "description": "Momentum-leaning universe."},
+        {"label": "Large Cap Starter", "path": "config/universe_large_cap_starter.txt", "description": "Starter large-cap universe for broad scans when you want wider coverage without claiming full S&P 500 membership."},
         {"label": "Tracked Tickers", "path": str(DEFAULT_TRACKED_TICKERS_PATH), "description": "Your monitored names. Tracked symbols are always evaluated in daily runs."},
         *[
             {
@@ -716,7 +750,7 @@ def universes() -> dict[str, Any]:
 
 def _slice_chart_payload(payload: dict[str, Any], *, timeframe: str) -> dict[str, Any]:
     series = list(payload.get("series") or [])
-    limits = {"6M": 126, "1Y": 252, "2Y": 504}
+    limits = {"3M": 63, "6M": 126, "1Y": 252, "2Y": 504}
     limit = limits.get(timeframe.upper(), 252)
     if len(series) > limit:
         series = series[-limit:]

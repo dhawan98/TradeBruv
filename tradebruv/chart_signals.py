@@ -19,6 +19,7 @@ def build_signal_snapshot(security: SecurityData) -> dict[str, Any]:
     latest = bars[-1]
     previous = bars[-2] if len(bars) >= 2 else latest
     current_price = security.quote_price_if_available or security.latest_available_close or latest.close
+    price_change_5d_pct = round(((current_price / closes[-6]) - 1.0) * 100, 2) if len(closes) >= 6 and closes[-6] else None
 
     ema_21 = ema(closes, 21)
     ema_50 = ema(closes, 50)
@@ -97,6 +98,7 @@ def build_signal_snapshot(security: SecurityData) -> dict[str, Any]:
     breakout_signal = "Breakout with Volume" if breakout_with_volume else "No Clean Breakout"
     distribution_signal = "Distribution Warning" if distribution_warning or high_volume_red else "No Distribution Warning"
     volume_signal = "Volume Expansion" if volume_expansion else "Normal Volume"
+    signal_explanation = _signal_explanation(signal_summary, relative_volume_20d)
 
     return {
         "ema_21": _round_or_unavailable(ema_21),
@@ -117,6 +119,8 @@ def build_signal_snapshot(security: SecurityData) -> dict[str, Any]:
         "distribution_signal": distribution_signal,
         "signal_summary": signal_summary,
         "signal_grade": signal_grade,
+        "signal_explanation": signal_explanation,
+        "price_change_5d_pct": _round_or_unavailable(price_change_5d_pct),
         "close_below_ema_21": bool(ema_21 is not None and current_price < ema_21),
         "close_below_ema_50": bool(ema_50 is not None and current_price < ema_50),
         "close_below_ema_150": bool(ema_150 is not None and current_price < ema_150),
@@ -137,7 +141,7 @@ def build_signal_snapshot(security: SecurityData) -> dict[str, Any]:
 def build_chart_payload(
     security: SecurityData,
     *,
-    timeframes: tuple[str, ...] = ("6M", "1Y", "2Y"),
+    timeframes: tuple[str, ...] = ("3M", "6M", "1Y", "2Y"),
 ) -> dict[str, Any]:
     bars = security.bars
     closes = [bar.close for bar in bars]
@@ -271,4 +275,28 @@ def _unavailable_signal_snapshot() -> dict[str, Any]:
         "distribution_signal": "No Clean Signal",
         "signal_summary": "No Clean Signal",
         "signal_grade": "F",
+        "signal_explanation": "Signal data is unavailable until chart history loads.",
+        "price_change_5d_pct": "unavailable",
     }
+
+
+def _signal_explanation(signal_summary: str, relative_volume_20d: float | None) -> str:
+    if signal_summary == "Bullish Trend Stack":
+        return "Bullish trend stack: price is above EMA21, EMA50, EMA150, and EMA200."
+    if signal_summary == "Pullback to EMA 21":
+        return "Pullback to EMA21: price is resting near fast trend support without breaking the broader trend."
+    if signal_summary == "Pullback to EMA 50":
+        return "Pullback to EMA50: price is testing medium-term support inside a constructive trend."
+    if signal_summary == "Breakout with Volume":
+        return f"Breakout with Volume: price cleared recent highs with relative volume around {(relative_volume_20d or 0):.2f}."
+    if signal_summary == "Reclaiming EMA 21":
+        return "Reclaiming EMA21: price moved back above the fast trend line after trading below it."
+    if signal_summary == "Reclaiming EMA 50":
+        return "Reclaiming EMA50: price moved back above the medium trend line after weakness."
+    if signal_summary == "Distribution Warning":
+        return "Distribution Warning: selling pressure showed up on heavier-than-normal volume."
+    if signal_summary == "Below 200D / Avoid":
+        return "Below 200D / Avoid: price is under the long-term trend line, so risk control comes first."
+    if signal_summary in {"Extended Above EMA 21", "Extended Above EMA 50"}:
+        return "Price is stretched above trend support, so waiting is cleaner than chasing."
+    return "Price and EMA alignment do not show a clean breakout, pullback, or reclaim setup right now."

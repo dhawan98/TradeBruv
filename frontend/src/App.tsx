@@ -1,10 +1,12 @@
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, Fragment, useEffect, useState } from 'react';
 import type React from 'react';
 import {
   Activity,
   Plus,
   BookOpen,
   Brain,
+  ChevronDown,
+  ChevronRight,
   Database,
   FileText,
   FlaskConical,
@@ -45,38 +47,41 @@ import {
 import { useAsync } from './hooks';
 
 type PageKey =
-  | 'Home'
+  | 'Decision Cockpit'
   | 'Stock Picker'
+  | 'Deep Research'
+  | 'Portfolio'
+  | 'Data Sources'
+  | 'Reports'
   | 'Core Investing'
   | 'Velocity Scanner'
-  | 'Deep Research'
   | 'Replay Lab'
   | 'Outlier Case Study'
-  | 'Portfolio'
   | 'Portfolio Analyst'
   | 'AI Committee'
   | 'Validation Lab'
   | 'Alerts'
-  | 'Journal'
-  | 'Data Sources'
-  | 'Reports';
+  | 'Journal';
 
-const NAV: { key: PageKey; icon: React.ComponentType<{ size?: number }> }[] = [
-  { key: 'Home', icon: Home },
+const PRIMARY_NAV: { key: PageKey; icon: React.ComponentType<{ size?: number }> }[] = [
+  { key: 'Decision Cockpit', icon: Home },
   { key: 'Stock Picker', icon: Search },
+  { key: 'Deep Research', icon: BookOpen },
+  { key: 'Portfolio', icon: Wallet },
+  { key: 'Data Sources', icon: Database },
+  { key: 'Reports', icon: Layers },
+];
+
+const ADVANCED_NAV: { key: PageKey; icon: React.ComponentType<{ size?: number }> }[] = [
   { key: 'Core Investing', icon: LineChart },
   { key: 'Velocity Scanner', icon: Activity },
-  { key: 'Deep Research', icon: BookOpen },
   { key: 'Replay Lab', icon: LineChart },
   { key: 'Outlier Case Study', icon: Sparkles },
-  { key: 'Portfolio', icon: Wallet },
   { key: 'Portfolio Analyst', icon: LineChart },
   { key: 'AI Committee', icon: Brain },
   { key: 'Validation Lab', icon: FlaskConical },
   { key: 'Alerts', icon: ShieldAlert },
   { key: 'Journal', icon: FileText },
-  { key: 'Data Sources', icon: Database },
-  { key: 'Reports', icon: Layers },
 ];
 
 const GROUPS: Record<string, string[]> = {
@@ -114,7 +119,8 @@ type ScanState = {
 };
 
 export function App() {
-  const [page, setPage] = useState<PageKey>('Home');
+  const [page, setPage] = useState<PageKey>('Decision Cockpit');
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const health = useAsync(api.health, []);
   const portfolio = useAsync(api.portfolio, []);
   const latest = useAsync(api.dailyDecisionLatest, []);
@@ -130,12 +136,22 @@ export function App() {
           </div>
         </div>
         <nav className="nav-list">
-          {NAV.map(({ key, icon: Icon }) => (
+          {PRIMARY_NAV.map(({ key, icon: Icon }) => (
             <button className={page === key ? 'nav-item active' : 'nav-item'} key={key} onClick={() => setPage(key)}>
               <Icon size={17} />
               <span>{key}</span>
             </button>
           ))}
+          <button className={advancedOpen ? 'nav-item nav-section open' : 'nav-item nav-section'} onClick={() => setAdvancedOpen((value) => !value)} type="button">
+            {advancedOpen ? <ChevronDown size={17} /> : <ChevronRight size={17} />}
+            <span>Advanced</span>
+          </button>
+          {advancedOpen ? ADVANCED_NAV.map(({ key, icon: Icon }) => (
+            <button className={page === key ? 'nav-item active nav-subitem' : 'nav-item nav-subitem'} key={key} onClick={() => setPage(key)}>
+              <Icon size={16} />
+              <span>{key}</span>
+            </button>
+          )) : null}
         </nav>
       </aside>
       <main className="main">
@@ -147,7 +163,7 @@ export function App() {
           onRetryHealth={health.retry}
         />
         <section className="workspace">
-          {page === 'Home' && <HomePage setPage={setPage} />}
+          {page === 'Decision Cockpit' && <HomePage setPage={setPage} />}
           {page === 'Stock Picker' && <StockPicker />}
           {page === 'Core Investing' && <CoreInvesting />}
           {page === 'Velocity Scanner' && <VelocityScanner />}
@@ -205,21 +221,26 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
   const latest = useAsync(api.dailyDecisionLatest, []);
   const tracked = useAsync(api.tracked, []);
   const [selectedTicker, setSelectedTicker] = useState('');
-  const [timeframe, setTimeframe] = useState<'6M' | '1Y' | '2Y'>('1Y');
+  const [timeframe, setTimeframe] = useState<'3M' | '6M' | '1Y' | '2Y'>('1Y');
   const [trackedInput, setTrackedInput] = useState('');
-  const decisions = latest.data?.decisions ?? EMPTY_DECISIONS;
-  const trackedRows = decisions.filter((row) => row.source_group === 'Tracked');
-  const broadRows = decisions.filter((row) => row.source_group === 'Broad');
-  const watchRows = latest.data?.watch_candidates ?? [];
-  const avoidRows = latest.data?.avoid_candidates ?? [];
-  const signalRows = latest.data?.signal_table ?? EMPTY_SIGNALS;
+  const workspace = latest.data?.workspace;
+  const canonicalRows = workspace?.canonical_rows ?? latest.data?.decisions ?? EMPTY_DECISIONS;
+  const trackedRows = workspace?.tracked_rows ?? [];
+  const broadRows = workspace?.broad_rows ?? [];
+  const topRows = workspace?.top_candidates ?? [];
+  const watchRows = workspace?.watch_rows ?? [];
+  const avoidRows = workspace?.avoid_rows ?? [];
+  const signalRows = workspace?.signal_table_rows ?? latest.data?.signal_table ?? EMPTY_SIGNALS;
+  const decisionByTicker = workspace?.decision_by_ticker ?? {};
   const defaultTicker =
-    latest.data?.top_candidate?.ticker
-    ?? latest.data?.best_tracked_setup?.ticker
-    ?? latest.data?.best_broad_setup?.ticker
+    workspace?.selected_ticker
+    ?? workspace?.source_aware_top?.overall_top_setup?.ticker
+    ?? workspace?.source_aware_top?.best_tracked_setup?.ticker
+    ?? workspace?.source_aware_top?.best_broad_setup?.ticker
+    ?? topRows[0]?.ticker
     ?? trackedRows[0]?.ticker
     ?? broadRows[0]?.ticker
-    ?? decisions[0]?.ticker
+    ?? canonicalRows[0]?.ticker
     ?? '';
 
   useEffect(() => {
@@ -227,12 +248,12 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
       setSelectedTicker(defaultTicker);
       return;
     }
-    if (selectedTicker && !decisions.some((row) => row.ticker === selectedTicker) && defaultTicker) {
+    if (selectedTicker && !canonicalRows.some((row) => row.ticker === selectedTicker) && defaultTicker) {
       setSelectedTicker(defaultTicker);
     }
-  }, [defaultTicker, decisions, selectedTicker]);
+  }, [defaultTicker, canonicalRows, selectedTicker]);
 
-  const selectedDecision = decisions.find((row) => row.ticker === selectedTicker) ?? latest.data?.top_candidate ?? null;
+  const selectedDecision = (selectedTicker ? decisionByTicker[selectedTicker] : null) ?? workspace?.source_aware_top?.overall_top_setup ?? latest.data?.top_candidate ?? null;
   const chart = useAsync(
     () => (
       selectedTicker
@@ -241,6 +262,7 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
     ),
     [selectedTicker, timeframe, latest.data?.provider],
   );
+  const activeChart = chart.data?.ticker ? chart.data : (workspace?.chart_data_by_ticker?.[selectedTicker] ?? chart.data);
 
   async function addTrackedTicker(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -254,23 +276,40 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
     tracked.setData(await api.trackedRemove(ticker));
   }
 
+  async function toggleTrackedTicker(ticker: string) {
+    const trackedTickers = tracked.data?.tickers ?? [];
+    tracked.setData(
+      trackedTickers.includes(ticker)
+        ? await api.trackedRemove(ticker)
+        : await api.trackedAdd(ticker),
+    );
+  }
+
   return (
-    <Page title="Home" subtitle="Chart-first market workspace with tracked names, broad-market discovery, and compact signal rows.">
+    <Page title="Decision Cockpit" subtitle="Large-chart stock picker workspace with canonical ticker rows, tracked setups, and compact signal tables.">
       {latest.error && <ApiErrorPanel error={latest.error} onRetry={latest.retry} />}
       {tracked.error && <ApiErrorPanel error={tracked.error} onRetry={tracked.retry} compact />}
       {latest.data?.demo_mode && <Notice tone="warn">DEMO MODE. Demo sample data — not real prices.</Notice>}
       {latest.data?.report_snapshot && <Notice tone="warn">Report Snapshot. Saved reports stay historical and do not populate the live TP / SL board.</Notice>}
       {latest.data?.stale_data && <Notice tone="warn">Stale Data. Rows with stale prices are excluded from actionable decisions.</Notice>}
       {latest.data?.available ? (
-        <div className="market-layout">
+        <>
+          <WorkspaceSummaryLine payload={latest.data} />
+          <div className="market-layout market-terminal">
           <section className="market-sidebar">
-            <Panel title="Tracked Watchlist">
               <TrackedWatchlistManager
                 payload={tracked.data}
                 value={trackedInput}
                 onChange={setTrackedInput}
                 onSubmit={addTrackedTicker}
                 onRemove={removeTrackedTicker}
+              />
+              <WatchlistSection
+                title="Top"
+                rows={topRows}
+                selectedTicker={selectedTicker}
+                onSelect={setSelectedTicker}
+                empty="No clean top setup is available right now."
               />
               <WatchlistSection
                 title="Tracked"
@@ -300,26 +339,22 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
                 onSelect={setSelectedTicker}
                 empty="No avoid names right now."
               />
-            </Panel>
           </section>
           <section className="market-center">
-            <Panel title="Market Chart">
               <MarketChartPanel
-                chart={chart.data}
+                chart={activeChart}
                 decision={selectedDecision}
                 timeframe={timeframe}
                 onTimeframeChange={(value) => setTimeframe(value)}
               />
-            </Panel>
-            <Panel title="Signal Table">
-              <SignalWorkspaceTable rows={signalRows} onSelect={setSelectedTicker} />
-            </Panel>
+              <SignalWorkspaceTable rows={signalRows} onSelect={setSelectedTicker} selectedTicker={selectedTicker} />
           </section>
           <section className="market-summary">
-            <Panel title="Decision Summary">
               {selectedDecision ? (
                 <SelectedDecisionPanel
                   row={selectedDecision}
+                  trackedTickers={tracked.data?.tickers ?? []}
+                  onToggleTracked={toggleTrackedTicker}
                   onDeepResearch={() => setPage('Deep Research')}
                   onAICommittee={() => setPage('AI Committee')}
                 />
@@ -328,18 +363,33 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
                   {latest.data?.no_clean_candidate_reason ?? 'No validated setup passed the actionability gate today.'}
                 </EmptyState>
               )}
-            </Panel>
-            <Panel title="Coverage Status">
               <CoverageStatusPanel payload={latest.data} />
-            </Panel>
           </section>
-        </div>
+          </div>
+        </>
       ) : (
         <EmptyState title="No live daily decision loaded" action="Open scanner" onAction={() => setPage('Stock Picker')}>
           Build a live decision snapshot with the real provider, or use Reports to inspect historical report snapshots.
         </EmptyState>
       )}
     </Page>
+  );
+}
+
+function WorkspaceSummaryLine({ payload }: { payload: DecisionSnapshotPayload | null }) {
+  const workspace = payload?.workspace;
+  const sourceAwareTop = workspace?.source_aware_top ?? {};
+  const coverage = workspace?.coverage_status ?? payload?.data_coverage_status ?? {};
+  const overall = sourceAwareTop.overall_top_setup;
+  const broad = sourceAwareTop.best_broad_setup;
+  const tracked = sourceAwareTop.best_tracked_setup;
+  return (
+    <div className="workspace-summary-line">
+      <span><strong>Overall Top:</strong> {overall?.ticker ?? 'None'} {overall ? `· ${(overall.source_groups ?? [overall.source_group]).filter(Boolean).join(' + ')} · ${overall.actionability_label} · Score ${Math.round(Number(overall.actionability_score ?? 0))}` : ''}</span>
+      <span><strong>Best Broad:</strong> {broad?.ticker ?? 'None'}{broad ? ` · ${broad.actionability_label} · Score ${Math.round(Number(broad.actionability_score ?? 0))}` : ''}</span>
+      <span><strong>Best Tracked:</strong> {tracked?.ticker ?? 'None'}{tracked ? ` · ${tracked.actionability_label} · Score ${Math.round(Number(tracked.actionability_score ?? 0))}` : ''}</span>
+      <span><strong>Coverage:</strong> {String(coverage.universe_label ?? 'Active')} · {String(coverage.tickers_successfully_scanned ?? 0)}/{String(coverage.tickers_attempted ?? 0)} scanned</span>
+    </div>
   );
 }
 
@@ -408,6 +458,7 @@ function WatchlistSection({
                 <span>{cell(row.source_row?.current_price ?? row.source_row?.validated_price ?? 'n/a')}</span>
                 <span className={pctTone(row.source_row?.price_change_1d_pct)}>{pct(row.source_row?.price_change_1d_pct)}</span>
                 <span>RV {cell(row.source_row?.relative_volume_20d ?? 'n/a')}</span>
+                <span>{row.actionability_label ?? row.primary_action}</span>
               </div>
             </button>
           ))}
@@ -427,20 +478,25 @@ function MarketChartPanel({
 }: {
   chart: ChartPayload | null;
   decision: UnifiedDecision | null;
-  timeframe: '6M' | '1Y' | '2Y';
-  onTimeframeChange: (value: '6M' | '1Y' | '2Y') => void;
+  timeframe: '3M' | '6M' | '1Y' | '2Y';
+  onTimeframeChange: (value: '3M' | '6M' | '1Y' | '2Y') => void;
 }) {
   const series = chart?.series ?? [];
   const latestPoint = series[series.length - 1];
+  const signalSummary = String(chart?.signals?.signal_summary ?? decision?.source_row?.signal_summary ?? 'No Clean Signal');
+  const signalExplanation = String(chart?.signals?.signal_explanation ?? decision?.source_row?.signal_explanation ?? 'No signal explanation loaded.');
+  const actionability = decision?.actionability_label ?? decision?.primary_action ?? chart?.price_source ?? 'No decision loaded';
+  const sourceGroups = (decision?.source_groups ?? [decision?.source_group]).filter(Boolean).join(' + ');
   return (
     <div className="market-chart-panel">
       <div className="chart-toolbar">
-        <div>
+        <div className="chart-heading">
           <strong>{chart?.ticker ?? decision?.ticker ?? 'No symbol selected'}</strong>
-          <span>{decision?.actionability_label ?? decision?.primary_action ?? chart?.price_source ?? 'No decision loaded'}</span>
+          <span>{decision?.company ?? sourceGroups ?? 'No company loaded'}</span>
+          <span>{actionability} · {signalSummary}</span>
         </div>
         <div className="tabs">
-          {(['6M', '1Y', '2Y'] as const).map((option) => (
+          {(['3M', '6M', '1Y', '2Y'] as const).map((option) => (
             <button className={timeframe === option ? 'secondary active-tab' : 'ghost'} key={option} onClick={() => onTimeframeChange(option)} type="button">
               {option}
             </button>
@@ -451,21 +507,27 @@ function MarketChartPanel({
         <EmptyState title="Chart unavailable" action="Retry">
           {chart?.reason ?? 'No chart data is available for this symbol yet.'}
         </EmptyState>
-      ) : (
+        ) : (
         <>
+          <div className="chart-header-strip">
+            <span className="chart-price">{money(Number(latestPoint?.close ?? decision?.source_row?.current_price ?? 0))}</span>
+            <span className={pctTone(decision?.source_row?.price_change_1d_pct)}>{pct(decision?.source_row?.price_change_1d_pct)}</span>
+            <span>{sourceGroups || 'Source unavailable'}</span>
+            <span>{compactDate(chart?.last_market_date)}</span>
+          </div>
           <div className="chart-dual">
             <div className="chart tall">
-              <ResponsiveContainer width="100%" height={340}>
+              <ResponsiveContainer width="100%" height={460}>
                 <ReLineChart data={series}>
                   <CartesianGrid stroke="#243244" />
                   <XAxis dataKey="date" stroke="#9fb0c4" minTickGap={28} />
                   <YAxis stroke="#9fb0c4" domain={['auto', 'auto']} />
                   <Tooltip contentStyle={{ background: '#101722', border: '1px solid #27364a', color: '#e8eef7' }} />
                   <Line type="monotone" dataKey="close" stroke="#e8eef7" dot={false} strokeWidth={2} />
-                  <Line type="monotone" dataKey="ema_21" stroke="#75d8c7" dot={false} strokeWidth={1.5} />
-                  <Line type="monotone" dataKey="ema_50" stroke="#f1bf69" dot={false} strokeWidth={1.5} />
-                  <Line type="monotone" dataKey="ema_150" stroke="#7aa2ff" dot={false} strokeWidth={1.4} />
-                  <Line type="monotone" dataKey="ema_200" stroke="#d18fff" dot={false} strokeWidth={1.4} />
+                  <Line type="monotone" dataKey="ema_21" stroke="#60d8c2" dot={false} strokeWidth={1.6} />
+                  <Line type="monotone" dataKey="ema_50" stroke="#f4c15d" dot={false} strokeWidth={1.6} />
+                  <Line type="monotone" dataKey="ema_150" stroke="#6fa2ff" dot={false} strokeWidth={1.4} />
+                  <Line type="monotone" dataKey="ema_200" stroke="#c88cff" dot={false} strokeWidth={1.4} />
                 </ReLineChart>
               </ResponsiveContainer>
             </div>
@@ -481,12 +543,20 @@ function MarketChartPanel({
               </ResponsiveContainer>
             </div>
           </div>
+          <div className="chart-legend">
+            <span><i className="legend-swatch ema21" /> EMA 21: {cell(latestPoint?.ema_21 ?? 'n/a')}</span>
+            <span><i className="legend-swatch ema50" /> EMA 50: {cell(latestPoint?.ema_50 ?? 'n/a')}</span>
+            <span><i className="legend-swatch ema150" /> EMA 150: {cell(latestPoint?.ema_150 ?? 'n/a')}</span>
+            <span><i className="legend-swatch ema200" /> EMA 200: {cell(latestPoint?.ema_200 ?? 'n/a')}</span>
+            <span><i className="legend-swatch volume" /> Volume</span>
+          </div>
           <div className="chart-meta">
-            <Chip tone="neutral">Last {cell(latestPoint?.close ?? 'n/a')}</Chip>
             <Chip tone="neutral">Stack: {String(chart?.signals?.ema_stack ?? 'n/a')}</Chip>
-            <Chip tone="neutral">Signal: {String(chart?.signals?.signal_summary ?? 'n/a')}</Chip>
+            <Chip tone="neutral">Signal: {signalSummary}</Chip>
             <Chip tone="neutral">Rel Vol: {cell(chart?.signals?.relative_volume_20d ?? 'n/a')}</Chip>
-            <Chip tone="neutral">Fresh: {compactDate(chart?.last_market_date)}</Chip>
+            <Chip tone="neutral">Price vs EMA21: {pct(chart?.signals?.price_vs_ema_21_pct)}</Chip>
+            <Chip tone="neutral">Price vs EMA50: {pct(chart?.signals?.price_vs_ema_50_pct)}</Chip>
+            <Chip tone="neutral">Price vs EMA200: {pct(chart?.signals?.price_vs_ema_200_pct)}</Chip>
           </div>
           {chart?.markers?.length ? (
             <div className="chart-markers">
@@ -497,6 +567,7 @@ function MarketChartPanel({
               ))}
             </div>
           ) : null}
+          <p className="signal-strip">{signalExplanation}</p>
         </>
       )}
     </div>
@@ -505,25 +576,28 @@ function MarketChartPanel({
 
 function SelectedDecisionPanel({
   row,
+  trackedTickers,
+  onToggleTracked,
   onDeepResearch,
   onAICommittee,
 }: {
   row: UnifiedDecision;
+  trackedTickers: string[];
+  onToggleTracked: (ticker: string) => Promise<void> | void;
   onDeepResearch: () => void;
   onAICommittee: () => void;
 }) {
+  const tracked = trackedTickers.includes(row.ticker);
+  const visibleNotices = (row.decision_notices ?? []).filter((notice) => notice.severity !== 'debug');
   return (
     <div className="selected-decision">
-      <div className="provider-title">
+      <div className="provider-title compact-title">
         <div>
-          <span className="eyebrow">Overall top setup</span>
+          <span className="eyebrow">Selected ticker</span>
           <h3>{row.ticker}</h3>
-          <p>{row.actionability_label ?? row.primary_action ?? 'Decision unavailable'}</p>
+          <p>{row.actionability_label ?? row.primary_action ?? 'Decision unavailable'} · {(row.source_groups ?? [row.source_group]).filter(Boolean).join(' + ')}</p>
         </div>
-        <div className="score-stack compact">
-          <strong>{Math.round(Number(row.actionability_score ?? row.score ?? 0))}</strong>
-          <span>Actionability</span>
-        </div>
+        <strong className="summary-score">{Math.round(Number(row.actionability_score ?? row.score ?? 0))}</strong>
       </div>
       <div className="pill-row">
         <StatusPill status={row.actionability_label ?? row.primary_action} />
@@ -540,6 +614,15 @@ function SelectedDecisionPanel({
           <p>{row.why_not ?? 'No major counter-thesis beyond routine review discipline.'}</p>
         </div>
       </div>
+      {visibleNotices.length ? (
+        <div className="notice-stack">
+          {visibleNotices.slice(0, 3).map((notice) => (
+            <div className={`notice-line ${notice.severity}`} key={`${notice.severity}-${notice.message}`}>
+              <span>{notice.message}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
       <div className="brief-grid">
         <div>
           <span className="eyebrow">{row.trigger_needed ? 'Trigger / Better Entry' : row.entry_label ?? 'Entry'}</span>
@@ -555,9 +638,12 @@ function SelectedDecisionPanel({
         <div><span>EMA Stack</span><strong>{row.source_row?.ema_stack ?? 'n/a'}</strong></div>
         <div><span>Rel Vol</span><strong>{cell(row.source_row?.relative_volume_20d ?? 'n/a')}</strong></div>
         <div><span>Freshness</span><strong>{row.data_freshness ?? compactDate(row.latest_market_date)}</strong></div>
+        <div><span>Price source</span><strong>{row.price_source ?? 'n/a'}</strong></div>
+        <div><span>Updated</span><strong>{compactDate(row.latest_market_date)}</strong></div>
       </div>
       <div className="action-strip">
         <button className="secondary" onClick={onDeepResearch} type="button">Deep Research</button>
+        <button className="ghost" onClick={() => onToggleTracked(row.ticker)} type="button">{tracked ? 'Untrack' : 'Track'}</button>
         {row.source_row ? <TrackPredictionButton scannerRow={row.source_row} /> : null}
         <button className="ghost" onClick={onAICommittee} type="button">Run AI Committee</button>
       </div>
@@ -566,17 +652,18 @@ function SelectedDecisionPanel({
 }
 
 function CoverageStatusPanel({ payload }: { payload: DecisionSnapshotPayload | null }) {
-  const status = payload?.data_coverage_status ?? {};
+  const status = payload?.workspace?.coverage_status ?? payload?.data_coverage_status ?? {};
   const groups = (status.scan_groups as Record<string, unknown>[] | undefined) ?? [];
   return (
     <div className="coverage-status">
-      <div className="metric-grid compact">
-        <Metric label="Attempted" value={String(status.tickers_attempted ?? 0)} sub="Total symbols evaluated" />
-        <Metric label="Scanned" value={String(status.tickers_successfully_scanned ?? 0)} sub="Successful market-data loads" />
-        <Metric label="Failed" value={String(status.tickers_failed ?? 0)} sub="Failed or gated rows" />
-      </div>
+      <p className="coverage-headline">
+        {String(status.universe_label ?? 'Active Universe')} · {String(status.tickers_successfully_scanned ?? 0)}/{String(status.tickers_attempted ?? 0)} scanned
+      </p>
+      {status.universe_warning ? <p className="muted">{String(status.universe_warning)}</p> : null}
       <div className="kv compact-kv">
         <div><span>Provider</span><strong>{String(status.provider ?? payload?.provider ?? 'unavailable')}</strong></div>
+        <div><span>Universe rows</span><strong>{String(status.universe_row_count ?? 0)}</strong></div>
+        <div><span>Coverage</span><strong>{String(status.coverage_percent ?? 'n/a')}%</strong></div>
         <div><span>Tracked count</span><strong>{String(status.tracked_tickers_count ?? 0)}</strong></div>
         <div><span>Portfolio count</span><strong>{String(status.portfolio_tickers_count ?? 0)}</strong></div>
         <div><span>Cache TTL</span><strong>{String(status.cache_age_ttl_minutes ?? 'n/a')} min</strong></div>
@@ -596,11 +683,11 @@ function CoverageStatusPanel({ payload }: { payload: DecisionSnapshotPayload | n
   );
 }
 
-function SignalWorkspaceTable({ rows, onSelect }: { rows: SignalTableRow[]; onSelect: (ticker: string) => void }) {
+function SignalWorkspaceTable({ rows, onSelect, selectedTicker }: { rows: SignalTableRow[]; onSelect: (ticker: string) => void; selectedTicker: string }) {
   const [sortBy, setSortBy] = useState<'actionability' | 'relative_volume_20d' | 'price_change_1d_pct'>('actionability');
   const sorted = [...rows].sort((left, right) => {
     if (sortBy === 'actionability') {
-      return Number(right.actionability ?? 0) - Number(left.actionability ?? 0);
+      return Number(labelWeight(right.actionability)) - Number(labelWeight(left.actionability));
     }
     return Number(right[sortBy] ?? 0) - Number(left[sortBy] ?? 0);
   });
@@ -632,14 +719,17 @@ function SignalWorkspaceTable({ rows, onSelect }: { rows: SignalTableRow[]; onSe
         </thead>
         <tbody>
           {sorted.map((row, index) => (
-            <tr key={`${row.ticker}-${index}`} onClick={() => row.ticker && onSelect(row.ticker)}>
+            <tr className={selectedTicker === row.ticker ? 'selected' : ''} key={`${row.ticker}-${index}`} onClick={() => row.ticker && onSelect(row.ticker)}>
               <td><strong>{row.ticker}</strong></td>
               <td>{cell(row.source)}</td>
               <td>{cell(row.price)}</td>
               <td className={pctTone(row.price_change_1d_pct)}>{pct(row.price_change_1d_pct)}</td>
               <td>{cell(row.relative_volume_20d)}</td>
               <td>{cell(row.ema_stack)}</td>
-              <td>{cell(row.signal)}</td>
+              <td>
+                <strong>{cell(row.signal)}</strong>
+                <div className="table-subtext">{cell(row.signal_explanation)}</div>
+              </td>
               <td>{cell(row.actionability)}</td>
               <td>{cell(row.risk)}</td>
               <td>{cell(row.entry_or_trigger)}</td>
@@ -661,7 +751,7 @@ function emptyChartPayload(): ChartPayload {
     series: [],
     markers: [],
     signals: {},
-    available_timeframes: ['6M', '1Y', '2Y'],
+    available_timeframes: ['3M', '6M', '1Y', '2Y'],
   };
 }
 
@@ -695,7 +785,7 @@ function StockPicker() {
   const rows = filterDecisionRows(scan?.decisions ?? [], tab);
 
   return (
-    <Page title="Stock Picker" subtitle="Run one scan, then sort names into best ideas, research, watch, and avoid with minimal cards.">
+    <Page title="Stock Picker" subtitle="Run a deterministic scan, then review the results in a dense screener instead of a card wall.">
       {universes.error && <ApiErrorPanel error={universes.error} onRetry={universes.retry} compact />}
       <form className="toolbar" onSubmit={submit}>
         <Select name="provider" label="Provider" options={['real', 'local', 'sample']} />
@@ -721,22 +811,19 @@ function StockPicker() {
       {loading ? (
         <SkeletonGrid />
       ) : scan?.decisions?.length ? (
-        <div className="grid">
-          <Panel title={tab}>
-            <DecisionList rows={rows.slice(0, 12)} empty="No names match this tab right now." />
-          </Panel>
-          <Panel title="Lane Summary">
-            <DecisionSummary rows={rows} />
-          </Panel>
-          <Panel title="Validated TP / SL Table">
-            <DecisionBoard rows={rows} />
-          </Panel>
-          <Panel title="Data Issues">
-            <DecisionList rows={(scan.data_issues ?? []).slice(0, 5)} empty="No price-validation issues in this scan." />
-          </Panel>
-          <Panel title="Raw Scanner Table">
-            <ScannerTable rows={filterScannerRows(scan.results ?? [], tab === 'All' ? 'All Decisions' : tab === 'Best Ideas' || tab === 'Research' ? 'Buy / Research' : tab)} />
-          </Panel>
+        <div className="screener-layout">
+          <StockPickerScreenerTable rows={rows} />
+          <details className="diagnostics">
+            <summary>Diagnostics / Raw Data</summary>
+            <div className="grid">
+              <Panel title="Data Issues">
+                <DecisionList rows={(scan.data_issues ?? []).slice(0, 8)} empty="No price-validation issues in this scan." />
+              </Panel>
+              <Panel title="Raw Scanner Table">
+                <ScannerTable rows={filterScannerRows(scan.results ?? [], tab === 'All' ? 'All Decisions' : tab === 'Best Ideas' || tab === 'Research' ? 'Buy / Research' : tab)} />
+              </Panel>
+            </div>
+          </details>
         </div>
       ) : (
         <EmptyState title="Ready for a deterministic scan" action="Run real outlier scan">
@@ -744,6 +831,73 @@ function StockPicker() {
         </EmptyState>
       )}
     </Page>
+  );
+}
+
+function StockPickerScreenerTable({ rows }: { rows: UnifiedDecision[] }) {
+  const [expandedTicker, setExpandedTicker] = useState('');
+  if (!rows.length) return <p className="muted">No names match this tab right now.</p>;
+  return (
+    <div className="table-wrap">
+      <table className="signal-table screener-table">
+        <thead>
+          <tr>
+            <th>Ticker</th>
+            <th>Company</th>
+            <th>Status</th>
+            <th>Actionability</th>
+            <th>Score</th>
+            <th>Price</th>
+            <th>% Change</th>
+            <th>Rel Vol</th>
+            <th>EMA Stack</th>
+            <th>Signal</th>
+            <th>Entry / Trigger</th>
+            <th>Stop</th>
+            <th>TP1</th>
+            <th>Risk</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <Fragment key={row.ticker}>
+              <tr key={row.ticker} onClick={() => setExpandedTicker((value) => value === row.ticker ? '' : row.ticker)}>
+                <td><strong>{row.ticker}</strong></td>
+                <td>{cell(row.company)}</td>
+                <td>{cell(row.primary_action)}</td>
+                <td>{cell(row.actionability_label)}</td>
+                <td>{Math.round(Number(row.actionability_score ?? row.score ?? 0))}</td>
+                <td>{cell(row.source_row?.current_price ?? 'n/a')}</td>
+                <td className={pctTone(row.source_row?.price_change_1d_pct)}>{pct(row.source_row?.price_change_1d_pct)}</td>
+                <td>{cell(row.source_row?.relative_volume_20d ?? 'n/a')}</td>
+                <td>{cell(row.source_row?.ema_stack ?? 'n/a')}</td>
+                <td>{cell(row.source_row?.signal_summary ?? 'n/a')}</td>
+                <td>{cell(row.trigger_needed ? row.action_trigger : row.entry_zone)}</td>
+                <td>{cell(row.stop_loss ?? row.invalidation)}</td>
+                <td>{cell(row.tp1)}</td>
+                <td>{cell(row.risk_level)}</td>
+                <td>{cell(row.reason)}</td>
+              </tr>
+              {expandedTicker === row.ticker ? (
+                <tr className="expanded-row" key={`${row.ticker}-details`}>
+                  <td colSpan={15}>
+                    <div className="expanded-copy">
+                      <strong>Why not:</strong> {row.why_not ?? 'No major counter-thesis beyond routine review discipline.'}
+                      <br />
+                      <strong>Signal:</strong> {row.source_row?.signal_explanation ?? 'No signal explanation loaded.'}
+                      <div className="action-strip">
+                        {row.source_row ? <TrackPredictionButton scannerRow={row.source_row} /> : null}
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              ) : null}
+            </Fragment>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -1726,23 +1880,6 @@ function filterScannerRows(rows: ScannerRow[], tab: 'All Decisions' | 'Buy / Res
   return rows;
 }
 
-function DecisionSummary({ rows }: { rows: UnifiedDecision[] }) {
-  const row = rows[0];
-  if (!row) return <p className="muted">No decision matched this lane yet.</p>;
-  return (
-    <div className="brief-grid">
-      <div>
-        <span className="eyebrow">What stands out</span>
-        <p>{row.actionability_reason ?? row.reason ?? 'No decision reason returned yet.'}</p>
-      </div>
-      <div>
-        <span className="eyebrow">What still blocks it</span>
-        <p>{row.why_not ?? row.action_trigger ?? 'No counter-thesis returned yet.'}</p>
-      </div>
-    </div>
-  );
-}
-
 function VelocityCard({ row }: { row: ScannerRow }) {
   return (
     <article className="candidate-card velocity-card">
@@ -1807,29 +1944,6 @@ function DecisionList({ rows, empty }: { rows: UnifiedDecision[]; empty: string 
         </article>
       ))}
     </div>
-  );
-}
-
-function DecisionBoard({ rows }: { rows: UnifiedDecision[] }) {
-  const actionable = rows.filter((row) => row.level_status && row.level_status !== 'Hidden');
-  if (!actionable.length) return <p className="muted">No validated TP / SL rows yet.</p>;
-  return (
-    <DataTable
-      rows={actionable.map((row) => ({
-        ticker: row.ticker,
-        actionability: row.actionability_label,
-        level_status: row.level_status,
-        entry_label: row.entry_label,
-        entry_or_trigger: row.trigger_needed ? row.action_trigger : row.entry_zone,
-        stop_or_invalidation: row.stop_loss ?? row.invalidation,
-        TP1: row.level_status === 'Actionable' ? row.tp1 : row.level_status === 'Conditional' ? `Conditional ${row.tp1 ?? 'n/a'}` : row.tp1,
-        TP2: row.level_status === 'Actionable' ? row.tp2 : row.level_status === 'Conditional' ? `Conditional ${row.tp2 ?? 'n/a'}` : row.tp2,
-        reward_risk: row.reward_risk,
-        trigger_needed: row.trigger_needed ? 'Yes' : 'No',
-        latest_market_date: row.latest_market_date,
-      }))}
-      columns={['ticker', 'actionability', 'level_status', 'entry_label', 'entry_or_trigger', 'stop_or_invalidation', 'TP1', 'TP2', 'reward_risk', 'trigger_needed', 'latest_market_date']}
-    />
   );
 }
 
@@ -2065,7 +2179,7 @@ function ResearchView({ payload }: { payload: ResearchPayload }) {
         <MarketChartPanel
           chart={payload.chart ?? emptyChartPayload()}
           decision={unifiedDecision ?? fallbackDecision}
-          timeframe={(payload.chart?.selected_timeframe as '6M' | '1Y' | '2Y' | undefined) ?? '1Y'}
+          timeframe={(payload.chart?.selected_timeframe as '3M' | '6M' | '1Y' | '2Y' | undefined) ?? '1Y'}
           onTimeframeChange={() => undefined}
         />
       </Panel>
@@ -2390,6 +2504,17 @@ function pctTone(value: unknown) {
   const numeric = Number(value);
   if (Number.isNaN(numeric)) return '';
   return numeric > 0 ? 'positive' : numeric < 0 ? 'negative' : '';
+}
+
+function labelWeight(value: unknown) {
+  return {
+    'Actionable Today': 5,
+    'Research First': 4,
+    'Wait for Better Entry': 3,
+    'Watch for Trigger': 2,
+    'Avoid / Do Not Chase': 1,
+    'Data Insufficient': 0,
+  }[String(value ?? '')] ?? 0;
 }
 
 function labelize(value: string) {
