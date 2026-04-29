@@ -165,6 +165,13 @@ export const api = {
   updateLocalEnv: (values: Record<string, string>) =>
     request<EnvUpdatePayload>('/api/env/update-local', { method: 'POST', body: JSON.stringify({ values }) }),
   dailyDecisionLatest: () => request<DecisionSnapshotPayload>('/api/daily-decision/latest'),
+  chart: (ticker: string, provider = 'sample', timeframe = '1Y') =>
+    request<ChartPayload>(`/api/chart/${encodeURIComponent(ticker)}?provider=${encodeURIComponent(provider)}&timeframe=${encodeURIComponent(timeframe)}`),
+  tracked: () => request<TrackedPayload>('/api/tracked'),
+  trackedAdd: (ticker: string) =>
+    request<TrackedPayload>('/api/tracked/add', { method: 'POST', body: JSON.stringify({ ticker }) }),
+  trackedRemove: (ticker: string) =>
+    request<TrackedPayload>('/api/tracked/remove', { method: 'POST', body: JSON.stringify({ ticker }) }),
   latestReport: () => request<LatestReport>('/api/reports/latest'),
   reportsArchive: () => request<{ reports: ArchiveReport[] }>('/api/reports/archive'),
   dailySummary: () => request<Record<string, unknown>>('/api/daily-summary'),
@@ -254,6 +261,7 @@ export type UnifiedDecision = {
   company?: string;
   primary_action?: string;
   action_lane?: string;
+  source_group?: string;
   score?: number;
   actionability_score?: number;
   actionability_label?: string;
@@ -351,6 +359,21 @@ export type ScannerRow = PriceSanity & {
   ticker: string;
   company_name?: string;
   current_price?: number;
+  price_change_1d_pct?: number | string;
+  ema_21?: number | string;
+  ema_50?: number | string;
+  ema_150?: number | string;
+  ema_200?: number | string;
+  ema_stack?: string;
+  relative_volume_20d?: number | string;
+  relative_volume_50d?: number | string;
+  volume_signal?: string;
+  trend_signal?: string;
+  pullback_signal?: string;
+  breakout_signal?: string;
+  distribution_signal?: string;
+  signal_summary?: string;
+  signal_grade?: string;
   winner_score?: number;
   outlier_score?: number;
   risk_score?: number;
@@ -435,12 +458,19 @@ export type DecisionSnapshotPayload = ScanPayload & {
   markdown_path?: string;
   quality_review_path?: string;
   top_candidate?: UnifiedDecision | null;
+  overall_top_candidate?: UnifiedDecision | null;
+  best_tracked_setup?: UnifiedDecision | null;
+  best_broad_setup?: UnifiedDecision | null;
   research_candidates?: UnifiedDecision[];
   watch_candidates?: UnifiedDecision[];
   avoid_candidates?: UnifiedDecision[];
   portfolio_actions?: UnifiedDecision[];
   compact_board?: UnifiedDecision[];
+  tracked_watchlist_table?: SignalTableRow[];
+  broad_scan_top_table?: SignalTableRow[];
+  signal_table?: SignalTableRow[];
   no_clean_candidate_reason?: string;
+  data_coverage_status?: Record<string, unknown>;
 };
 export type ResearchPayload = Record<string, unknown> & {
   scanner_row?: ScannerRow;
@@ -448,6 +478,56 @@ export type ResearchPayload = Record<string, unknown> & {
   price_sanity?: PriceSanity;
   unified_decision?: UnifiedDecision;
   validation_context?: ValidationContext;
+  chart?: ChartPayload;
+};
+export type SignalTableRow = {
+  ticker?: string;
+  source?: string;
+  price?: number | string;
+  price_change_1d_pct?: number | string;
+  relative_volume_20d?: number | string;
+  ema_stack?: string;
+  signal?: string;
+  actionability?: string;
+  risk?: string;
+  entry_or_trigger?: string;
+  stop?: number | string;
+  tp1?: number | string;
+  updated?: string;
+};
+export type ChartPoint = {
+  date: string;
+  open?: number;
+  high?: number;
+  low?: number;
+  close?: number;
+  volume?: number;
+  ema_21?: number | null;
+  ema_50?: number | null;
+  ema_150?: number | null;
+  ema_200?: number | null;
+};
+export type ChartPayload = {
+  available?: boolean;
+  ticker: string;
+  provider?: string;
+  last_market_date?: string;
+  quote_timestamp?: string;
+  price_source?: string;
+  selected_timeframe?: string;
+  available_timeframes?: string[];
+  series: ChartPoint[];
+  markers?: { date: string; label: string; tone: string }[];
+  signals?: Record<string, unknown>;
+  demo_mode?: boolean;
+  cache?: Record<string, unknown>;
+  reason?: string;
+};
+export type TrackedPayload = {
+  path: string;
+  tickers: string[];
+  count: number;
+  message: string;
 };
 export type AlertRow = { ticker?: string; severity?: string; alert_type?: string; explanation?: string; recommended_action_label?: string };
 export type PositionRow = { ticker: string; company_name?: string; market_value?: number; position_weight_pct?: number; unrealized_gain_loss_pct?: number; decision_status?: string };

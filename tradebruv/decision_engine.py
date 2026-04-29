@@ -123,6 +123,7 @@ def build_unified_decision(
         "evidence_pill": evidence_pill(validation_context),
         "price_sanity": price_sanity,
         "next_review_date": next_review_date,
+        "source_group": row.get("scan_source_group") or action_lane,
         "portfolio_context": portfolio_decision,
         "validation_context": validation_context or {},
         "source_row": row,

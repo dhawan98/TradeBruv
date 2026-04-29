@@ -1,7 +1,8 @@
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import type React from 'react';
 import {
   Activity,
+  Plus,
   BookOpen,
   Brain,
   Database,
@@ -15,12 +16,14 @@ import {
   Search,
   ShieldAlert,
   Sparkles,
+  Trash2,
   Wallet,
 } from 'lucide-react';
 import { Bar, BarChart, CartesianGrid, Line, LineChart as ReLineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import {
   api,
   AlertRow,
+  ChartPayload,
   DataSourceRow,
   DecisionSnapshotPayload,
   HealthPayload,
@@ -30,6 +33,8 @@ import {
   ReplayPayload,
   ResearchPayload,
   ScannerRow,
+  SignalTableRow,
+  TrackedPayload,
   UnifiedDecision,
   UniverseItem,
   UniversesPayload,
@@ -92,6 +97,8 @@ const DEFAULT_UNIVERSES: UniverseItem[] = [
 ];
 
 const DEFAULT_UNIVERSE_WARNING = 'Famous Case Studies are for historical validation, not active monitoring.';
+const EMPTY_DECISIONS: UnifiedDecision[] = [];
+const EMPTY_SIGNALS: SignalTableRow[] = [];
 
 type ScanState = {
   available?: boolean;
@@ -196,77 +203,137 @@ function TopBar({
 
 function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
   const latest = useAsync(api.dailyDecisionLatest, []);
-  const portfolio = useAsync(api.portfolio, []);
-  const sources = useAsync(api.dataSources, []);
-  const universes = useAsync(api.universes, []);
-  const decisions = latest.data?.decisions ?? [];
-  const dataIssues = latest.data?.data_issues ?? [];
-  const topCandidate = latest.data?.top_candidate ?? null;
-  const research = latest.data?.research_candidates ?? [];
-  const watch = latest.data?.watch_candidates ?? [];
-  const avoid = latest.data?.avoid_candidates ?? [];
-  const portfolioActions = latest.data?.portfolio_actions ?? [];
-  const compactBoard = latest.data?.compact_board ?? [];
-  const actionableCount = decisions.filter((row) => row.actionability_label === 'Actionable Today').length;
+  const tracked = useAsync(api.tracked, []);
+  const [selectedTicker, setSelectedTicker] = useState('');
+  const [timeframe, setTimeframe] = useState<'6M' | '1Y' | '2Y'>('1Y');
+  const [trackedInput, setTrackedInput] = useState('');
+  const decisions = latest.data?.decisions ?? EMPTY_DECISIONS;
+  const trackedRows = decisions.filter((row) => row.source_group === 'Tracked');
+  const broadRows = decisions.filter((row) => row.source_group === 'Broad');
+  const watchRows = latest.data?.watch_candidates ?? [];
+  const avoidRows = latest.data?.avoid_candidates ?? [];
+  const signalRows = latest.data?.signal_table ?? EMPTY_SIGNALS;
+  const defaultTicker =
+    latest.data?.top_candidate?.ticker
+    ?? latest.data?.best_tracked_setup?.ticker
+    ?? latest.data?.best_broad_setup?.ticker
+    ?? trackedRows[0]?.ticker
+    ?? broadRows[0]?.ticker
+    ?? decisions[0]?.ticker
+    ?? '';
+
+  useEffect(() => {
+    if (!selectedTicker && defaultTicker) {
+      setSelectedTicker(defaultTicker);
+      return;
+    }
+    if (selectedTicker && !decisions.some((row) => row.ticker === selectedTicker) && defaultTicker) {
+      setSelectedTicker(defaultTicker);
+    }
+  }, [defaultTicker, decisions, selectedTicker]);
+
+  const selectedDecision = decisions.find((row) => row.ticker === selectedTicker) ?? latest.data?.top_candidate ?? null;
+  const chart = useAsync(
+    () => (
+      selectedTicker
+        ? api.chart(selectedTicker, latest.data?.provider ?? 'sample', timeframe)
+        : Promise.resolve(emptyChartPayload())
+    ),
+    [selectedTicker, timeframe, latest.data?.provider],
+  );
+
+  async function addTrackedTicker(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!trackedInput.trim()) return;
+    const payload = await api.trackedAdd(trackedInput.trim().toUpperCase());
+    tracked.setData(payload);
+    setTrackedInput('');
+  }
+
+  async function removeTrackedTicker(ticker: string) {
+    tracked.setData(await api.trackedRemove(ticker));
+  }
 
   return (
-    <Page title="Home" subtitle="A short daily stock-picker view: best idea, next research names, watch triggers, and avoid reasons.">
+    <Page title="Home" subtitle="Chart-first market workspace with tracked names, broad-market discovery, and compact signal rows.">
       {latest.error && <ApiErrorPanel error={latest.error} onRetry={latest.retry} />}
-      {sources.error && <ApiErrorPanel error={sources.error} onRetry={sources.retry} compact />}
+      {tracked.error && <ApiErrorPanel error={tracked.error} onRetry={tracked.retry} compact />}
       {latest.data?.demo_mode && <Notice tone="warn">DEMO MODE. Demo sample data — not real prices.</Notice>}
       {latest.data?.report_snapshot && <Notice tone="warn">Report Snapshot. Saved reports stay historical and do not populate the live TP / SL board.</Notice>}
       {latest.data?.stale_data && <Notice tone="warn">Stale Data. Rows with stale prices are excluded from actionable decisions.</Notice>}
-      <div className="metric-grid">
-        <Metric label="Actionable today" value={String(actionableCount)} sub="Clean same-day ideas after price validation" />
-        <Metric label="Research next" value={String(research.length)} sub="Worth deeper work, not instant entries" />
-        <Metric label="Watch" value={String(watch.length)} sub="Interesting, not actionable yet" />
-        <Metric label="Data issues" value={String(dataIssues.length)} sub="Rows hidden until live price validates" />
-      </div>
-      <div className="grid two">
-        <Panel title="Today&apos;s Best Idea">
-          {topCandidate ? (
-            <FeaturedDecisionCard row={topCandidate} />
-          ) : (
-            <EmptyState title="No Clean Candidate Today" action="Open Stock Picker" onAction={() => setPage('Stock Picker')}>
-              {latest.data?.no_clean_candidate_reason ?? 'No validated setup passed the actionability gate today.'}
-            </EmptyState>
-          )}
-        </Panel>
-        <Panel title="Active Universes">
-          <UniverseSummary payload={universes.data} />
-        </Panel>
-      </div>
       {latest.data?.available ? (
-        <>
-          <div className="grid two">
-            <Panel title="Next Best Research Candidates">
-              <DecisionList rows={research.slice(0, 3)} empty="No research-first names right now." />
+        <div className="market-layout">
+          <section className="market-sidebar">
+            <Panel title="Tracked Watchlist">
+              <TrackedWatchlistManager
+                payload={tracked.data}
+                value={trackedInput}
+                onChange={setTrackedInput}
+                onSubmit={addTrackedTicker}
+                onRemove={removeTrackedTicker}
+              />
+              <WatchlistSection
+                title="Tracked"
+                rows={trackedRows}
+                selectedTicker={selectedTicker}
+                onSelect={setSelectedTicker}
+                empty="Tracked names will appear here after a daily run."
+              />
+              <WatchlistSection
+                title="Broad Top"
+                rows={broadRows.slice(0, 8)}
+                selectedTicker={selectedTicker}
+                onSelect={setSelectedTicker}
+                empty="Run daily decision with a broad universe to populate this list."
+              />
+              <WatchlistSection
+                title="Watch"
+                rows={watchRows.slice(0, 5)}
+                selectedTicker={selectedTicker}
+                onSelect={setSelectedTicker}
+                empty="No trigger-needed names right now."
+              />
+              <WatchlistSection
+                title="Avoid"
+                rows={avoidRows.slice(0, 5)}
+                selectedTicker={selectedTicker}
+                onSelect={setSelectedTicker}
+                empty="No avoid names right now."
+              />
             </Panel>
-            <Panel title="Watch / Wait">
-              <DecisionList rows={watch.slice(0, 5)} empty="No watch-only names right now." />
+          </section>
+          <section className="market-center">
+            <Panel title="Market Chart">
+              <MarketChartPanel
+                chart={chart.data}
+                decision={selectedDecision}
+                timeframe={timeframe}
+                onTimeframeChange={(value) => setTimeframe(value)}
+              />
             </Panel>
-            <Panel title="Avoid / Do Not Chase">
-              <DecisionList rows={avoid.slice(0, 5)} empty="No avoid names right now." />
+            <Panel title="Signal Table">
+              <SignalWorkspaceTable rows={signalRows} onSelect={setSelectedTicker} />
             </Panel>
-            <Panel title="Portfolio Actions">
-              {portfolio.data?.positions?.length ? (
-                <DecisionList rows={portfolioActions.slice(0, 5)} empty="No portfolio actions right now." />
+          </section>
+          <section className="market-summary">
+            <Panel title="Decision Summary">
+              {selectedDecision ? (
+                <SelectedDecisionPanel
+                  row={selectedDecision}
+                  onDeepResearch={() => setPage('Deep Research')}
+                  onAICommittee={() => setPage('AI Committee')}
+                />
               ) : (
-                <EmptyState title="No portfolio loaded" action="Open Portfolio" onAction={() => setPage('Portfolio')}>
-                  Import a portfolio or add positions manually to activate Hold / Add / Trim / Sell decisions.
+                <EmptyState title="No Clean Candidate Today" action="Open Stock Picker" onAction={() => setPage('Stock Picker')}>
+                  {latest.data?.no_clean_candidate_reason ?? 'No validated setup passed the actionability gate today.'}
                 </EmptyState>
               )}
             </Panel>
-          </div>
-          <Panel title="Compact TP / SL or Trigger Board">
-            <DecisionBoard rows={compactBoard} />
-          </Panel>
-          {dataIssues.length ? (
-            <Panel title="Data Issues">
-              <DecisionList rows={dataIssues.slice(0, 5)} empty="No price-validation issues right now." />
+            <Panel title="Coverage Status">
+              <CoverageStatusPanel payload={latest.data} />
             </Panel>
-          ) : null}
-        </>
+          </section>
+        </div>
       ) : (
         <EmptyState title="No live daily decision loaded" action="Open scanner" onAction={() => setPage('Stock Picker')}>
           Build a live decision snapshot with the real provider, or use Reports to inspect historical report snapshots.
@@ -274,6 +341,328 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
       )}
     </Page>
   );
+}
+
+function TrackedWatchlistManager({
+  payload,
+  value,
+  onChange,
+  onSubmit,
+  onRemove,
+}: {
+  payload: TrackedPayload | null;
+  value: string;
+  onChange: (value: string) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void> | void;
+  onRemove: (ticker: string) => Promise<void> | void;
+}) {
+  return (
+    <div className="tracked-manager">
+      <Notice tone="neutral">{payload?.message ?? 'Tracked tickers are monitored every daily run and can become top candidates if setup is strong.'}</Notice>
+      <form className="tracked-form" onSubmit={onSubmit}>
+        <input value={value} onChange={(event) => onChange(event.target.value)} placeholder="Add ticker" aria-label="Add ticker" />
+        <button className="secondary" type="submit"><Plus size={14} /> Add</button>
+      </form>
+      <div className="tracked-chips">
+        {(payload?.tickers ?? []).map((ticker) => (
+          <button className="tracked-chip" key={ticker} onClick={() => onRemove(ticker)} type="button">
+            <span>{ticker}</span>
+            <Trash2 size={13} />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function WatchlistSection({
+  title,
+  rows,
+  selectedTicker,
+  onSelect,
+  empty,
+}: {
+  title: string;
+  rows: UnifiedDecision[];
+  selectedTicker: string;
+  onSelect: (ticker: string) => void;
+  empty: string;
+}) {
+  return (
+    <div className="watchlist-section">
+      <div className="section-label">{title}</div>
+      {rows.length ? (
+        <div className="watchlist-table">
+          {rows.map((row) => (
+            <button
+              className={selectedTicker === row.ticker ? 'watchlist-row active' : 'watchlist-row'}
+              key={`${title}-${row.ticker}`}
+              onClick={() => onSelect(row.ticker)}
+              type="button"
+            >
+              <div>
+                <strong>{row.ticker}</strong>
+                <span>{row.source_row?.signal_summary ?? row.current_setup_state ?? row.actionability_label}</span>
+              </div>
+              <div className="watchlist-metrics">
+                <span>{cell(row.source_row?.current_price ?? row.source_row?.validated_price ?? 'n/a')}</span>
+                <span className={pctTone(row.source_row?.price_change_1d_pct)}>{pct(row.source_row?.price_change_1d_pct)}</span>
+                <span>RV {cell(row.source_row?.relative_volume_20d ?? 'n/a')}</span>
+              </div>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p className="muted">{empty}</p>
+      )}
+    </div>
+  );
+}
+
+function MarketChartPanel({
+  chart,
+  decision,
+  timeframe,
+  onTimeframeChange,
+}: {
+  chart: ChartPayload | null;
+  decision: UnifiedDecision | null;
+  timeframe: '6M' | '1Y' | '2Y';
+  onTimeframeChange: (value: '6M' | '1Y' | '2Y') => void;
+}) {
+  const series = chart?.series ?? [];
+  const latestPoint = series[series.length - 1];
+  return (
+    <div className="market-chart-panel">
+      <div className="chart-toolbar">
+        <div>
+          <strong>{chart?.ticker ?? decision?.ticker ?? 'No symbol selected'}</strong>
+          <span>{decision?.actionability_label ?? decision?.primary_action ?? chart?.price_source ?? 'No decision loaded'}</span>
+        </div>
+        <div className="tabs">
+          {(['6M', '1Y', '2Y'] as const).map((option) => (
+            <button className={timeframe === option ? 'secondary active-tab' : 'ghost'} key={option} onClick={() => onTimeframeChange(option)} type="button">
+              {option}
+            </button>
+          ))}
+        </div>
+      </div>
+      {!chart?.available && !series.length ? (
+        <EmptyState title="Chart unavailable" action="Retry">
+          {chart?.reason ?? 'No chart data is available for this symbol yet.'}
+        </EmptyState>
+      ) : (
+        <>
+          <div className="chart-dual">
+            <div className="chart tall">
+              <ResponsiveContainer width="100%" height={340}>
+                <ReLineChart data={series}>
+                  <CartesianGrid stroke="#243244" />
+                  <XAxis dataKey="date" stroke="#9fb0c4" minTickGap={28} />
+                  <YAxis stroke="#9fb0c4" domain={['auto', 'auto']} />
+                  <Tooltip contentStyle={{ background: '#101722', border: '1px solid #27364a', color: '#e8eef7' }} />
+                  <Line type="monotone" dataKey="close" stroke="#e8eef7" dot={false} strokeWidth={2} />
+                  <Line type="monotone" dataKey="ema_21" stroke="#75d8c7" dot={false} strokeWidth={1.5} />
+                  <Line type="monotone" dataKey="ema_50" stroke="#f1bf69" dot={false} strokeWidth={1.5} />
+                  <Line type="monotone" dataKey="ema_150" stroke="#7aa2ff" dot={false} strokeWidth={1.4} />
+                  <Line type="monotone" dataKey="ema_200" stroke="#d18fff" dot={false} strokeWidth={1.4} />
+                </ReLineChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="chart volume-chart">
+              <ResponsiveContainer width="100%" height={110}>
+                <BarChart data={series}>
+                  <CartesianGrid stroke="#243244" vertical={false} />
+                  <XAxis dataKey="date" hide />
+                  <YAxis stroke="#9fb0c4" hide />
+                  <Tooltip contentStyle={{ background: '#101722', border: '1px solid #27364a', color: '#e8eef7' }} />
+                  <Bar dataKey="volume" fill="#365978" radius={[2, 2, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+          <div className="chart-meta">
+            <Chip tone="neutral">Last {cell(latestPoint?.close ?? 'n/a')}</Chip>
+            <Chip tone="neutral">Stack: {String(chart?.signals?.ema_stack ?? 'n/a')}</Chip>
+            <Chip tone="neutral">Signal: {String(chart?.signals?.signal_summary ?? 'n/a')}</Chip>
+            <Chip tone="neutral">Rel Vol: {cell(chart?.signals?.relative_volume_20d ?? 'n/a')}</Chip>
+            <Chip tone="neutral">Fresh: {compactDate(chart?.last_market_date)}</Chip>
+          </div>
+          {chart?.markers?.length ? (
+            <div className="chart-markers">
+              {chart.markers.map((marker) => (
+                <Chip key={`${marker.date}-${marker.label}`} tone={marker.tone === 'good' ? 'good' : marker.tone === 'bad' ? 'bad' : 'neutral'}>
+                  {marker.label} • {compactDate(marker.date)}
+                </Chip>
+              ))}
+            </div>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+function SelectedDecisionPanel({
+  row,
+  onDeepResearch,
+  onAICommittee,
+}: {
+  row: UnifiedDecision;
+  onDeepResearch: () => void;
+  onAICommittee: () => void;
+}) {
+  return (
+    <div className="selected-decision">
+      <div className="provider-title">
+        <div>
+          <span className="eyebrow">Overall top setup</span>
+          <h3>{row.ticker}</h3>
+          <p>{row.actionability_label ?? row.primary_action ?? 'Decision unavailable'}</p>
+        </div>
+        <div className="score-stack compact">
+          <strong>{Math.round(Number(row.actionability_score ?? row.score ?? 0))}</strong>
+          <span>Actionability</span>
+        </div>
+      </div>
+      <div className="pill-row">
+        <StatusPill status={row.actionability_label ?? row.primary_action} />
+        <Chip tone={String(row.risk_level).includes('High') ? 'warn' : 'neutral'}>{row.risk_level ?? 'Risk n/a'}</Chip>
+        <Chip tone="neutral">Evidence: {row.evidence_pill ?? 'Not enough evidence'}</Chip>
+      </div>
+      <div className="brief-grid">
+        <div>
+          <span className="eyebrow">Why now</span>
+          <p>{row.actionability_reason ?? row.reason ?? 'No thesis returned.'}</p>
+        </div>
+        <div>
+          <span className="eyebrow">Why not</span>
+          <p>{row.why_not ?? 'No major counter-thesis beyond routine review discipline.'}</p>
+        </div>
+      </div>
+      <div className="brief-grid">
+        <div>
+          <span className="eyebrow">{row.trigger_needed ? 'Trigger / Better Entry' : row.entry_label ?? 'Entry'}</span>
+          <p>{row.trigger_needed ? (row.action_trigger ?? row.entry_zone ?? 'Wait for setup.') : (row.entry_zone ?? 'No level')}</p>
+        </div>
+        <div>
+          <span className="eyebrow">{row.level_status === 'Conditional' ? 'Conditional levels' : 'Levels'}</span>
+          <p>Stop {cell(row.stop_loss ?? row.invalidation)} • TP1 {cell(row.tp1)} • TP2 {cell(row.tp2)}</p>
+        </div>
+      </div>
+      <div className="kv compact-kv">
+        <div><span>Signal</span><strong>{row.source_row?.signal_summary ?? 'n/a'}</strong></div>
+        <div><span>EMA Stack</span><strong>{row.source_row?.ema_stack ?? 'n/a'}</strong></div>
+        <div><span>Rel Vol</span><strong>{cell(row.source_row?.relative_volume_20d ?? 'n/a')}</strong></div>
+        <div><span>Freshness</span><strong>{row.data_freshness ?? compactDate(row.latest_market_date)}</strong></div>
+      </div>
+      <div className="action-strip">
+        <button className="secondary" onClick={onDeepResearch} type="button">Deep Research</button>
+        {row.source_row ? <TrackPredictionButton scannerRow={row.source_row} /> : null}
+        <button className="ghost" onClick={onAICommittee} type="button">Run AI Committee</button>
+      </div>
+    </div>
+  );
+}
+
+function CoverageStatusPanel({ payload }: { payload: DecisionSnapshotPayload | null }) {
+  const status = payload?.data_coverage_status ?? {};
+  const groups = (status.scan_groups as Record<string, unknown>[] | undefined) ?? [];
+  return (
+    <div className="coverage-status">
+      <div className="metric-grid compact">
+        <Metric label="Attempted" value={String(status.tickers_attempted ?? 0)} sub="Total symbols evaluated" />
+        <Metric label="Scanned" value={String(status.tickers_successfully_scanned ?? 0)} sub="Successful market-data loads" />
+        <Metric label="Failed" value={String(status.tickers_failed ?? 0)} sub="Failed or gated rows" />
+      </div>
+      <div className="kv compact-kv">
+        <div><span>Provider</span><strong>{String(status.provider ?? payload?.provider ?? 'unavailable')}</strong></div>
+        <div><span>Tracked count</span><strong>{String(status.tracked_tickers_count ?? 0)}</strong></div>
+        <div><span>Portfolio count</span><strong>{String(status.portfolio_tickers_count ?? 0)}</strong></div>
+        <div><span>Cache TTL</span><strong>{String(status.cache_age_ttl_minutes ?? 'n/a')} min</strong></div>
+        <div><span>Cache hits</span><strong>{String(status.cache_hits ?? 0)}</strong></div>
+        <div><span>Cache misses</span><strong>{String(status.cache_misses ?? 0)}</strong></div>
+      </div>
+      <div className="coverage-list">
+        {groups.map((group) => (
+          <div className="coverage-row" key={`${group.source_group}-${group.universe}`}>
+            <strong>{String(group.source_group ?? 'Unknown')}</strong>
+            <span>{String(group.universe ?? '')}</span>
+            <span>{String(group.result_count ?? 0)} rows</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SignalWorkspaceTable({ rows, onSelect }: { rows: SignalTableRow[]; onSelect: (ticker: string) => void }) {
+  const [sortBy, setSortBy] = useState<'actionability' | 'relative_volume_20d' | 'price_change_1d_pct'>('actionability');
+  const sorted = [...rows].sort((left, right) => {
+    if (sortBy === 'actionability') {
+      return Number(right.actionability ?? 0) - Number(left.actionability ?? 0);
+    }
+    return Number(right[sortBy] ?? 0) - Number(left[sortBy] ?? 0);
+  });
+  if (!rows.length) return <p className="muted">No signal table rows are available yet.</p>;
+  return (
+    <div className="table-wrap">
+      <div className="pill-row">
+        <button className={sortBy === 'actionability' ? 'secondary active-tab' : 'ghost'} onClick={() => setSortBy('actionability')} type="button">Sort: Actionability</button>
+        <button className={sortBy === 'relative_volume_20d' ? 'secondary active-tab' : 'ghost'} onClick={() => setSortBy('relative_volume_20d')} type="button">Sort: Rel Vol</button>
+        <button className={sortBy === 'price_change_1d_pct' ? 'secondary active-tab' : 'ghost'} onClick={() => setSortBy('price_change_1d_pct')} type="button">Sort: % Change</button>
+      </div>
+      <table className="signal-table">
+        <thead>
+          <tr>
+            <th>Ticker</th>
+            <th>Source</th>
+            <th>Price</th>
+            <th>% Change</th>
+            <th>Rel Vol</th>
+            <th>EMA Stack</th>
+            <th>Signal</th>
+            <th>Actionability</th>
+            <th>Risk</th>
+            <th>Entry / Trigger</th>
+            <th>Stop</th>
+            <th>TP1</th>
+            <th>Updated</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((row, index) => (
+            <tr key={`${row.ticker}-${index}`} onClick={() => row.ticker && onSelect(row.ticker)}>
+              <td><strong>{row.ticker}</strong></td>
+              <td>{cell(row.source)}</td>
+              <td>{cell(row.price)}</td>
+              <td className={pctTone(row.price_change_1d_pct)}>{pct(row.price_change_1d_pct)}</td>
+              <td>{cell(row.relative_volume_20d)}</td>
+              <td>{cell(row.ema_stack)}</td>
+              <td>{cell(row.signal)}</td>
+              <td>{cell(row.actionability)}</td>
+              <td>{cell(row.risk)}</td>
+              <td>{cell(row.entry_or_trigger)}</td>
+              <td>{cell(row.stop)}</td>
+              <td>{cell(row.tp1)}</td>
+              <td>{compactDate(row.updated)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function emptyChartPayload(): ChartPayload {
+  return {
+    ticker: '',
+    available: false,
+    series: [],
+    markers: [],
+    signals: {},
+    available_timeframes: ['6M', '1Y', '2Y'],
+  };
 }
 
 function StockPicker() {
@@ -1444,25 +1833,6 @@ function DecisionBoard({ rows }: { rows: UnifiedDecision[] }) {
   );
 }
 
-function UniverseSummary({ payload }: { payload: UniversesPayload | null }) {
-  const items = payload?.items ?? DEFAULT_UNIVERSES;
-  return (
-    <div className="provider-grid">
-      {items.map((item) => (
-        <article className="provider-card" key={item.path}>
-          <div className="provider-title">
-            <strong>{item.label}</strong>
-            <Chip tone={item.available ? 'good' : 'warn'}>{item.available ? 'Ready' : 'Missing'}</Chip>
-          </div>
-          <p>{item.description}</p>
-          <code>{item.path}</code>
-        </article>
-      ))}
-      <Notice tone="warn">{payload?.warning ?? DEFAULT_UNIVERSE_WARNING}</Notice>
-    </div>
-  );
-}
-
 function ValidationContextCard({ context }: { context?: ValidationContext | null }) {
   const messages = context?.messages ?? ['Not enough evidence yet.'];
   return (
@@ -1605,45 +1975,6 @@ function DualLineChart({ data }: { data: Record<string, unknown>[] }) {
   );
 }
 
-function FeaturedDecisionCard({ row }: { row: UnifiedDecision }) {
-  return (
-    <article className="candidate-card featured-decision">
-      <div className="provider-title">
-        <div>
-          <span className="eyebrow">Today&apos;s best idea</span>
-          <h3>{row.ticker}</h3>
-          <p>{row.company ?? row.action_lane ?? 'Decision'}</p>
-        </div>
-        <div className="score-stack compact">
-          <strong>{Math.round(Number(row.actionability_score ?? row.score ?? 0))}</strong>
-          <span>Actionability</span>
-        </div>
-      </div>
-      <div className="pill-row">
-        <StatusPill status={row.actionability_label ?? row.primary_action} />
-        <Chip tone="neutral">Evidence: {row.evidence_pill ?? 'Not enough evidence'}</Chip>
-        <Chip tone={String(row.risk_level).includes('High') ? 'warn' : 'neutral'}>{row.risk_level ?? 'Risk n/a'}</Chip>
-      </div>
-      <div className="brief-grid">
-        <div>
-          <span className="eyebrow">Why now</span>
-          <p>{row.actionability_reason ?? row.reason ?? 'No current thesis returned.'}</p>
-        </div>
-        <div>
-          <span className="eyebrow">Why not</span>
-          <p>{row.why_not ?? 'No major counter-thesis beyond routine review discipline.'}</p>
-        </div>
-      </div>
-      <LevelPreview row={row} />
-      <p className="muted">{row.price_source ?? 'Price source unavailable'} • {compactDate(row.latest_market_date)} • {row.data_freshness ?? 'Freshness n/a'}</p>
-      <div className="action-strip">
-        <Chip tone={row.level_status === 'Actionable' ? 'good' : row.level_status === 'Conditional' ? 'warn' : 'neutral'}>{row.level_status ?? 'Hidden'}</Chip>
-        {row.source_row && row.price_validation_status === 'PASS' ? <TrackPredictionButton scannerRow={row.source_row} /> : null}
-      </div>
-    </article>
-  );
-}
-
 function LevelPreview({ row }: { row: UnifiedDecision }) {
   if (row.level_status === 'Hidden' || row.actionability_label === 'Data Insufficient') {
     return <Notice tone="warn">{row.levels_explanation ?? 'Levels hidden.'}</Notice>;
@@ -1729,6 +2060,14 @@ function ResearchView({ payload }: { payload: ResearchPayload }) {
           data_quality: payload.price_sanity?.price_validation_status === 'PASS' ? 'Validated live price' : payload.price_sanity?.price_validation_reason,
         }} />
         {scanner && scanner.price_validation_status === 'PASS' ? <TrackPredictionButton scannerRow={scanner} /> : null}
+      </Panel>
+      <Panel title="Chart And EMA / Volume Signals">
+        <MarketChartPanel
+          chart={payload.chart ?? emptyChartPayload()}
+          decision={unifiedDecision ?? fallbackDecision}
+          timeframe={(payload.chart?.selected_timeframe as '6M' | '1Y' | '2Y' | undefined) ?? '1Y'}
+          onTimeframeChange={() => undefined}
+        />
       </Panel>
       <div className="grid two">
         <Panel title="Price Validation">
@@ -2038,6 +2377,19 @@ function compactDate(value?: string) {
 
 function money(value: number) {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(value || 0);
+}
+
+function pct(value: unknown) {
+  if (value === null || value === undefined || value === '' || value === 'unavailable') return 'n/a';
+  const numeric = Number(value);
+  if (Number.isNaN(numeric)) return String(value);
+  return `${numeric >= 0 ? '+' : ''}${numeric.toFixed(2)}%`;
+}
+
+function pctTone(value: unknown) {
+  const numeric = Number(value);
+  if (Number.isNaN(numeric)) return '';
+  return numeric > 0 ? 'positive' : numeric < 0 ? 'negative' : '';
 }
 
 function labelize(value: string) {

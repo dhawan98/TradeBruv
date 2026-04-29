@@ -80,6 +80,43 @@ def create_app() -> "FastAPI":
     def daily_decision_latest() -> dict[str, Any]:
         return services.daily_decision_latest()
 
+    @app.get("/api/chart/{ticker}")
+    def chart(
+        ticker: str,
+        provider: str = Query(default="sample"),
+        timeframe: str = Query(default="1Y"),
+        history_period: str = Query(default="3y"),
+        refresh_cache: bool = Query(default=False),
+    ) -> dict[str, Any]:
+        try:
+            return services.chart_data(
+                ticker,
+                provider_name=provider,
+                timeframe=timeframe,
+                history_period=history_period,
+                refresh_cache=refresh_cache,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/tracked")
+    def tracked() -> dict[str, Any]:
+        return services.tracked_state()
+
+    @app.post("/api/tracked/add")
+    def tracked_add(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return services.tracked_add(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/tracked/remove")
+    def tracked_remove(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return services.tracked_remove(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.get("/api/reports/archive")
     def reports_archive() -> dict[str, Any]:
         return services.reports_archive()

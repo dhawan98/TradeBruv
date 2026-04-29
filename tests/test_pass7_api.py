@@ -134,6 +134,24 @@ def test_daily_decision_latest_endpoint(client):
     assert response.json()["mode"] == "daily-decision"
 
 
+def test_chart_and_tracked_endpoints(client):
+    chart = client.get("/api/chart/NVDA", params={"provider": "sample", "timeframe": "1Y"})
+    assert chart.status_code == 200
+    chart_payload = chart.json()
+    assert chart_payload["available"] is True
+    assert chart_payload["ticker"] == "NVDA"
+    assert chart_payload["series"]
+
+    before = client.get("/api/tracked")
+    assert before.status_code == 200
+    add = client.post("/api/tracked/add", json={"ticker": "NVDA"})
+    assert add.status_code == 200
+    assert "NVDA" in add.json()["tickers"]
+    remove = client.post("/api/tracked/remove", json={"ticker": "NVDA"})
+    assert remove.status_code == 200
+    assert "NVDA" not in remove.json()["tickers"]
+
+
 def test_deep_research_endpoint(client):
     response = client.post("/api/deep-research", json={"ticker": "NVDA", "provider": "sample", "as_of_date": "2026-04-24"})
     assert response.status_code == 200

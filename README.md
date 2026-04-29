@@ -237,12 +237,19 @@ Included starter universes:
 - [active_core_investing_universe.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/active_core_investing_universe.txt)
 - [active_outlier_universe.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/active_outlier_universe.txt)
 - [active_velocity_universe.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/active_velocity_universe.txt)
+- [universe_sp500.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_sp500.txt)
+- [universe_nasdaq100.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_nasdaq100.txt)
+- [universe_russell1000_or_top1000.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_russell1000_or_top1000.txt)
+- [universe_liquid_growth.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_liquid_growth.txt)
+- [universe_ai_semis_software.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_ai_semis_software.txt)
+- [tracked_tickers.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/tracked_tickers.txt)
 - [famous_outlier_case_studies.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/famous_outlier_case_studies.txt)
 
 These files are inputs only. The scanner does not hardcode any universe inside the ranking logic.
 
 Active daily workflow:
 - `Home` uses `active_core_investing_universe.txt` plus `active_outlier_universe.txt`.
+- `Broad Scan` is the explicit whole-market discovery step. Without it, the app analyzes only the selected universes and tracked names.
 - `Stock Picker` defaults to the active universes, not GME/CAR-style historical examples.
 - `Outlier Case Study` and replay-style historical validation use `famous_outlier_case_studies.txt`.
 - `Deep Research` can still analyze any ticker manually, including famous historical names.
@@ -446,6 +453,89 @@ Deep Research is now the drill-down page, not the first-read page. It synthesize
 - TP1 / TP2 only when appropriate
 - events to watch
 - data quality and evidence context
+
+### Pass 15 Market Workspace
+
+Pass 15 shifts the cockpit from a card wall into a chart-first market workspace.
+
+What changed:
+- `Home` / Decision Cockpit now uses a TradingView-style layout:
+  - left: compact tracked + broad-market watchlist rows
+  - center: price chart with volume plus EMA 21 / 50 / 150 / 200 overlays
+  - right: selected-symbol decision summary
+  - bottom: compact signal table
+- tracked tickers are now a first-class input through [tracked_tickers.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/tracked_tickers.txt)
+- broad-market discovery is available through curated starter universe files and the new `broad-scan` command
+- Deep Research now shows a larger chart panel with EMA / volume signals at the top
+
+New broad-universe files:
+- [universe_sp500.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_sp500.txt)
+- [universe_nasdaq100.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_nasdaq100.txt)
+- [universe_russell1000_or_top1000.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_russell1000_or_top1000.txt)
+- [universe_liquid_growth.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_liquid_growth.txt)
+- [universe_ai_semis_software.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_ai_semis_software.txt)
+
+These are curated static starter files. Refresh them periodically. Dynamic free-data refresh for full index membership is still a future/degraded workflow.
+
+New CLI:
+
+```bash
+python3 -m tradebruv universe list
+python3 -m tradebruv universe build --source sp500 --output config/universe_sp500.txt
+python3 -m tradebruv tracked list
+python3 -m tradebruv tracked add NVDA
+python3 -m tradebruv tracked remove NVDA
+
+python3 -m tradebruv broad-scan \
+  --universe config/universe_sp500.txt \
+  --provider real \
+  --limit 500 \
+  --batch-size 25 \
+  --top-n 25
+
+python3 -m tradebruv decision-today \
+  --provider real \
+  --broad-universe config/universe_sp500.txt \
+  --tracked config/tracked_tickers.txt \
+  --top-n 25
+```
+
+`decision-today` can now produce:
+- `overall_top_candidate`
+- `best_tracked_setup`
+- `best_broad_setup`
+- `tracked_watchlist_table`
+- `broad_scan_top_table`
+- `signal_table`
+- `data_coverage_status`
+
+Tracked-ticker workflow:
+- tracked symbols are always scanned during daily decision runs
+- a tracked name can become the overall top candidate if its setup is strongest
+- tracked names that are not actionable still stay visible under watch / trigger-needed states instead of getting buried
+
+EMA / volume signals now surface deterministic chart context:
+- EMA 21 / 50 / 150 / 200
+- bullish / mixed / bearish EMA stack
+- price vs each EMA
+- relative volume vs 20D and 50D
+- pullback, reclaim, breakout, and distribution warnings
+
+Signals are descriptive, not predictive. AI is not the source of truth here.
+
+Market-data cache:
+- OHLCV data is cached under `data/cache/market/`
+- cache key includes ticker, provider, history period, and interval
+- default TTL comes from `TRADEBRUV_MARKET_CACHE_TTL_MINUTES` and defaults to `60`
+- use `--refresh-cache` on `broad-scan` or `decision-today` when you want a fresh pull
+
+Recommended workflow:
+1. Run `broad-scan` on the market universe you care about.
+2. Review the `best_broad_setup` names.
+3. Review the tracked watchlist chart panel.
+4. Check the compact signal table for EMA / relative-volume context.
+5. Use `Deep Research` only for the top 2-3 names.
+6. Save paper predictions with `Track`.
 
 ## Quick Start
 

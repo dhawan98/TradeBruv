@@ -3,15 +3,20 @@ from __future__ import annotations
 import json
 from datetime import date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
+from .cli import build_provider, load_universe
 from .dashboard_data import (
     build_daily_summary,
     load_dashboard_portfolio,
     run_dashboard_scan,
 )
 from .decision_engine import build_unified_decisions, build_validation_context
+from .market_cache import DEFAULT_MARKET_CACHE_DIR, FileCacheMarketDataProvider
 from .price_sanity import build_price_sanity_from_row
+from .scanner import DeterministicScanner
+from .tracked import DEFAULT_TRACKED_TICKERS_PATH, list_tracked_tickers
 
 DEFAULT_DAILY_DECISION_OUTPUT_DIR = Path("outputs/daily")
 DEFAULT_DAILY_DECISION_JSON_PATH = DEFAULT_DAILY_DECISION_OUTPUT_DIR / "decision_today.json"
@@ -24,6 +29,12 @@ def run_daily_decision(
     core_universe: Path,
     outlier_universe: Path,
     velocity_universe: Path,
+    broad_universe: Path | None = None,
+    tracked: Path | None = None,
+    top_n: int = 25,
+    history_period: str = "3y",
+    data_dir: Path | None = None,
+    refresh_cache: bool = False,
     analysis_date: date | None = None,
     output_dir: Path = DEFAULT_DAILY_DECISION_OUTPUT_DIR,
 ) -> dict[str, Any]:
@@ -31,15 +42,94 @@ def run_daily_decision(
     validation_context = build_validation_context()
     portfolio_rows = load_dashboard_portfolio()
     scans = [
-        ("Core Investing", run_dashboard_scan(provider_name=provider_name, mode="investing", universe_path=core_universe, analysis_date=as_of)),
-        ("Outlier", run_dashboard_scan(provider_name=provider_name, mode="outliers", universe_path=outlier_universe, analysis_date=as_of)),
-        ("Velocity", run_dashboard_scan(provider_name=provider_name, mode="velocity", universe_path=velocity_universe, analysis_date=as_of)),
+        {
+            "lane": "Core Investing",
+            "source_group": "Core Investing",
+            "scan": run_dashboard_scan(provider_name=provider_name, mode="investing", universe_path=core_universe, analysis_date=as_of),
+            "universe": str(core_universe),
+        },
+        {
+            "lane": "Outlier",
+            "source_group": "Outlier",
+            "scan": run_dashboard_scan(provider_name=provider_name, mode="outliers", universe_path=outlier_universe, analysis_date=as_of),
+            "universe": str(outlier_universe),
+        },
+        {
+            "lane": "Velocity",
+            "source_group": "Velocity",
+            "scan": run_dashboard_scan(provider_name=provider_name, mode="velocity", universe_path=velocity_universe, analysis_date=as_of),
+            "universe": str(velocity_universe),
+        },
     ]
+
+    if broad_universe:
+        scans.append(
+            {
+                "lane": "Outlier",
+                "source_group": "Broad",
+                "scan": _run_custom_scan(
+                    tickers=load_universe(broad_universe),
+                    provider_name=provider_name,
+                    analysis_date=as_of,
+                    history_period=history_period,
+                    data_dir=data_dir,
+                    refresh_cache=refresh_cache,
+                    mode="outliers",
+                ),
+                "universe": str(broad_universe),
+            }
+        )
+
+    tracked_path = tracked or DEFAULT_TRACKED_TICKERS_PATH
+    tracked_tickers = list_tracked_tickers(tracked_path)
+    if tracked_tickers:
+        scans.append(
+            {
+                "lane": "Outlier",
+                "source_group": "Tracked",
+                "scan": _run_custom_scan(
+                    tickers=tracked_tickers,
+                    provider_name=provider_name,
+                    analysis_date=as_of,
+                    history_period=history_period,
+                    data_dir=data_dir,
+                    refresh_cache=refresh_cache,
+                    mode="outliers",
+                ),
+                "universe": str(tracked_path),
+            }
+        )
+
+    portfolio_tickers = [str(row.get("ticker")).upper() for row in portfolio_rows if row.get("ticker")]
+    if portfolio_tickers:
+        scans.append(
+            {
+                "lane": "Outlier",
+                "source_group": "Portfolio",
+                "scan": _run_custom_scan(
+                    tickers=portfolio_tickers,
+                    provider_name=provider_name,
+                    analysis_date=as_of,
+                    history_period=history_period,
+                    data_dir=data_dir,
+                    refresh_cache=refresh_cache,
+                    mode="outliers",
+                ),
+                "universe": "portfolio positions",
+            }
+        )
 
     combined_rows: list[dict[str, Any]] = []
     combined_decisions: list[dict[str, Any]] = []
     scan_summaries: list[dict[str, Any]] = []
-    for lane, scan in scans:
+    coverage_attempted = 0
+    coverage_success = 0
+    coverage_failed = 0
+    cache_stats: dict[str, Any] = {"hits": 0, "misses": 0, "ttl_minutes": "unavailable"}
+    for item in scans:
+        lane = item["lane"]
+        source_group = item["source_group"]
+        scan = item["scan"]
         rows = [
             _enrich_row(
                 row,
@@ -50,6 +140,7 @@ def run_daily_decision(
                     "selected_provider": provider_name,
                     "provider_is_live_capable": provider_name == "real",
                     "decision_source_lane": lane,
+                    "scan_source_group": source_group,
                     "report_snapshot_selected": False,
                     "is_report_only": False,
                 },
@@ -66,13 +157,22 @@ def run_daily_decision(
         )
         combined_rows.extend(rows)
         combined_decisions.extend(decisions)
+        coverage_attempted += len(rows)
+        coverage_success += len([row for row in rows if row.get("current_price") not in (0, 0.0)])
+        coverage_failed += len([row for row in rows if row.get("current_price") in (0, 0.0)])
+        if getattr(scan, "cache_stats", None):
+            cache_stats["hits"] = int(cache_stats.get("hits", 0)) + int(scan.cache_stats.get("hits", 0))
+            cache_stats["misses"] = int(cache_stats.get("misses", 0)) + int(scan.cache_stats.get("misses", 0))
+            if scan.cache_stats.get("ttl_minutes") not in (None, "unavailable"):
+                cache_stats["ttl_minutes"] = scan.cache_stats.get("ttl_minutes")
         scan_summaries.append(
             {
                 "lane": lane,
+                "source_group": source_group,
                 "generated_at": scan.generated_at,
                 "provider": scan.provider,
                 "source": scan.source,
-                "universe": _universe_for_lane(lane, core_universe=core_universe, outlier_universe=outlier_universe, velocity_universe=velocity_universe),
+                "universe": item["universe"],
                 "result_count": len(rows),
                 "market_regime": scan.market_regime,
             }
@@ -93,13 +193,41 @@ def run_daily_decision(
         "summary": build_daily_summary(merged_rows),
         "decisions": merged_decisions,
         "data_issues": data_issues,
+        "overall_top_candidate": picker_view["top_candidate"],
         "top_candidate": picker_view["top_candidate"],
+        "best_tracked_setup": _best_from_source(merged_decisions, "Tracked"),
+        "best_broad_setup": _best_from_source(merged_decisions, "Broad"),
         "research_candidates": picker_view["research_candidates"],
         "watch_candidates": picker_view["watch_candidates"],
         "avoid_candidates": picker_view["avoid_candidates"],
         "portfolio_actions": picker_view["portfolio_actions"],
         "compact_board": picker_view["compact_board"],
+        "tracked_watchlist_table": _compact_signal_table(merged_decisions, source_group="Tracked", limit=10),
+        "broad_scan_top_table": _compact_signal_table(merged_decisions, source_group="Broad", limit=top_n),
+        "signal_table": _compact_signal_table(merged_decisions, source_group=None, limit=max(top_n, 25)),
         "no_clean_candidate_reason": picker_view["no_clean_candidate_reason"],
+        "data_coverage_status": {
+            "universe_scanned": [item["source_group"] for item in scans],
+            "scan_groups": [
+                {
+                    "source_group": item["source_group"],
+                    "lane": item["lane"],
+                    "universe": item["universe"],
+                    "result_count": len(item["scan"].results),
+                }
+                for item in scans
+            ],
+            "tickers_attempted": coverage_attempted,
+            "tickers_successfully_scanned": coverage_success,
+            "tickers_failed": coverage_failed,
+            "tracked_tickers_count": len(tracked_tickers),
+            "portfolio_tickers_count": len(portfolio_tickers),
+            "last_broad_scan_time": next((item["generated_at"] for item in scan_summaries if item["source_group"] == "Broad"), "not run"),
+            "provider": provider_name,
+            "cache_age_ttl_minutes": cache_stats.get("ttl_minutes", "unavailable"),
+            "cache_hits": cache_stats.get("hits", 0),
+            "cache_misses": cache_stats.get("misses", 0),
+        },
         "validation_context": validation_context,
         "market_regime": _pick_market_regime(scan_summaries),
         "scans": scan_summaries,
@@ -134,12 +262,19 @@ def load_daily_decision(path: Path = DEFAULT_DAILY_DECISION_JSON_PATH) -> dict[s
             "decisions": [],
             "data_issues": [],
             "top_candidate": None,
+            "overall_top_candidate": None,
+            "best_tracked_setup": None,
+            "best_broad_setup": None,
             "research_candidates": [],
             "watch_candidates": [],
             "avoid_candidates": [],
             "portfolio_actions": [],
             "compact_board": [],
+            "tracked_watchlist_table": [],
+            "broad_scan_top_table": [],
+            "signal_table": [],
             "no_clean_candidate_reason": "No live daily decision has been built yet.",
+            "data_coverage_status": {},
             "validation_context": build_validation_context(),
             "market_regime": {},
             "demo_mode": False,
@@ -193,17 +328,19 @@ def _dedupe_decisions(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _row_rank(row: dict[str, Any]) -> tuple[int, int, float]:
     status = _validation_order(str(row.get("price_validation_status") or row.get("price_sanity", {}).get("price_validation_status") or "FAIL"))
+    source = _source_order(str(row.get("scan_source_group") or row.get("decision_source_lane") or ""))
     lane = _lane_order(str(row.get("decision_source_lane") or ""))
     score = -float(row.get("regular_investing_score") or row.get("outlier_score") or row.get("velocity_score") or 0)
-    return (status, lane, score)
+    return (status, source, lane, score)
 
 
-def _decision_rank(decision: dict[str, Any]) -> tuple[int, int, int, float]:
+def _decision_rank(decision: dict[str, Any]) -> tuple[int, int, int, int, float]:
     status = _validation_order(str(decision.get("price_validation_status") or "FAIL"))
+    source = _source_order(str(decision.get("source_group") or decision.get("action_lane") or ""))
     action = _action_order(str(decision.get("primary_action") or "Data Insufficient"))
     lane = _lane_order(str(decision.get("action_lane") or ""))
     score = -float(decision.get("score") or 0)
-    return (status, action, lane, score)
+    return (status, source, action, lane, score)
 
 
 def _validation_order(status: str) -> int:
@@ -212,6 +349,10 @@ def _validation_order(status: str) -> int:
 
 def _lane_order(lane: str) -> int:
     return {"Core Investing": 0, "Outlier": 1, "Velocity": 2}.get(lane, 3)
+
+
+def _source_order(source: str) -> int:
+    return {"Tracked": 0, "Portfolio": 1, "Broad": 2, "Core Investing": 3, "Outlier": 4, "Velocity": 5}.get(source, 6)
 
 
 def _action_order(action: str) -> int:
@@ -248,6 +389,66 @@ def _universe_for_lane(
     if lane == "Outlier":
         return str(outlier_universe)
     return str(velocity_universe)
+
+
+def _run_custom_scan(
+    *,
+    tickers: list[str],
+    provider_name: str,
+    analysis_date: date,
+    history_period: str,
+    data_dir: Path | None,
+    refresh_cache: bool,
+    mode: str,
+) -> SimpleNamespace:
+    args = SimpleNamespace(provider=provider_name, data_dir=data_dir, history_period=history_period)
+    provider = build_provider(args=args, analysis_date=analysis_date)
+    provider = FileCacheMarketDataProvider(
+        provider,
+        provider_name=provider_name,
+        history_period=history_period,
+        cache_dir=DEFAULT_MARKET_CACHE_DIR,
+        refresh_cache=refresh_cache,
+    )
+    scanner = DeterministicScanner(provider=provider, analysis_date=analysis_date)
+    results = scanner.scan(tickers, mode=mode)
+    return SimpleNamespace(
+        generated_at=datetime.utcnow().isoformat() + "Z",
+        provider=provider_name,
+        source=f"custom scan: {mode}",
+        market_regime={},
+        results=[result.to_dict() for result in results],
+        cache_stats=provider.cache_stats(),
+    )
+
+
+def _best_from_source(decisions: list[dict[str, Any]], source_group: str) -> dict[str, Any] | None:
+    rows = [row for row in decisions if row.get("source_group") == source_group and row.get("price_validation_status") == "PASS"]
+    return rows[0] if rows else None
+
+
+def _compact_signal_table(decisions: list[dict[str, Any]], *, source_group: str | None, limit: int) -> list[dict[str, Any]]:
+    rows = [row for row in decisions if source_group is None or row.get("source_group") == source_group]
+    table = []
+    for row in rows[:limit]:
+        table.append(
+            {
+                "ticker": row.get("ticker"),
+                "source": row.get("source_group"),
+                "price": row.get("source_row", {}).get("current_price"),
+                "price_change_1d_pct": row.get("source_row", {}).get("price_change_1d_pct"),
+                "relative_volume_20d": row.get("source_row", {}).get("relative_volume_20d"),
+                "ema_stack": row.get("source_row", {}).get("ema_stack"),
+                "signal": row.get("source_row", {}).get("signal_summary"),
+                "actionability": row.get("actionability_label"),
+                "risk": row.get("risk_level"),
+                "entry_or_trigger": row.get("action_trigger") if row.get("trigger_needed") else row.get("entry_zone"),
+                "stop": row.get("stop_loss"),
+                "tp1": row.get("tp1"),
+                "updated": row.get("latest_market_date"),
+            }
+        )
+    return table
 
 
 def _build_daily_decision_markdown(payload: dict[str, Any]) -> str:

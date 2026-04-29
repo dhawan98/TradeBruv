@@ -136,6 +136,12 @@ def main(argv: list[str] | None = None) -> int:
                 core_universe=args.core_universe,
                 outlier_universe=args.outlier_universe,
                 velocity_universe=args.velocity_universe,
+                broad_universe=args.broad_universe,
+                tracked=args.tracked,
+                top_n=args.top_n,
+                history_period=args.history_period,
+                data_dir=args.data_dir,
+                refresh_cache=args.refresh_cache,
                 analysis_date=args.as_of_date or date.today(),
                 output_dir=args.output_dir,
             )
@@ -145,6 +151,63 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Daily decision JSON: {payload['json_path']}")
         print(f"Daily decision MD:   {payload['markdown_path']}")
         print(f"Validated actionable rows: {sum(1 for row in payload.get('decisions', []) if row.get('price_validation_status') == 'PASS')}")
+        return 0
+
+    if args.command == "universe":
+        from .universe_registry import list_universe_definitions, universe_text
+
+        if args.universe_command == "list":
+            for definition in list_universe_definitions():
+                print(f"{definition.source}: {definition.label} -> {definition.default_output}")
+            return 0
+        if args.universe_command == "build":
+            content = universe_text(args.source)
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(content, encoding="utf-8")
+            print(f"Wrote {args.output}")
+            return 0
+
+    if args.command == "tracked":
+        from .tracked import add_tracked_ticker, list_tracked_tickers, remove_tracked_ticker
+
+        if args.tracked_command == "list":
+            tickers = list_tracked_tickers(args.path)
+            for ticker in tickers:
+                print(ticker)
+            return 0
+        if args.tracked_command == "add":
+            tickers = add_tracked_ticker(args.ticker, args.path)
+            print(",".join(tickers))
+            return 0
+        if args.tracked_command == "remove":
+            tickers = remove_tracked_ticker(args.ticker, args.path)
+            print(",".join(tickers))
+            return 0
+
+    if args.command == "broad-scan":
+        try:
+            from .broad_scan import run_broad_scan
+
+            payload = run_broad_scan(
+                universe=load_universe(args.universe),
+                provider_name=args.provider,
+                analysis_date=args.as_of_date or date.today(),
+                history_period=args.history_period,
+                data_dir=args.data_dir,
+                limit=args.limit,
+                batch_size=args.batch_size,
+                top_n=args.top_n,
+                tracked_path=args.tracked,
+                output_dir=args.output_dir,
+                refresh_cache=args.refresh_cache,
+                progress=print,
+            )
+        except (ProviderConfigurationError, FileNotFoundError, ValueError) as exc:
+            print(f"Broad-scan error: {exc}")
+            return 2
+        print(f"Broad scan JSON: {payload.json_path}")
+        print(f"Broad scan CSV:  {payload.csv_path}")
+        print(f"Broad scan MD:   {payload.markdown_path}")
         return 0
 
     if args.command == "review":
@@ -498,8 +561,45 @@ def build_parser() -> argparse.ArgumentParser:
     decision_today.add_argument("--core-universe", type=Path, default=Path("config/active_core_investing_universe.txt"))
     decision_today.add_argument("--outlier-universe", type=Path, default=Path("config/active_outlier_universe.txt"))
     decision_today.add_argument("--velocity-universe", type=Path, default=Path("config/active_velocity_universe.txt"))
+    decision_today.add_argument("--broad-universe", type=Path)
+    decision_today.add_argument("--tracked", type=Path, default=Path("config/tracked_tickers.txt"))
+    decision_today.add_argument("--top-n", type=int, default=25)
+    decision_today.add_argument("--data-dir", type=Path)
+    decision_today.add_argument("--history-period", default="3y")
+    decision_today.add_argument("--refresh-cache", action="store_true")
     decision_today.add_argument("--output-dir", type=Path, default=Path("outputs/daily"))
     decision_today.add_argument("--as-of-date", type=_parse_date)
+
+    universe = subparsers.add_parser("universe", help="List or write curated starter universe files.")
+    universe_subparsers = universe.add_subparsers(dest="universe_command", required=True)
+    universe_subparsers.add_parser("list", help="List built-in universe sources.")
+    universe_build = universe_subparsers.add_parser("build", help="Write a curated starter universe file.")
+    universe_build.add_argument("--source", choices=("sp500", "nasdaq100", "top1000", "liquid_growth", "ai_semis_software", "tracked"), required=True)
+    universe_build.add_argument("--output", type=Path, required=True)
+
+    tracked = subparsers.add_parser("tracked", help="Manage the tracked-tickers watchlist file.")
+    tracked_subparsers = tracked.add_subparsers(dest="tracked_command", required=True)
+    tracked_list = tracked_subparsers.add_parser("list", help="List tracked tickers.")
+    tracked_list.add_argument("--path", type=Path, default=Path("config/tracked_tickers.txt"))
+    tracked_add = tracked_subparsers.add_parser("add", help="Add one tracked ticker.")
+    tracked_add.add_argument("ticker")
+    tracked_add.add_argument("--path", type=Path, default=Path("config/tracked_tickers.txt"))
+    tracked_remove = tracked_subparsers.add_parser("remove", help="Remove one tracked ticker.")
+    tracked_remove.add_argument("ticker")
+    tracked_remove.add_argument("--path", type=Path, default=Path("config/tracked_tickers.txt"))
+
+    broad_scan = subparsers.add_parser("broad-scan", help="Scan a broader universe with caching and top-N ranking.")
+    broad_scan.add_argument("--universe", type=Path, required=True)
+    broad_scan.add_argument("--provider", choices=("sample", "local", "real"), default="real")
+    broad_scan.add_argument("--data-dir", type=Path)
+    broad_scan.add_argument("--history-period", default="3y")
+    broad_scan.add_argument("--limit", type=int, default=0)
+    broad_scan.add_argument("--batch-size", type=int, default=25)
+    broad_scan.add_argument("--top-n", type=int, default=25)
+    broad_scan.add_argument("--tracked", type=Path, default=Path("config/tracked_tickers.txt"))
+    broad_scan.add_argument("--output-dir", type=Path, default=Path("outputs/broad_scan"))
+    broad_scan.add_argument("--refresh-cache", action="store_true")
+    broad_scan.add_argument("--as-of-date", type=_parse_date)
 
     review = subparsers.add_parser("review", help="Review a saved scan report against later OHLCV data.")
     _add_review_provider_args(review)

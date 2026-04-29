@@ -281,6 +281,25 @@ class ScannerResult:
     quote_price_if_available: float | None = None
     price_warning: str = "No price sanity warning."
     price_confidence: str = "Low"
+    ema_21: float | None = None
+    ema_50: float | None = None
+    ema_150: float | None = None
+    ema_200: float | None = None
+    ema_stack: str = "Mixed Stack"
+    price_vs_ema_21_pct: float | None = None
+    price_vs_ema_50_pct: float | None = None
+    price_vs_ema_150_pct: float | None = None
+    price_vs_ema_200_pct: float | None = None
+    relative_volume_20d: float | None = None
+    relative_volume_50d: float | None = None
+    volume_signal: str = "No Clean Signal"
+    trend_signal: str = "No Clean Signal"
+    pullback_signal: str = "No Clean Signal"
+    breakout_signal: str = "No Clean Signal"
+    distribution_signal: str = "No Clean Signal"
+    signal_summary: str = "No Clean Signal"
+    signal_grade: str = "F"
+    price_change_1d_pct: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         catalyst_intelligence = _default_catalyst_intelligence() | self.catalyst_intelligence
@@ -404,6 +423,25 @@ class ScannerResult:
             "quote_price_if_available": _format_number(self.quote_price_if_available),
             "price_warning": self.price_warning,
             "price_confidence": self.price_confidence,
+            "ema_21": _format_number(self.ema_21),
+            "ema_50": _format_number(self.ema_50),
+            "ema_150": _format_number(self.ema_150),
+            "ema_200": _format_number(self.ema_200),
+            "ema_stack": self.ema_stack,
+            "price_vs_ema_21_pct": _format_number(self.price_vs_ema_21_pct),
+            "price_vs_ema_50_pct": _format_number(self.price_vs_ema_50_pct),
+            "price_vs_ema_150_pct": _format_number(self.price_vs_ema_150_pct),
+            "price_vs_ema_200_pct": _format_number(self.price_vs_ema_200_pct),
+            "relative_volume_20d": _format_number(self.relative_volume_20d),
+            "relative_volume_50d": _format_number(self.relative_volume_50d),
+            "volume_signal": self.volume_signal,
+            "trend_signal": self.trend_signal,
+            "pullback_signal": self.pullback_signal,
+            "breakout_signal": self.breakout_signal,
+            "distribution_signal": self.distribution_signal,
+            "signal_summary": self.signal_summary,
+            "signal_grade": self.signal_grade,
+            "price_change_1d_pct": _format_number(self.price_change_1d_pct),
         }
 
 

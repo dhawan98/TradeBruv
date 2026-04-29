@@ -44,6 +44,7 @@ vi.stubGlobal(
             company: 'NVIDIA',
             primary_action: 'Research / Buy Candidate',
             action_lane: 'Outlier',
+            source_group: 'Tracked',
             score: 82,
             actionability_score: 84,
             actionability_label: 'Actionable Today',
@@ -73,6 +74,11 @@ vi.stubGlobal(
             data_freshness: 'Fresh enough',
             source_row: {
               ticker: 'NVDA',
+              current_price: 100,
+              price_change_1d_pct: 2.4,
+              relative_volume_20d: 1.8,
+              ema_stack: 'Bullish Stack',
+              signal_summary: 'Breakout with Volume',
               status_label: 'Hold / Watch',
               winner_score: 70,
               outlier_score: 65,
@@ -85,6 +91,7 @@ vi.stubGlobal(
           {
             ticker: 'PLTR',
             company: 'Palantir',
+            source_group: 'Tracked',
             primary_action: 'Data Insufficient',
             action_lane: 'Outlier',
             score: 55,
@@ -160,6 +167,41 @@ vi.stubGlobal(
         watch_candidates: [],
         avoid_candidates: [],
         portfolio_actions: [],
+        best_tracked_setup: {
+          ticker: 'NVDA',
+          actionability_label: 'Actionable Today',
+          actionability_score: 84,
+        },
+        best_broad_setup: null,
+        signal_table: [
+          {
+            ticker: 'NVDA',
+            source: 'Tracked',
+            price: 100,
+            price_change_1d_pct: 2.4,
+            relative_volume_20d: 1.8,
+            ema_stack: 'Bullish Stack',
+            signal: 'Breakout with Volume',
+            actionability: 'Actionable Today',
+            risk: 'Low',
+            entry_or_trigger: '95 - 100',
+            stop: 90,
+            tp1: 110,
+            updated: '2026-04-24',
+          },
+        ],
+        data_coverage_status: {
+          tickers_attempted: 2,
+          tickers_successfully_scanned: 1,
+          tickers_failed: 1,
+          tracked_tickers_count: 2,
+          portfolio_tickers_count: 0,
+          provider: 'real',
+          cache_age_ttl_minutes: 60,
+          cache_hits: 1,
+          cache_misses: 1,
+          scan_groups: [{ source_group: 'Tracked', universe: 'config/tracked_tickers.txt', result_count: 2 }],
+        },
         compact_board: [
           {
             ticker: 'NVDA',
@@ -180,6 +222,26 @@ vi.stubGlobal(
         no_clean_candidate_reason: '',
       },
       '/api/reports/latest': { available: false, results: [], market_regime: {}, summary: {}, decisions: [], validation_context: { messages: ['Not enough evidence yet.'] } },
+      '/api/tracked': {
+        path: 'config/tracked_tickers.txt',
+        tickers: ['NVDA', 'PLTR'],
+        count: 2,
+        message: 'Tracked tickers are monitored every daily run and can become top candidates if setup is strong.',
+      },
+      '/api/chart/NVDA': {
+        available: true,
+        ticker: 'NVDA',
+        price_source: 'live quote',
+        last_market_date: '2026-04-24',
+        selected_timeframe: '1Y',
+        series: [
+          { date: '2026-04-22', close: 98, volume: 1000, ema_21: 96, ema_50: 94, ema_150: 90, ema_200: 88 },
+          { date: '2026-04-23', close: 99, volume: 1200, ema_21: 97, ema_50: 95, ema_150: 90.5, ema_200: 88.5 },
+          { date: '2026-04-24', close: 100, volume: 1500, ema_21: 98, ema_50: 96, ema_150: 91, ema_200: 89 },
+        ],
+        markers: [{ date: '2026-04-24', label: 'Breakout', tone: 'good' }],
+        signals: { ema_stack: 'Bullish Stack', signal_summary: 'Breakout with Volume', relative_volume_20d: 1.8 },
+      },
       '/api/universes': {
         items: [
           { label: 'Active Core Investing', path: 'config/active_core_investing_universe.txt', description: 'Core names.', available: true },
@@ -535,9 +597,10 @@ describe('App', () => {
 
   it('renders the stock picker empty state on the home screen', async () => {
     render(<App />);
-    expect(await screen.findByText("Today's Best Idea")).toBeInTheDocument();
-    expect(screen.getByText('Compact TP / SL or Trigger Board')).toBeInTheDocument();
-    expect(screen.getByText('Data Issues')).toBeInTheDocument();
+    expect(await screen.findByText('Tracked Watchlist')).toBeInTheDocument();
+    expect(screen.getByText('Market Chart')).toBeInTheDocument();
+    expect(screen.getByText('Signal Table')).toBeInTheDocument();
+    expect(screen.getByText('Coverage Status')).toBeInTheDocument();
     expect(screen.getAllByText('NVDA').length).toBeGreaterThan(0);
     expect(screen.getAllByText('PLTR')).toHaveLength(1);
     expect(screen.queryByText('This strategy beat SPY/QQQ but did not beat random baseline.')).not.toBeInTheDocument();

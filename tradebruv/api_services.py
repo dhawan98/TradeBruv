@@ -8,6 +8,7 @@ from typing import Any
 
 from .automation import DEFAULT_DAILY_OUTPUT_DIR, DEFAULT_SCAN_ARCHIVE_ROOT
 from .app_status import build_app_status_report, load_latest_app_status
+from .chart_signals import build_chart_payload
 from .decision_engine import build_unified_decision, build_unified_decisions, build_validation_context
 from .cli import build_provider, load_universe
 from .alternative_data import DEFAULT_ALTERNATIVE_DATA_PATH, AlternativeDataOverlayProvider, load_alternative_data_repository
@@ -52,9 +53,12 @@ from .replay import (
 )
 from .signal_quality import load_latest_signal_quality, run_case_study, run_signal_audit
 from .journal import DEFAULT_JOURNAL_PATH, add_journal_entry, journal_stats, update_journal_entry
+from .market_cache import DEFAULT_MARKET_CACHE_DIR, FileCacheMarketDataProvider
 from .portfolio import DEFAULT_PORTFOLIO_PATH, delete_position, import_portfolio_csv, save_portfolio
 from .price_sanity import build_price_sanity_from_row
 from .reporting import write_csv_report, write_json_report
+from .tracked import DEFAULT_TRACKED_TICKERS_PATH, add_tracked_ticker, list_tracked_tickers, remove_tracked_ticker
+from .universe_registry import UNIVERSE_DEFINITIONS
 from .validation_lab import (
     DEFAULT_PREDICTIONS_PATH,
     add_prediction,
@@ -286,8 +290,9 @@ def alerts() -> list[dict[str, Any]]:
 
 def deep_research(payload: dict[str, Any]) -> dict[str, Any]:
     provider = _provider(payload)
+    ticker = str(payload.get("ticker") or "").upper()
     result = run_dashboard_deep_research(
-        ticker=str(payload.get("ticker") or "").upper(),
+        ticker=ticker,
         provider=provider,
         portfolio_rows=load_dashboard_portfolio(DEFAULT_PORTFOLIO_PATH),
         journal_rows=load_dashboard_journal(DEFAULT_JOURNAL_PATH),
@@ -318,7 +323,69 @@ def deep_research(payload: dict[str, Any]) -> dict[str, Any]:
     result["price_sanity"] = build_price_sanity_from_row(scanner_row, reference_date=_parse_date(payload.get("as_of_date")) or date.today())
     result["unified_decision"] = unified_decision
     result["validation_context"] = validation_context
+    try:
+        security = provider.get_security_data(ticker)
+        result["chart"] = _slice_chart_payload(
+            build_chart_payload(security),
+            timeframe=str(payload.get("timeframe") or "1Y"),
+        )
+    except Exception as exc:
+        result["chart"] = {
+            "ticker": ticker,
+            "available": False,
+            "reason": str(exc),
+            "series": [],
+            "markers": [],
+            "signals": {},
+            "available_timeframes": ["6M", "1Y", "2Y"],
+        }
     return result
+
+
+def chart_data(ticker: str, *, provider_name: str = "sample", timeframe: str = "1Y", history_period: str = "3y", refresh_cache: bool = False) -> dict[str, Any]:
+    provider = build_provider(
+        args=SimpleNamespace(provider=provider_name, data_dir=None, history_period=history_period),
+        analysis_date=date.today(),
+    )
+    provider = FileCacheMarketDataProvider(
+        provider,
+        provider_name=provider_name,
+        history_period=history_period,
+        cache_dir=DEFAULT_MARKET_CACHE_DIR,
+        refresh_cache=refresh_cache,
+    )
+    security = provider.get_security_data(ticker.upper())
+    payload = _slice_chart_payload(build_chart_payload(security), timeframe=timeframe)
+    payload["available"] = True
+    payload["demo_mode"] = provider_name == "sample"
+    payload["cache"] = provider.cache_stats()
+    return payload
+
+
+def tracked_state() -> dict[str, Any]:
+    tickers = list_tracked_tickers(DEFAULT_TRACKED_TICKERS_PATH)
+    return {
+        "path": str(DEFAULT_TRACKED_TICKERS_PATH),
+        "tickers": tickers,
+        "count": len(tickers),
+        "message": "Tracked tickers are monitored every daily run and can become top candidates if setup is strong.",
+    }
+
+
+def tracked_add(payload: dict[str, Any]) -> dict[str, Any]:
+    ticker = str(payload.get("ticker") or "").upper()
+    if not ticker:
+        raise ValueError("Ticker is required.")
+    add_tracked_ticker(ticker, DEFAULT_TRACKED_TICKERS_PATH)
+    return tracked_state()
+
+
+def tracked_remove(payload: dict[str, Any]) -> dict[str, Any]:
+    ticker = str(payload.get("ticker") or "").upper()
+    if not ticker:
+        raise ValueError("Ticker is required.")
+    remove_tracked_ticker(ticker, DEFAULT_TRACKED_TICKERS_PATH)
+    return tracked_state()
 
 
 def portfolio_state() -> dict[str, Any]:
@@ -628,12 +695,35 @@ def universes() -> dict[str, Any]:
         {"label": "Active Velocity", "path": str(ACTIVE_VELOCITY_UNIVERSE), "description": "High-volume / velocity monitor names."},
         {"label": "Mega Cap", "path": "config/mega_cap_universe.txt", "description": "Large-cap leadership basket."},
         {"label": "Momentum", "path": "config/momentum_universe.txt", "description": "Momentum-leaning universe."},
+        {"label": "Tracked Tickers", "path": str(DEFAULT_TRACKED_TICKERS_PATH), "description": "Your monitored names. Tracked symbols are always evaluated in daily runs."},
+        *[
+            {
+                "label": definition.label,
+                "path": str(definition.default_output),
+                "description": definition.description,
+            }
+            for key, definition in UNIVERSE_DEFINITIONS.items()
+            if key != "tracked"
+        ],
         {"label": "Famous Case Studies", "path": str(FAMOUS_CASE_STUDIES), "description": "Historical validation names only."},
     ]
     return {
         "items": [{**item, "available": Path(item["path"]).exists()} for item in items],
-        "warning": "Famous Case Studies are for historical validation, not active monitoring.",
+        "warning": "Broad universe files are curated static starters and should be refreshed periodically. Famous Case Studies are for historical validation, not active monitoring.",
         "home_defaults": [str(ACTIVE_CORE_UNIVERSE), str(ACTIVE_OUTLIER_UNIVERSE)],
+    }
+
+
+def _slice_chart_payload(payload: dict[str, Any], *, timeframe: str) -> dict[str, Any]:
+    series = list(payload.get("series") or [])
+    limits = {"6M": 126, "1Y": 252, "2Y": 504}
+    limit = limits.get(timeframe.upper(), 252)
+    if len(series) > limit:
+        series = series[-limit:]
+    return {
+        **payload,
+        "selected_timeframe": timeframe.upper(),
+        "series": series,
     }
 
 

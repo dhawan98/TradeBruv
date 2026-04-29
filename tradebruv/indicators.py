@@ -39,6 +39,31 @@ def sma(values: Sequence[float], window: int) -> float | None:
     return mean(values[-window:])
 
 
+def ema(values: Sequence[float], window: int) -> float | None:
+    if len(values) < window or window <= 0:
+        return None
+    multiplier = 2.0 / (window + 1)
+    current = mean(values[:window])
+    for value in values[window:]:
+        current = (value - current) * multiplier + current
+    return current
+
+
+def ema_series(values: Sequence[float], window: int) -> list[float | None]:
+    if window <= 0:
+        return [None for _ in values]
+    if len(values) < window:
+        return [None for _ in values]
+    multiplier = 2.0 / (window + 1)
+    seed = mean(values[:window])
+    output: list[float | None] = [None for _ in range(window - 1)] + [seed]
+    current = seed
+    for value in values[window:]:
+        current = (value - current) * multiplier + current
+        output.append(current)
+    return output
+
+
 def sample_stddev(values: Sequence[float]) -> float | None:
     if len(values) < 2:
         return None
@@ -59,4 +84,3 @@ def atr(bars: Sequence[PriceBar], window: int = 14) -> float | None:
             )
         )
     return average(true_ranges)
-

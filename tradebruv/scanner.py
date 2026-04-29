@@ -6,6 +6,7 @@ from typing import Any, Iterable
 
 from .alternative_data import build_alternative_data_signal
 from .catalysts import build_catalyst_intelligence
+from .chart_signals import build_signal_snapshot
 from .indicators import atr, average, clamp, close_location, pct_change, sample_stddev, sma
 from .models import ScannerResult, SecurityData, TradePlan
 from .price_sanity import build_price_snapshot
@@ -295,6 +296,7 @@ class DeterministicScanner:
         data_used["regular_investing_components"] = investing["components"]
         data_used["regular_investing_note"] = investing["data_quality_note"]
         data_used["price_snapshot"] = price_snapshot
+        signal_snapshot = build_signal_snapshot(security)
 
         return ScannerResult(
             ticker=security.ticker,
@@ -371,6 +373,25 @@ class DeterministicScanner:
             quote_price_if_available=_coerce_float_or_none(price_snapshot["quote_price_if_available"]),
             price_warning=str(price_snapshot["price_warning"]),
             price_confidence=str(price_snapshot["price_confidence"]),
+            ema_21=_coerce_float_or_none(signal_snapshot.get("ema_21")),
+            ema_50=_coerce_float_or_none(signal_snapshot.get("ema_50")),
+            ema_150=_coerce_float_or_none(signal_snapshot.get("ema_150")),
+            ema_200=_coerce_float_or_none(signal_snapshot.get("ema_200")),
+            ema_stack=str(signal_snapshot.get("ema_stack") or "Mixed Stack"),
+            price_vs_ema_21_pct=_coerce_float_or_none(signal_snapshot.get("price_vs_ema_21_pct")),
+            price_vs_ema_50_pct=_coerce_float_or_none(signal_snapshot.get("price_vs_ema_50_pct")),
+            price_vs_ema_150_pct=_coerce_float_or_none(signal_snapshot.get("price_vs_ema_150_pct")),
+            price_vs_ema_200_pct=_coerce_float_or_none(signal_snapshot.get("price_vs_ema_200_pct")),
+            relative_volume_20d=_coerce_float_or_none(signal_snapshot.get("relative_volume_20d")),
+            relative_volume_50d=_coerce_float_or_none(signal_snapshot.get("relative_volume_50d")),
+            volume_signal=str(signal_snapshot.get("volume_signal") or "No Clean Signal"),
+            trend_signal=str(signal_snapshot.get("trend_signal") or "No Clean Signal"),
+            pullback_signal=str(signal_snapshot.get("pullback_signal") or "No Clean Signal"),
+            breakout_signal=str(signal_snapshot.get("breakout_signal") or "No Clean Signal"),
+            distribution_signal=str(signal_snapshot.get("distribution_signal") or "No Clean Signal"),
+            signal_summary=str(signal_snapshot.get("signal_summary") or "No Clean Signal"),
+            signal_grade=str(signal_snapshot.get("signal_grade") or "F"),
+            price_change_1d_pct=(round(features.return_1d * 100, 2) if features.return_1d is not None else None),
         )
 
     def _failure_result(self, ticker: str, error: Exception) -> ScannerResult:
@@ -432,6 +453,15 @@ class DeterministicScanner:
             quote_price_if_available=None,
             price_warning="Data Insufficient: price unavailable.",
             price_confidence="Low",
+            ema_stack="Mixed Stack",
+            volume_signal="No Clean Signal",
+            trend_signal="No Clean Signal",
+            pullback_signal="No Clean Signal",
+            breakout_signal="No Clean Signal",
+            distribution_signal="No Clean Signal",
+            signal_summary="No Clean Signal",
+            signal_grade="F",
+            price_change_1d_pct=None,
         )
 
     def _append_availability_notes(self, notes: list[str], security: SecurityData) -> None:
