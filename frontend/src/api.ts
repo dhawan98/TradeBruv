@@ -164,6 +164,7 @@ export const api = {
   createEnvTemplate: () => request<EnvCreatePayload>('/api/env/create-template', { method: 'POST', body: '{}' }),
   updateLocalEnv: (values: Record<string, string>) =>
     request<EnvUpdatePayload>('/api/env/update-local', { method: 'POST', body: JSON.stringify({ values }) }),
+  dailyDecisionLatest: () => request<DecisionSnapshotPayload>('/api/daily-decision/latest'),
   latestReport: () => request<LatestReport>('/api/reports/latest'),
   reportsArchive: () => request<{ reports: ArchiveReport[] }>('/api/reports/archive'),
   dailySummary: () => request<Record<string, unknown>>('/api/daily-summary'),
@@ -219,15 +220,30 @@ export const api = {
 };
 
 export type PriceSanity = {
+  data_mode?: string;
   price_source?: string;
   price_timestamp?: string;
   provider?: string;
+  provider_is_live_capable?: boolean;
   is_sample_data?: boolean;
   is_adjusted_price?: boolean;
   is_stale_price?: boolean;
+  is_replay?: boolean;
+  is_case_study?: boolean;
+  is_report_only?: boolean;
+  is_stale?: boolean;
   last_market_date?: string;
   latest_available_close?: number | string;
   quote_price_if_available?: number | string;
+  validated_price?: number | string;
+  validated_price_source?: string;
+  displayed_price?: number | string;
+  price_mismatch_pct?: number | string;
+  possible_split_adjustment_mismatch?: boolean;
+  price_validation_status?: 'PASS' | 'WARN' | 'FAIL' | string;
+  price_validation_reason?: string;
+  has_validated_live_price?: boolean;
+  levels_allowed?: boolean;
   price_warning?: string;
   price_confidence?: string;
   scan_is_stale?: boolean;
@@ -254,6 +270,11 @@ export type UnifiedDecision = {
   events_to_watch?: string[];
   data_quality?: unknown;
   data_freshness?: string;
+  price_source?: string;
+  latest_market_date?: string;
+  price_validation_status?: string;
+  price_validation_reason?: string;
+  is_actionable?: boolean;
   price_sanity?: PriceSanity;
   next_review_date?: string;
   portfolio_context?: Record<string, unknown> | null;
@@ -377,17 +398,24 @@ export type ScannerRow = PriceSanity & {
 };
 
 export type ScanPayload = {
+  available?: boolean;
   generated_at: string;
   provider: string;
   mode: string;
+  data_mode?: string;
+  demo_mode?: boolean;
+  report_snapshot?: boolean;
+  stale_data?: boolean;
   results: ScannerRow[];
   summary: Record<string, unknown>;
   market_regime: Record<string, unknown>;
   decisions?: UnifiedDecision[];
+  data_issues?: UnifiedDecision[];
   validation_context?: ValidationContext;
 };
 
 export type LatestReport = ScanPayload & { available: boolean; path?: string };
+export type DecisionSnapshotPayload = ScanPayload & { available: boolean; path?: string; json_path?: string; markdown_path?: string };
 export type ResearchPayload = Record<string, unknown> & {
   scanner_row?: ScannerRow;
   decision_card?: Record<string, unknown>;

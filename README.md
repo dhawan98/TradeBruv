@@ -319,6 +319,64 @@ Interpretation:
 - `Latest close, not live quote.` means you are seeing the most recent available close, not a streaming quote.
 - `Data Insufficient` means the app could not verify a usable price and should not generate a real decision from it.
 
+### Live Price Validation Gate
+
+TradeBruv now treats live decisions, saved reports, and demo/sample data as separate states.
+
+- `Home` / Decision Cockpit loads `outputs/daily/decision_today.json` through `/api/daily-decision/latest`. It no longer treats the latest saved scan report as a live decision by default.
+- `Reports` remains a report viewer. Saved reports are `Report Snapshot` / historical snapshots and do not populate the live TP / SL board unless a future workflow explicitly selects them.
+- `Sample` provider is demo-only. The UI shows `DEMO MODE. Demo sample data — not real prices.` and sample rows cannot create an actionable Top Candidate, Buy / Research card, or TP / SL row.
+- `Report-only`, `replay`, `case-study`, stale, or failed-validation rows are forced to `Data Insufficient`.
+- TP / SL levels are hidden unless `price_validation_status == PASS`.
+- If validation fails, the user-facing reason is `No validated live price. Levels hidden.`
+
+Validation uses:
+- `quote_price_if_available` first when present
+- `latest_available_close` as the fallback validated price when a live quote is unavailable
+- `last_market_date`, provider type, sample/report/replay flags, and stale checks
+- a displayed-price mismatch gate: more than 10% vs validated price fails validation
+- split/adjustment mismatch detection for ratios that look like 2x, 4x, 5x, 10x, 20x style adjustment errors
+
+Additional fields now surfaced on decisions and Deep Research:
+- `validated_price`
+- `validated_price_source`
+- `displayed_price`
+- `price_mismatch_pct`
+- `possible_split_adjustment_mismatch`
+- `price_validation_status`
+- `price_validation_reason`
+
+When TP / SL is hidden:
+- the decision stays visible in `Data Issues`
+- the TP / SL board excludes the row
+- Deep Research shows `Do not use TP/SL levels. Price validation failed.`
+
+Build the live daily snapshot explicitly:
+
+```bash
+python3 -m tradebruv decision-today \
+  --provider real \
+  --core-universe config/active_core_investing_universe.txt \
+  --outlier-universe config/active_outlier_universe.txt \
+  --velocity-universe config/active_velocity_universe.txt
+```
+
+Debug price lineage and validation:
+
+```bash
+python3 -m tradebruv price-debug \
+  --tickers NVDA,PLTR,MU,COIN,RDDT \
+  --provider real
+```
+
+`price-debug` writes:
+- `outputs/debug/price_debug_report.json`
+- `outputs/debug/price_debug_report.md`
+- `outputs/debug/price_lineage_report.json`
+- `outputs/debug/price_lineage_report.md`
+
+These reports show the live quote, latest close, scanner/displayed price, provider, latest market date, validation status, stale/sample/report flags, split-mismatch warning, and any source report file that contributed historical context.
+
 ## Quick Start
 
 ## Pass 7/8 Primary UI and API

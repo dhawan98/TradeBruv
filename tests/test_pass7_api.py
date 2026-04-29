@@ -94,7 +94,44 @@ def test_scan_endpoint_with_sample_provider(client):
     assert response.status_code == 200
     payload = response.json()
     assert payload["results"]
+    assert payload["available"] is True
+    assert payload["demo_mode"] is True
+    assert payload["report_snapshot"] is False
+    assert payload["data_issues"]
+    assert all(row["price_validation_status"] == "FAIL" for row in payload["decisions"])
     assert (Path("outputs") / "outlier_scan_report.json").exists()
+
+
+def test_daily_decision_latest_endpoint(client):
+    output_path = Path("outputs/daily/decision_today.json")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(
+            {
+                "available": True,
+                "generated_at": "2026-04-24T00:00:00Z",
+                "provider": "real",
+                "mode": "daily-decision",
+                "data_mode": "live_daily_decision",
+                "results": [],
+                "summary": {},
+                "decisions": [],
+                "data_issues": [],
+                "validation_context": {"messages": ["Fresh live prices validated."]},
+                "market_regime": {"regime": "Risk On"},
+                "demo_mode": False,
+                "report_snapshot": False,
+                "stale_data": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.get("/api/daily-decision/latest")
+
+    assert response.status_code == 200
+    assert response.json()["available"] is True
+    assert response.json()["mode"] == "daily-decision"
 
 
 def test_deep_research_endpoint(client):

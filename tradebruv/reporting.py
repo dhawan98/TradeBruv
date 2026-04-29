@@ -8,15 +8,27 @@ from pathlib import Path
 from .models import ScannerResult
 
 
-def write_json_report(results: list[ScannerResult], path: str | Path, mode: str = "standard") -> Path:
+def write_json_report(
+    results: list[ScannerResult],
+    path: str | Path,
+    mode: str = "standard",
+    *,
+    provider: str | None = None,
+    source: str | None = None,
+    metadata: dict | None = None,
+) -> Path:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "generated_at": datetime.utcnow().isoformat() + "Z",
         "scanner": "TradeBruv deterministic scanner",
         "mode": mode,
+        "provider": provider,
+        "source": source,
         "results": [result.to_dict() for result in results],
     }
+    if metadata:
+        payload["metadata"] = metadata
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return output_path
 

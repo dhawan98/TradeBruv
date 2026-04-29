@@ -99,7 +99,14 @@ def main(argv: list[str] | None = None) -> int:
         csv_path = args.csv_path or output_dir / f"{default_stem}.csv"
 
         print_console_summary(results, mode=args.mode)
-        write_json_report(results, json_path, mode=args.mode)
+        write_json_report(
+            results,
+            json_path,
+            mode=args.mode,
+            provider=args.provider,
+            source=f"live scan: {args.universe}",
+            metadata={"analysis_date": analysis_date.isoformat(), "selected_provider": args.provider, "data_mode": "live_scan"},
+        )
         write_csv_report(results, csv_path)
         if args.archive:
             archived = archive_scan_report(
@@ -120,6 +127,25 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "daily":
         return _handle_daily(args)
+
+    if args.command == "decision-today":
+        try:
+            from .daily_decision import run_daily_decision
+            payload = run_daily_decision(
+                provider_name=args.provider,
+                core_universe=args.core_universe,
+                outlier_universe=args.outlier_universe,
+                velocity_universe=args.velocity_universe,
+                analysis_date=args.as_of_date or date.today(),
+                output_dir=args.output_dir,
+            )
+        except (ProviderConfigurationError, FileNotFoundError, ValueError) as exc:
+            print(f"Decision-today error: {exc}")
+            return 2
+        print(f"Daily decision JSON: {payload['json_path']}")
+        print(f"Daily decision MD:   {payload['markdown_path']}")
+        print(f"Validated actionable rows: {sum(1 for row in payload.get('decisions', []) if row.get('price_validation_status') == 'PASS')}")
+        return 0
 
     if args.command == "review":
         try:
@@ -198,6 +224,31 @@ def main(argv: list[str] | None = None) -> int:
         payload = build_app_status_report(output_dir=args.output_dir)
         print(f"App status JSON: {payload['json_path']}")
         print(f"App status MD:   {payload['markdown_path']}")
+        return 0
+
+    if args.command == "price-debug":
+        try:
+            from .price_debug import build_price_debug_report, build_price_lineage_report
+            tickers = [ticker.strip().upper() for ticker in args.tickers.split(",") if ticker.strip()]
+            build_price_lineage_report(
+                tickers=tickers,
+                output_dir=args.output_dir,
+                reference_date=args.as_of_date or date.today(),
+            )
+            payload = build_price_debug_report(
+                tickers=tickers,
+                provider_name=args.provider,
+                history_period=args.history_period,
+                analysis_date=args.as_of_date or date.today(),
+                output_dir=args.output_dir,
+            )
+        except (ProviderConfigurationError, FileNotFoundError, ValueError) as exc:
+            print(f"Price-debug error: {exc}")
+            return 2
+        print(f"Price debug JSON: {payload['json_path']}")
+        print(f"Price debug MD:   {payload['markdown_path']}")
+        print(f"Price lineage JSON: {args.output_dir / 'price_lineage_report.json'}")
+        print(f"Price lineage MD:   {args.output_dir / 'price_lineage_report.md'}")
         return 0
 
     if args.command == "replay":
@@ -442,6 +493,14 @@ def build_parser() -> argparse.ArgumentParser:
     daily.add_argument("--limit", type=int, default=0)
     daily.add_argument("--as-of-date", type=_parse_date)
 
+    decision_today = subparsers.add_parser("decision-today", help="Build the live Daily Decision snapshot used by the cockpit.")
+    decision_today.add_argument("--provider", choices=("sample", "local", "real"), default="real")
+    decision_today.add_argument("--core-universe", type=Path, default=Path("config/active_core_investing_universe.txt"))
+    decision_today.add_argument("--outlier-universe", type=Path, default=Path("config/active_outlier_universe.txt"))
+    decision_today.add_argument("--velocity-universe", type=Path, default=Path("config/active_velocity_universe.txt"))
+    decision_today.add_argument("--output-dir", type=Path, default=Path("outputs/daily"))
+    decision_today.add_argument("--as-of-date", type=_parse_date)
+
     review = subparsers.add_parser("review", help="Review a saved scan report against later OHLCV data.")
     _add_review_provider_args(review)
     review.add_argument("--report", type=Path, required=True, help="Saved scan_report.json/csv or outlier report.")
@@ -535,6 +594,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     app_status = subparsers.add_parser("app-status", help="Write outputs/app_status_report.md summarizing actual app readiness.")
     app_status.add_argument("--output-dir", type=Path, default=Path("outputs"))
+
+    price_debug = subparsers.add_parser("price-debug", help="Compare scanner/displayed prices against validated quote/latest close.")
+    price_debug.add_argument("--tickers", required=True, help="Comma-separated tickers.")
+    price_debug.add_argument("--provider", choices=("sample", "local", "real"), default="real")
+    price_debug.add_argument("--history-period", default="3y")
+    price_debug.add_argument("--as-of-date", type=_parse_date)
+    price_debug.add_argument("--output-dir", type=Path, default=Path("outputs/debug"))
 
     replay = subparsers.add_parser("replay", help="Run no-lookahead historical scanner replay.")
     _add_review_provider_args(replay)

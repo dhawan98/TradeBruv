@@ -477,7 +477,7 @@ class DeterministicScanner:
         highs = [bar.high for bar in bars]
         lows = [bar.low for bar in bars]
         volumes = [bar.volume for bar in bars]
-        current = closes[-1]
+        current = security.quote_price_if_available or security.latest_available_close or closes[-1]
         sma20 = sma(closes, 20)
         sma50 = sma(closes, 50)
         sma200 = sma(closes, 200)

@@ -31,6 +31,7 @@ from .dashboard_data import (
     run_dashboard_scan,
     upsert_dashboard_position,
 )
+from .daily_decision import load_daily_decision
 from .env import (
     LOCAL_ENV_WARNING,
     create_local_env_from_template,
@@ -73,7 +74,9 @@ FAMOUS_CASE_STUDIES = Path("config/famous_outlier_case_studies.txt")
 def health() -> dict[str, Any]:
     sources = data_sources()
     portfolio = portfolio_state()
-    latest = reports_latest()
+    latest = daily_decision_latest()
+    if not latest.get("available"):
+        latest = reports_latest()
     return {
         "ok": True,
         "app": "TradeBruv",
@@ -141,7 +144,18 @@ def run_scan(payload: dict[str, Any]) -> dict[str, Any]:
     csv_path = output_dir / f"{stem}.csv"
     validation_context = _validation_context()
     portfolio_rows = load_dashboard_portfolio(DEFAULT_PORTFOLIO_PATH)
-    enriched_results = _enrich_results(report.results, generated_at=report.generated_at, reference_date=analysis_date)
+    enriched_results = _enrich_results(
+        report.results,
+        generated_at=report.generated_at,
+        reference_date=analysis_date,
+        extra={
+            "data_mode": "live_scan",
+            "selected_provider": provider,
+            "provider_is_live_capable": provider == "real",
+            "is_report_only": False,
+            "report_snapshot_selected": False,
+        },
+    )
     decisions = build_unified_decisions(
         enriched_results,
         portfolio_rows=portfolio_rows,
@@ -151,18 +165,31 @@ def run_scan(payload: dict[str, Any]) -> dict[str, Any]:
         preferred_lane=_preferred_lane_for_mode(mode),
     )
     result_objects = [SimpleNamespace(to_dict=lambda row=row: row) for row in enriched_results]
-    write_json_report(result_objects, json_path, mode=mode)
+    write_json_report(
+        result_objects,
+        json_path,
+        mode=mode,
+        provider=provider,
+        source=f"live scan: {universe_path}",
+        metadata={"data_mode": "live_scan", "selected_provider": provider, "analysis_date": analysis_date.isoformat()},
+    )
     write_csv_report(result_objects, csv_path)
     return {
         "generated_at": report.generated_at,
         "scanner": report.scanner,
         "provider": report.provider,
         "mode": report.mode,
+        "available": True,
+        "data_mode": "live_scan",
+        "demo_mode": provider == "sample",
+        "report_snapshot": False,
+        "stale_data": any(bool(decision.get("price_sanity", {}).get("is_stale")) for decision in decisions),
         "source": report.source,
         "market_regime": report.market_regime,
         "results": enriched_results,
         "summary": build_daily_summary(enriched_results),
         "decisions": decisions,
+        "data_issues": [decision for decision in decisions if decision.get("price_validation_status") != "PASS"],
         "validation_context": validation_context,
         "json_path": str(json_path),
         "csv_path": str(csv_path),
@@ -172,10 +199,21 @@ def run_scan(payload: dict[str, Any]) -> dict[str, Any]:
 def reports_latest() -> dict[str, Any]:
     latest = find_latest_report(Path("outputs"))
     if latest is None:
-        return {"available": False, "results": [], "decisions": [], "generated_at": "unavailable", "validation_context": _validation_context()}
+        return {"available": False, "results": [], "decisions": [], "generated_at": "unavailable", "validation_context": _validation_context(), "data_mode": "report_snapshot", "report_snapshot": True}
     report = load_dashboard_report(latest)
     validation_context = _validation_context()
-    enriched_results = _enrich_results(report.results, generated_at=report.generated_at)
+    enriched_results = _enrich_results(
+        report.results,
+        generated_at=report.generated_at,
+        extra={
+            "data_mode": "report_snapshot",
+            "selected_provider": report.provider,
+            "provider_is_live_capable": report.provider == "real",
+            "is_report_only": True,
+            "report_snapshot_selected": False,
+            "report_source_path": str(latest),
+        },
+    )
     decisions = build_unified_decisions(
         enriched_results,
         portfolio_rows=load_dashboard_portfolio(DEFAULT_PORTFOLIO_PATH),
@@ -190,13 +228,27 @@ def reports_latest() -> dict[str, Any]:
         "scanner": report.scanner,
         "provider": report.provider,
         "mode": report.mode,
+        "data_mode": "report_snapshot",
+        "demo_mode": report.provider == "sample",
+        "report_snapshot": True,
+        "stale_data": any(bool(decision.get("price_sanity", {}).get("is_stale")) for decision in decisions),
         "source": report.source,
         "market_regime": report.market_regime,
         "results": enriched_results,
         "summary": build_daily_summary(enriched_results),
         "decisions": decisions,
+        "data_issues": [decision for decision in decisions if decision.get("price_validation_status") != "PASS"],
         "validation_context": validation_context,
     }
+
+
+def daily_decision_latest() -> dict[str, Any]:
+    payload = load_daily_decision()
+    payload.setdefault("data_mode", "live_daily_decision")
+    payload.setdefault("report_snapshot", False)
+    payload.setdefault("demo_mode", False)
+    payload.setdefault("stale_data", False)
+    return payload
 
 
 def reports_archive() -> dict[str, Any]:
@@ -245,6 +297,13 @@ def deep_research(payload: dict[str, Any]) -> dict[str, Any]:
         dict(result.get("scanner_row") or {}),
         generated_at=datetime.utcnow().isoformat() + "Z",
         reference_date=_parse_date(payload.get("as_of_date")) or date.today(),
+        extra={
+            "data_mode": "live_research",
+            "selected_provider": str(payload.get("provider") or "sample"),
+            "provider_is_live_capable": str(payload.get("provider") or "sample") == "real",
+            "is_report_only": False,
+            "report_snapshot_selected": False,
+        },
     )
     validation_context = _validation_context()
     unified_decision = build_unified_decision(
@@ -632,8 +691,9 @@ def _enrich_results(
     *,
     generated_at: str,
     reference_date: date | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    return [_enrich_result_row(row, generated_at=generated_at, reference_date=reference_date) for row in rows]
+    return [_enrich_result_row(row, generated_at=generated_at, reference_date=reference_date, extra=extra) for row in rows]
 
 
 def _enrich_result_row(
@@ -641,8 +701,11 @@ def _enrich_result_row(
     *,
     generated_at: str,
     reference_date: date | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     enriched = dict(row)
+    if extra:
+        enriched.update(extra)
     enriched.update(
         build_price_sanity_from_row(
             enriched,

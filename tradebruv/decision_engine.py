@@ -51,6 +51,7 @@ def build_unified_decision(
 ) -> dict[str, Any]:
     ticker = str(row.get("ticker") or "UNKNOWN").upper()
     price_sanity = build_price_sanity_from_row(row, reference_date=reference_date, scan_generated_at=scan_generated_at)
+    levels_visible = bool(price_sanity.get("levels_allowed"))
     owned = portfolio_row is not None
     portfolio_decision = build_portfolio_recommendation(position=portfolio_row, scanner_row=row) if owned else None
     action_lane = _action_lane(row, portfolio_decision, preferred_lane=preferred_lane)
@@ -58,12 +59,14 @@ def build_unified_decision(
     risk_level = _risk_level(row, portfolio_decision)
     confidence_label = _confidence_label(row, price_sanity, validation_context)
     evidence_strength = str((validation_context or {}).get("evidence_strength") or "Not enough evidence yet")
-    entry_zone = str(row.get("entry_zone") or "unavailable")
-    stop_loss = row.get("stop_loss_reference") or row.get("invalidation_level") or "unavailable"
-    invalidation = portfolio_decision.get("invalidation_level") if portfolio_decision else row.get("invalidation_level", "unavailable")
+    entry_zone = str(row.get("entry_zone") or "unavailable") if levels_visible else "unavailable"
+    stop_loss = (row.get("stop_loss_reference") or row.get("invalidation_level") or "unavailable") if levels_visible else "unavailable"
+    invalidation = (portfolio_decision.get("invalidation_level") if portfolio_decision else row.get("invalidation_level", "unavailable")) if levels_visible else "unavailable"
     next_review_date = _next_review_date(primary_action, price_sanity)
     reason = _reason(row, portfolio_decision, primary_action, validation_context)
     why_not = _why_not(row, portfolio_decision, price_sanity)
+    if not levels_visible:
+        reason = "No validated live price. Levels hidden."
 
     return {
         "ticker": ticker,
@@ -81,15 +84,20 @@ def build_unified_decision(
         "entry_zone": entry_zone,
         "stop_loss": stop_loss,
         "invalidation": invalidation,
-        "tp1": row.get("tp1", "unavailable"),
-        "tp2": row.get("tp2", "unavailable"),
-        "reward_risk": row.get("reward_risk", "unavailable"),
+        "tp1": row.get("tp1", "unavailable") if levels_visible else "unavailable",
+        "tp2": row.get("tp2", "unavailable") if levels_visible else "unavailable",
+        "reward_risk": row.get("reward_risk", "unavailable") if levels_visible else "unavailable",
         "holding_horizon": row.get("investing_time_horizon") or row.get("expected_horizon") or row.get("holding_period") or "unavailable",
         "reason": reason,
         "why_not": why_not,
         "events_to_watch": list(row.get("investing_events_to_watch") or row.get("why_it_could_fail") or row.get("warnings") or []),
         "data_quality": row.get("investing_data_quality") or row.get("data_availability_notes", []),
         "data_freshness": "Stale scan" if price_sanity["scan_is_stale"] else "Fresh enough",
+        "price_source": price_sanity.get("validated_price_source") or price_sanity.get("price_source"),
+        "latest_market_date": price_sanity.get("last_market_date"),
+        "price_validation_status": price_sanity.get("price_validation_status"),
+        "price_validation_reason": price_sanity.get("price_validation_reason"),
+        "is_actionable": levels_visible and primary_action != "Data Insufficient",
         "price_sanity": price_sanity,
         "next_review_date": next_review_date,
         "portfolio_context": portfolio_decision,
@@ -145,9 +153,7 @@ def _primary_action(
     *,
     owned: bool,
 ) -> str:
-    if price_sanity["is_sample_data"]:
-        return "Data Insufficient"
-    if "Data Insufficient" in price_sanity["price_warning"]:
+    if price_sanity.get("price_validation_status") != "PASS":
         return "Data Insufficient"
     if portfolio_decision:
         mapping = {
@@ -200,7 +206,7 @@ def _risk_level(row: dict[str, Any], portfolio_decision: dict[str, Any] | None) 
 
 def _confidence_label(row: dict[str, Any], price_sanity: dict[str, Any], validation_context: dict[str, Any] | None) -> str:
     confidence = str(row.get("confidence_label") or "Low")
-    if price_sanity["is_sample_data"] or price_sanity["scan_is_stale"]:
+    if price_sanity.get("price_validation_status") != "PASS" or price_sanity["scan_is_stale"]:
         return "Low"
     if "Not enough evidence" in str((validation_context or {}).get("evidence_strength", "")) and confidence in {"Very High", "High"}:
         return "Medium"
@@ -215,6 +221,8 @@ def _reason(
     primary_action: str,
     validation_context: dict[str, Any] | None,
 ) -> str:
+    if primary_action == "Data Insufficient" and row.get("ticker"):
+        return "No validated live price. Levels hidden."
     if portfolio_decision:
         for key in ("reason_to_add", "reason_to_hold", "reason_to_trim", "reason_to_exit"):
             value = str(portfolio_decision.get(key) or "")
@@ -239,6 +247,9 @@ def _why_not(row: dict[str, Any], portfolio_decision: dict[str, Any] | None, pri
             if portfolio_decision.get(key)
         )
     warnings.extend(price_sanity.get("price_warnings") or [])
+    validation_reason = str(price_sanity.get("price_validation_reason") or "")
+    if validation_reason and validation_reason != "Validated live price.":
+        warnings.append(validation_reason)
     warnings = [warning for warning in warnings if warning and "No " not in str(warning)]
     if not warnings:
         return "No major counter-thesis beyond routine review discipline."

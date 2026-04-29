@@ -22,6 +22,7 @@ import {
   api,
   AlertRow,
   DataSourceRow,
+  DecisionSnapshotPayload,
   HealthPayload,
   PortfolioPayload,
   PredictionRow,
@@ -93,9 +94,15 @@ const DEFAULT_UNIVERSES: UniverseItem[] = [
 const DEFAULT_UNIVERSE_WARNING = 'Famous Case Studies are for historical validation, not active monitoring.';
 
 type ScanState = {
+  available?: boolean;
   generated_at?: string;
+  provider?: string;
+  demo_mode?: boolean;
+  report_snapshot?: boolean;
+  stale_data?: boolean;
   results?: ScannerRow[];
   decisions?: UnifiedDecision[];
+  data_issues?: UnifiedDecision[];
   validation_context?: ValidationContext;
 };
 
@@ -103,7 +110,7 @@ export function App() {
   const [page, setPage] = useState<PageKey>('Home');
   const health = useAsync(api.health, []);
   const portfolio = useAsync(api.portfolio, []);
-  const latest = useAsync(api.latestReport, []);
+  const latest = useAsync(api.dailyDecisionLatest, []);
 
   return (
     <div className="app-shell">
@@ -164,7 +171,7 @@ function TopBar({
   health: HealthPayload | null;
   healthError: Error | null;
   portfolio: PortfolioPayload | null;
-  latest: { generated_at?: string; provider?: string; validation_context?: ValidationContext } | null;
+  latest: DecisionSnapshotPayload | null;
   onRetryHealth: () => void;
 }) {
   const backendStatus = describeBackendStatus(healthError);
@@ -188,11 +195,12 @@ function TopBar({
 }
 
 function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
-  const latest = useAsync(api.latestReport, []);
+  const latest = useAsync(api.dailyDecisionLatest, []);
   const portfolio = useAsync(api.portfolio, []);
   const sources = useAsync(api.dataSources, []);
   const universes = useAsync(api.universes, []);
-  const decisions = latest.data?.decisions ?? [];
+  const decisions = (latest.data?.decisions ?? []).filter((row) => row.price_validation_status === 'PASS');
+  const dataIssues = latest.data?.data_issues ?? [];
   const validation = latest.data?.validation_context;
   const buyResearch = decisions.filter((row) => row.primary_action === 'Research / Buy Candidate').slice(0, 6);
   const watch = decisions.filter((row) => row.primary_action === 'Watch').slice(0, 6);
@@ -205,11 +213,14 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
     <Page title="Home" subtitle="One-screen daily decision cockpit for what to research, watch, hold, add to, trim, sell, and avoid.">
       {latest.error && <ApiErrorPanel error={latest.error} onRetry={latest.retry} />}
       {sources.error && <ApiErrorPanel error={sources.error} onRetry={sources.retry} compact />}
+      {latest.data?.demo_mode && <Notice tone="warn">DEMO MODE. Demo sample data — not real prices.</Notice>}
+      {latest.data?.report_snapshot && <Notice tone="warn">Report Snapshot. Saved reports stay historical and do not populate the live TP / SL board.</Notice>}
+      {latest.data?.stale_data && <Notice tone="warn">Stale Data. Rows with stale prices are excluded from actionable decisions.</Notice>}
       <div className="metric-grid">
         <Metric label="Buy / Research" value={String(buyResearch.length)} sub="Highest-priority current candidates" />
         <Metric label="Watch" value={String(watch.length)} sub="Interesting, not actionable yet" />
         <Metric label="Hold / Add / Trim" value={String(holdAdd.length + trimSell.length)} sub="Portfolio-aware labels when available" />
-        <Metric label="Data sources" value={`${sources.data?.summary.optional_ready ?? 0} ready`} sub="Configured optional providers" />
+        <Metric label="Data issues" value={String(dataIssues.length)} sub="Rows hidden until live price validates" />
       </div>
       <div className="grid two">
         <Panel title="Market / Data Health">
@@ -234,7 +245,7 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
           <UniverseSummary payload={universes.data} />
         </Panel>
       </div>
-      {decisions.length ? (
+      {latest.data?.available ? (
         <>
           <div className="grid two">
             <Panel title="Buy / Research Candidates">
@@ -264,6 +275,9 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
             <Panel title="Avoid / Risk">
               <DecisionList rows={avoid} empty="No avoid candidates right now." />
             </Panel>
+            <Panel title="Data Issues">
+              <DecisionList rows={dataIssues} empty="No price-validation issues right now." />
+            </Panel>
             <Panel title="Validation Context">
               <ValidationContextCard context={validation} />
             </Panel>
@@ -273,8 +287,8 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
           </Panel>
         </>
       ) : (
-        <EmptyState title="No scan loaded" action="Open scanner" onAction={() => setPage('Stock Picker')}>
-          Home becomes the daily cockpit after you run a scan from an active universe.
+        <EmptyState title="No live daily decision loaded" action="Open scanner" onAction={() => setPage('Stock Picker')}>
+          Build a live decision snapshot with the real provider, or use Reports to inspect historical report snapshots.
         </EmptyState>
       )}
     </Page>
@@ -314,7 +328,7 @@ function StockPicker() {
     <Page title="Stock Picker" subtitle="Run one scan, then filter decisions by action instead of jumping across scattered tabs.">
       {universes.error && <ApiErrorPanel error={universes.error} onRetry={universes.retry} compact />}
       <form className="toolbar" onSubmit={submit}>
-        <Select name="provider" label="Provider" options={['sample', 'local', 'real']} />
+        <Select name="provider" label="Provider" options={['real', 'local', 'sample']} />
         <Select name="mode" label="Mode" options={['outliers', 'velocity', 'investing']} />
         <UniverseField name="universe_path" label="Universe" defaultValue="config/active_outlier_universe.txt" universes={universes.data} />
         <Field name="as_of_date" label="As of" defaultValue="2026-04-24" />
@@ -323,6 +337,8 @@ function StockPicker() {
         </button>
       </form>
       <Notice tone="neutral">{universes.data?.warning ?? DEFAULT_UNIVERSE_WARNING}</Notice>
+      {scan?.demo_mode && <Notice tone="warn">DEMO MODE. Demo sample data — not real prices.</Notice>}
+      {scan?.report_snapshot && <Notice tone="warn">Report Snapshot. Historical rows are not actionable.</Notice>}
       {error && <ApiErrorPanel error={error} onRetry={() => setError(null)} />}
       {loading && <Notice tone="neutral">Running the scanner can take a bit with the real provider. Results will appear here without changing your data.</Notice>}
       {scan?.decisions?.length ? (
@@ -342,16 +358,19 @@ function StockPicker() {
           <Panel title="Why This Lane Is Actionable">
             <DecisionSummary rows={rows} />
           </Panel>
-          <Panel title="Decision Table">
+          <Panel title="Validated TP / SL Table">
             <DecisionBoard rows={rows} />
+          </Panel>
+          <Panel title="Data Issues">
+            <DecisionList rows={(scan.data_issues ?? []).slice(0, 10)} empty="No price-validation issues in this scan." />
           </Panel>
           <Panel title="Raw Scanner Table">
             <ScannerTable rows={filterScannerRows(scan.results ?? [], tab)} />
           </Panel>
         </div>
       ) : (
-        <EmptyState title="Ready for a deterministic scan" action="Run sample outlier scan">
-          Sample mode does not need external keys and is safe for local UI checks.
+        <EmptyState title="Ready for a deterministic scan" action="Run real outlier scan">
+          Sample mode is demo-only and stays non-actionable.
         </EmptyState>
       )}
     </Page>
@@ -673,7 +692,7 @@ function DeepResearch() {
     <Page title="Deep Research" subtitle="Single-stock deterministic thesis, risks, levels, and portfolio context.">
       <form className="toolbar" onSubmit={submit}>
         <Field name="ticker" label="Ticker" defaultValue="NVDA" />
-        <Select name="provider" label="Provider" options={['sample', 'local', 'real']} />
+        <Select name="provider" label="Provider" options={['real', 'local', 'sample']} />
         <button className="primary" disabled={loading}><Search size={16} /> {loading ? 'Researching' : 'Research'}</button>
       </form>
       {error && <ApiErrorPanel error={error} onRetry={() => setError(null)} />}
@@ -1387,10 +1406,11 @@ function DecisionList({ rows, empty }: { rows: UnifiedDecision[]; empty: string 
             <Chip tone="neutral">{row.confidence_label ?? 'Confidence n/a'}</Chip>
           </div>
           <p>{row.reason ?? 'No decision reason returned.'}</p>
+          <p className="muted">{row.price_source ?? 'Price source unavailable'} | {compactDate(row.latest_market_date)}</p>
           <KeyValue payload={{ entry: row.entry_zone, stop: row.stop_loss, invalidation: row.invalidation, tp1: row.tp1, tp2: row.tp2, review: row.next_review_date }} />
           <PriceSanityBadge payload={row.price_sanity} />
           {row.why_not && <Notice tone="warn">{row.why_not}</Notice>}
-          {row.source_row && <PaperTrackingForm scannerRow={row.source_row} compact />}
+          {row.source_row && row.price_validation_status === 'PASS' ? <PaperTrackingForm scannerRow={row.source_row} compact /> : null}
         </article>
       ))}
     </div>
@@ -1398,10 +1418,11 @@ function DecisionList({ rows, empty }: { rows: UnifiedDecision[]; empty: string 
 }
 
 function DecisionBoard({ rows }: { rows: UnifiedDecision[] }) {
-  if (!rows.length) return <p className="muted">No actionable TP / SL rows yet.</p>;
+  const actionable = rows.filter((row) => row.price_validation_status === 'PASS');
+  if (!actionable.length) return <p className="muted">No validated TP / SL rows yet.</p>;
   return (
     <DataTable
-      rows={rows.map((row) => ({
+      rows={actionable.map((row) => ({
         ticker: row.ticker,
         action: row.primary_action,
         entry: row.entry_zone,
@@ -1409,9 +1430,11 @@ function DecisionBoard({ rows }: { rows: UnifiedDecision[] }) {
         TP1: row.tp1,
         TP2: row.tp2,
         reward_risk: row.reward_risk,
+        price_source: row.price_source,
+        latest_market_date: row.latest_market_date,
         review_date: row.next_review_date,
       }))}
-      columns={['ticker', 'action', 'entry', 'stop', 'TP1', 'TP2', 'reward_risk', 'review_date']}
+      columns={['ticker', 'action', 'entry', 'stop', 'TP1', 'TP2', 'reward_risk', 'price_source', 'latest_market_date', 'review_date']}
     />
   );
 }
@@ -1595,9 +1618,21 @@ function ResearchView({ payload }: { payload: ResearchPayload }) {
         <Panel title="Action Setup">
           <KeyValue payload={{ entry: unifiedDecision?.entry_zone ?? payload.entry_zone, stop: unifiedDecision?.stop_loss, invalidation: unifiedDecision?.invalidation ?? payload.invalidation, tp1: unifiedDecision?.tp1 ?? payload.tp1, tp2: unifiedDecision?.tp2 ?? payload.tp2, horizon: unifiedDecision?.holding_horizon }} />
         </Panel>
-        <Panel title="Price Sanity">
-          <KeyValue payload={payload.price_sanity ?? scanner ?? {}} />
+        <Panel title="Price Validation">
+          <KeyValue payload={{
+            live_quote: payload.price_sanity?.quote_price_if_available,
+            latest_close: payload.price_sanity?.latest_available_close,
+            displayed_price: payload.price_sanity?.displayed_price,
+            mismatch_pct: payload.price_sanity?.price_mismatch_pct,
+            source: payload.price_sanity?.validated_price_source ?? payload.price_sanity?.price_source,
+            latest_market_date: payload.price_sanity?.last_market_date,
+            validation_status: payload.price_sanity?.price_validation_status,
+            validation_reason: payload.price_sanity?.price_validation_reason,
+          }} />
           <PriceSanityBadge payload={payload.price_sanity ?? scanner} />
+          {payload.price_sanity?.price_validation_status !== 'PASS' && (
+            <Notice tone="bad">Do not use TP/SL levels. Price validation failed.</Notice>
+          )}
         </Panel>
         <Panel title="Why Not To Buy">
           <Notice tone="warn">
@@ -1646,7 +1681,7 @@ function ResearchView({ payload }: { payload: ResearchPayload }) {
         </Panel>
         <Panel title="Historical Evidence">
           <p className="muted">Use Validation Lab to save this thesis and measure forward outcomes against SPY, QQQ, and random baselines.</p>
-          {scanner && <PaperTrackingForm scannerRow={scanner} />}
+          {scanner && scanner.price_validation_status === 'PASS' ? <PaperTrackingForm scannerRow={scanner} /> : <Notice tone="warn">Paper tracking stays disabled until the price validation gate passes.</Notice>}
         </Panel>
       </div>
     </div>
@@ -1909,15 +1944,22 @@ function cell(value: unknown): string {
   return String(value ?? '');
 }
 
-function PriceSanityBadge({ payload }: { payload?: { price_warning?: string; price_source?: string; price_timestamp?: string; price_confidence?: string } | null }) {
+function PriceSanityBadge({ payload }: { payload?: { price_warning?: string; price_source?: string; price_timestamp?: string; price_confidence?: string; validated_price_source?: string; price_validation_status?: string } | null }) {
   if (!payload) return null;
+  const tone = payload.price_validation_status === 'PASS'
+    ? 'good'
+    : payload.price_validation_status === 'WARN'
+      ? 'warn'
+      : String(payload.price_warning).includes('Sample') || String(payload.price_warning).includes('Stale')
+        ? 'warn'
+        : 'bad';
   return (
     <div className="pill-row">
-      <Chip tone={String(payload.price_warning).includes('Sample') || String(payload.price_warning).includes('Stale') ? 'warn' : 'good'}>
-        {payload.price_source ?? 'Price source unavailable'}
+      <Chip tone={tone}>
+        {payload.validated_price_source ?? payload.price_source ?? 'Price source unavailable'}
       </Chip>
       <Chip tone="neutral">{compactDate(payload.price_timestamp)}</Chip>
-      <Chip tone="neutral">{payload.price_confidence ?? 'Confidence n/a'}</Chip>
+      <Chip tone="neutral">{payload.price_validation_status ?? payload.price_confidence ?? 'Confidence n/a'}</Chip>
     </div>
   );
 }

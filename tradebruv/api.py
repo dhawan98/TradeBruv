@@ -76,6 +76,10 @@ def create_app() -> "FastAPI":
     def reports_latest() -> dict[str, Any]:
         return services.reports_latest()
 
+    @app.get("/api/daily-decision/latest")
+    def daily_decision_latest() -> dict[str, Any]:
+        return services.daily_decision_latest()
+
     @app.get("/api/reports/archive")
     def reports_archive() -> dict[str, Any]:
         return services.reports_archive()
