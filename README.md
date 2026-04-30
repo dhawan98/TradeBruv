@@ -473,6 +473,7 @@ New broad-universe files:
 - [universe_sp500.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_sp500.txt)
 - [universe_nasdaq100.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_nasdaq100.txt)
 - [universe_russell1000_or_top1000.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_russell1000_or_top1000.txt)
+- [universe_us_broad_1000.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_us_broad_1000.txt)
 - [universe_liquid_growth.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_liquid_growth.txt)
 - [universe_ai_semis_software.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_ai_semis_software.txt)
 
@@ -577,6 +578,13 @@ TradingView-style cockpit rules:
 - bottom: dense screener/signal table instead of cards
 - diagnostics/debug fields stay hidden unless you open diagnostics
 
+Latest cockpit cleanup:
+- the top area is now a thin terminal-style status strip instead of a block of dashboard cards
+- the left rail is one canonical symbols list with filtered views for `Top`, `Tracked`, `Discovery`, `Watch`, `Avoid`, and `All`
+- the main chart is intentionally dominant and stays linked to the selected ticker across the rail, chart, and right-side decision panel
+- the right panel is decision-first: actionability, score, why now, why not, trigger/entry, stop, TP1/TP2, signal, EMA stack, relative volume, freshness, and merged source tags
+- the bottom table is a screener, not a report dump; click any row to sync the rest of the workspace
+
 Signal presentation:
 - the chart legend now shows exact latest EMA values
 - signal language is intentionally short:
@@ -600,12 +608,14 @@ Warning severity:
 
 Stock Picker:
 - the Stock Picker page now renders a screener-style table instead of a card wall
-- row details expand inline
+- selecting a row updates a linked chart/detail pane on the right
+- the table can be sorted by score, actionability, relative volume, 1D change, signal, and source
 - paper tracking still exists, but it opens from a single `Track` action instead of repeating inline forms
 
 Universe honesty and validation:
 - [universe_large_cap_starter.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_large_cap_starter.txt) is included as an explicit starter file
 - if [universe_sp500.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_sp500.txt) has materially fewer than 500 members, TradeBruv labels it as `Large Cap Starter`, not a full S&P 500
+- [universe_us_broad_1000.txt](/Users/aashishdhawan/Desktop/AI Projects/TradeBruv/config/universe_us_broad_1000.txt) is a broader static discovery target with roughly 500 liquid U.S. names today; it is intentionally labeled as a target/starter rather than pretending to be a live official top-1000 membership feed
 - validate any universe file with:
 
 ```bash

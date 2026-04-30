@@ -729,6 +729,7 @@ def universes() -> dict[str, Any]:
         {"label": "Mega Cap", "path": "config/mega_cap_universe.txt", "description": "Large-cap leadership basket."},
         {"label": "Momentum", "path": "config/momentum_universe.txt", "description": "Momentum-leaning universe."},
         {"label": "Large Cap Starter", "path": "config/universe_large_cap_starter.txt", "description": "Starter large-cap universe for broad scans when you want wider coverage without claiming full S&P 500 membership."},
+        {"label": "US Broad 1000 Target", "path": "config/universe_us_broad_1000.txt", "description": "Broader discovery starter for market-wide scans, unusual movers, and tracked-name competition."},
         {"label": "Tracked Tickers", "path": str(DEFAULT_TRACKED_TICKERS_PATH), "description": "Your monitored names. Tracked symbols are always evaluated in daily runs."},
         *[
             {

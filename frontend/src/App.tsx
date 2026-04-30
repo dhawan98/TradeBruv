@@ -1,4 +1,4 @@
-import { FormEvent, Fragment, useEffect, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import type React from 'react';
 import {
   Activity,
@@ -28,20 +28,16 @@ import {
   ChartPayload,
   DataSourceRow,
   DecisionSnapshotPayload,
-  HealthPayload,
-  PortfolioPayload,
   PredictionRow,
   ProofReport,
   ReplayPayload,
   ResearchPayload,
   ScannerRow,
   SignalTableRow,
-  TrackedPayload,
   UnifiedDecision,
   UniverseItem,
   UniversesPayload,
   ValidationContext,
-  getApiBaseUrl,
   isApiError,
 } from './api';
 import { useAsync } from './hooks';
@@ -98,6 +94,7 @@ const DEFAULT_UNIVERSES: UniverseItem[] = [
   { label: 'Active Velocity', path: 'config/active_velocity_universe.txt', description: 'High-volume / velocity monitor names.', available: true },
   { label: 'Mega Cap', path: 'config/mega_cap_universe.txt', description: 'Large-cap leadership basket.', available: true },
   { label: 'Momentum', path: 'config/momentum_universe.txt', description: 'Momentum-leaning universe.', available: true },
+  { label: 'US Broad 1000 Target', path: 'config/universe_us_broad_1000.txt', description: 'Broader static discovery starter for wide market scans.', available: true },
   { label: 'Famous Case Studies', path: 'config/famous_outlier_case_studies.txt', description: 'Historical validation names only.', available: true },
 ];
 
@@ -122,7 +119,6 @@ export function App() {
   const [page, setPage] = useState<PageKey>('Decision Cockpit');
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const health = useAsync(api.health, []);
-  const portfolio = useAsync(api.portfolio, []);
   const latest = useAsync(api.dailyDecisionLatest, []);
 
   return (
@@ -156,9 +152,7 @@ export function App() {
       </aside>
       <main className="main">
         <TopBar
-          health={health.data}
           healthError={health.error}
-          portfolio={portfolio.data}
           latest={latest.data}
           onRetryHealth={health.retry}
         />
@@ -185,61 +179,66 @@ export function App() {
 }
 
 function TopBar({
-  health,
   healthError,
-  portfolio,
   latest,
   onRetryHealth,
 }: {
-  health: HealthPayload | null;
   healthError: Error | null;
-  portfolio: PortfolioPayload | null;
   latest: DecisionSnapshotPayload | null;
   onRetryHealth: () => void;
 }) {
-  const backendStatus = describeBackendStatus(healthError);
+  const coverage = latest?.workspace?.coverage_status ?? latest?.data_coverage_status ?? {};
+  const statusBar = latest?.workspace?.status_bar ?? {};
+  const warnings = [
+    latest?.demo_mode ? 'Demo mode' : '',
+    latest?.report_snapshot ? 'Report snapshot' : '',
+    latest?.stale_data ? 'Stale rows hidden' : '',
+    healthError ? 'Backend warning' : '',
+  ].filter(Boolean);
   return (
-    <header className="topbar">
-      <div>
-        <span className="eyebrow">Decision Cockpit</span>
-        <strong>{health?.mode ?? 'waiting for backend'}</strong>
+    <header className="topbar terminal-topbar">
+      <div className="topbar-title">
+        <strong>TradeBruv</strong>
+        <span>Stock decision terminal</span>
       </div>
-      <Status label="Backend" value={backendStatus.label} tone={backendStatus.tone} />
-      <Status label="API base" value={getApiBaseUrl()} />
-      <Status label="Provider" value={latest?.provider ?? health?.provider ?? 'unavailable'} />
-      <Status label="Last scan" value={compactDate(latest?.generated_at ?? health?.last_scan_time)} />
-      <Status label="Data sources" value={`${health?.data_source_health.optional_ready ?? 0} ready`} tone="good" />
-      <Status label="AI" value={health?.ai.any_configured ? 'Configured' : 'Missing'} tone={health?.ai.any_configured ? 'good' : 'warn'} />
-      <Status label="Portfolio" value={money(Number(portfolio?.summary?.total_market_value ?? health?.portfolio_value ?? 0))} />
-      <Status label="Alerts" value={String(health?.alert_count ?? 0)} tone={health?.alert_count ? 'warn' : 'good'} />
-      {healthError && <button className="ghost topbar-retry" onClick={onRetryHealth}><RefreshCcw size={14} /> Retry backend</button>}
+      <div className="topbar-stream">
+        <span><label>Provider</label><strong>{String(statusBar.provider ?? latest?.provider ?? 'unavailable')}</strong></span>
+        <span><label>Last scan</label><strong>{compactDate(String(statusBar.last_scan ?? latest?.generated_at ?? 'unavailable'))}</strong></span>
+        <span><label>Coverage</label><strong>{String(statusBar.coverage_summary ?? `${coverage.tickers_successfully_scanned ?? 0}/${coverage.tickers_attempted ?? 0} scanned`)}</strong></span>
+        <span><label>Universe</label><strong>{String(statusBar.universe_label ?? coverage.universe_label ?? 'Active')}</strong></span>
+        <span><label>Tracked</label><strong>{String(statusBar.tracked_count ?? coverage.tracked_tickers_count ?? 0)}</strong></span>
+      </div>
+      {warnings.length ? (
+        <div className="topbar-warnings">
+          {warnings.map((warning) => (
+            <span className="topbar-warning" key={warning}>{warning}</span>
+          ))}
+        </div>
+      ) : null}
+      {healthError ? <button className="ghost topbar-retry" onClick={onRetryHealth}><RefreshCcw size={14} /> Retry backend</button> : null}
     </header>
   );
 }
+
+type CockpitView = 'Top' | 'Tracked' | 'Broad' | 'Watch' | 'Avoid' | 'All';
 
 function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
   const latest = useAsync(api.dailyDecisionLatest, []);
   const tracked = useAsync(api.tracked, []);
   const [selectedTicker, setSelectedTicker] = useState('');
   const [timeframe, setTimeframe] = useState<'3M' | '6M' | '1Y' | '2Y'>('1Y');
+  const [activeView, setActiveView] = useState<CockpitView>('Top');
   const [trackedInput, setTrackedInput] = useState('');
   const workspace = latest.data?.workspace;
   const canonicalRows = workspace?.canonical_rows ?? latest.data?.decisions ?? EMPTY_DECISIONS;
-  const trackedRows = workspace?.tracked_rows ?? [];
-  const broadRows = workspace?.broad_rows ?? [];
-  const topRows = workspace?.top_candidates ?? [];
-  const watchRows = workspace?.watch_rows ?? [];
-  const avoidRows = workspace?.avoid_rows ?? [];
   const signalRows = workspace?.signal_table_rows ?? latest.data?.signal_table ?? EMPTY_SIGNALS;
   const decisionByTicker = workspace?.decision_by_ticker ?? {};
+  const activeRows = filterCockpitRows(canonicalRows, activeView);
+  const activeSignalRows = filterSignalRows(signalRows, activeView);
   const defaultTicker =
     workspace?.selected_ticker
     ?? workspace?.source_aware_top?.overall_top_setup?.ticker
-    ?? workspace?.source_aware_top?.best_tracked_setup?.ticker
-    ?? workspace?.source_aware_top?.best_broad_setup?.ticker
-    ?? topRows[0]?.ticker
-    ?? trackedRows[0]?.ticker
-    ?? broadRows[0]?.ticker
+    ?? activeRows[0]?.ticker
     ?? canonicalRows[0]?.ticker
     ?? '';
 
@@ -251,9 +250,13 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
     if (selectedTicker && !canonicalRows.some((row) => row.ticker === selectedTicker) && defaultTicker) {
       setSelectedTicker(defaultTicker);
     }
-  }, [defaultTicker, canonicalRows, selectedTicker]);
+  }, [canonicalRows, defaultTicker, selectedTicker]);
 
-  const selectedDecision = (selectedTicker ? decisionByTicker[selectedTicker] : null) ?? workspace?.source_aware_top?.overall_top_setup ?? latest.data?.top_candidate ?? null;
+  const selectedDecision =
+    (selectedTicker ? decisionByTicker[selectedTicker] : null)
+    ?? workspace?.source_aware_top?.overall_top_setup
+    ?? latest.data?.top_candidate
+    ?? null;
   const chart = useAsync(
     () => (
       selectedTicker
@@ -286,70 +289,75 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
   }
 
   return (
-    <Page title="Decision Cockpit" subtitle="Large-chart stock picker workspace with canonical ticker rows, tracked setups, and compact signal tables.">
+    <div className="cockpit-page">
       {latest.error && <ApiErrorPanel error={latest.error} onRetry={latest.retry} />}
       {tracked.error && <ApiErrorPanel error={tracked.error} onRetry={tracked.retry} compact />}
-      {latest.data?.demo_mode && <Notice tone="warn">DEMO MODE. Demo sample data — not real prices.</Notice>}
-      {latest.data?.report_snapshot && <Notice tone="warn">Report Snapshot. Saved reports stay historical and do not populate the live TP / SL board.</Notice>}
-      {latest.data?.stale_data && <Notice tone="warn">Stale Data. Rows with stale prices are excluded from actionable decisions.</Notice>}
       {latest.data?.available ? (
         <>
-          <WorkspaceSummaryLine payload={latest.data} />
-          <div className="market-layout market-terminal">
-          <section className="market-sidebar">
-              <TrackedWatchlistManager
-                payload={tracked.data}
-                value={trackedInput}
-                onChange={setTrackedInput}
-                onSubmit={addTrackedTicker}
-                onRemove={removeTrackedTicker}
+          <div className="cockpit-statusline">
+            <strong>Decision Cockpit</strong>
+            <span>{String(workspace?.coverage_status?.universe_label ?? 'Active')} · {String(workspace?.coverage_status?.tickers_successfully_scanned ?? 0)}/{String(workspace?.coverage_status?.tickers_attempted ?? 0)} scanned</span>
+            <span>{selectedDecision?.ticker ? `Selected ${selectedDecision.ticker}` : 'No symbol selected'}</span>
+            <span>{activeView === 'Broad' ? 'Discovery view' : `${activeView} view`}</span>
+            <span>{String((workspace?.data_issues ?? latest.data?.data_issues ?? []).length)} hidden data issues</span>
+          </div>
+          <div className="cockpit-grid">
+            <aside className="cockpit-rail">
+              <div className="rail-header">
+                <div>
+                  <span className="eyebrow">Symbols</span>
+                  <strong>Tracked, daily leaders, and broad discovery in one canonical list.</strong>
+                </div>
+                <form className="rail-add-form" onSubmit={addTrackedTicker}>
+                  <input value={trackedInput} onChange={(event) => setTrackedInput(event.target.value)} placeholder="Add ticker" aria-label="Add tracked ticker" />
+                  <button className="ghost" type="submit"><Plus size={14} /> Add</button>
+                </form>
+              </div>
+              <RailFilterTabs
+                activeView={activeView}
+                counts={(workspace?.view_counts ?? {}) as Record<string, number>}
+                onChange={setActiveView}
               />
-              <WatchlistSection
-                title="Top"
-                rows={topRows}
-                selectedTicker={selectedTicker}
-                onSelect={setSelectedTicker}
-                empty="No clean top setup is available right now."
-              />
-              <WatchlistSection
-                title="Tracked"
-                rows={trackedRows}
-                selectedTicker={selectedTicker}
-                onSelect={setSelectedTicker}
-                empty="Tracked names will appear here after a daily run."
-              />
-              <WatchlistSection
-                title="Broad Top"
-                rows={broadRows.slice(0, 8)}
-                selectedTicker={selectedTicker}
-                onSelect={setSelectedTicker}
-                empty="Run daily decision with a broad universe to populate this list."
-              />
-              <WatchlistSection
-                title="Watch"
-                rows={watchRows.slice(0, 5)}
-                selectedTicker={selectedTicker}
-                onSelect={setSelectedTicker}
-                empty="No trigger-needed names right now."
-              />
-              <WatchlistSection
-                title="Avoid"
-                rows={avoidRows.slice(0, 5)}
-                selectedTicker={selectedTicker}
-                onSelect={setSelectedTicker}
-                empty="No avoid names right now."
-              />
-          </section>
-          <section className="market-center">
+              <div className="tracked-chip-strip">
+                {(tracked.data?.tickers ?? []).slice(0, 18).map((ticker) => (
+                  <button className="tracked-chip subtle" key={ticker} onClick={() => removeTrackedTicker(ticker)} type="button" title={`Remove ${ticker} from tracked`}>
+                    <span>{ticker}</span>
+                    <Trash2 size={12} />
+                  </button>
+                ))}
+              </div>
+              <div className="rail-list">
+                {activeRows.length ? activeRows.map((row) => (
+                  <button
+                    className={selectedTicker === row.ticker ? 'rail-row selected' : 'rail-row'}
+                    key={`${activeView}-${row.ticker}`}
+                    onClick={() => setSelectedTicker(row.ticker)}
+                    type="button"
+                  >
+                    <div className="rail-main">
+                      <strong>{row.ticker}</strong>
+                      <span>{shortCompanyName(row.company ?? row.source_row?.company_name ?? '')}</span>
+                    </div>
+                    <div className="rail-side">
+                      <span>{cell(row.source_row?.current_price ?? 'n/a')}</span>
+                      <span className={pctTone(row.source_row?.price_change_1d_pct)}>{pct(row.source_row?.price_change_1d_pct)}</span>
+                      <span>RV {cell(row.source_row?.relative_volume_20d ?? 'n/a')}</span>
+                      <span>{row.source_row?.signal_summary ?? row.actionability_label ?? row.primary_action}</span>
+                      <span>{row.actionability_label ?? row.primary_action}</span>
+                    </div>
+                  </button>
+                )) : <p className="muted">No rows in this view right now.</p>}
+              </div>
+            </aside>
+            <section className="cockpit-canvas">
               <MarketChartPanel
                 chart={activeChart}
                 decision={selectedDecision}
                 timeframe={timeframe}
                 onTimeframeChange={(value) => setTimeframe(value)}
               />
-              <SignalWorkspaceTable rows={signalRows} onSelect={setSelectedTicker} selectedTicker={selectedTicker} />
-          </section>
-          <section className="market-summary">
+            </section>
+            <aside className="cockpit-panel">
               {selectedDecision ? (
                 <SelectedDecisionPanel
                   row={selectedDecision}
@@ -363,109 +371,66 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
                   {latest.data?.no_clean_candidate_reason ?? 'No validated setup passed the actionability gate today.'}
                 </EmptyState>
               )}
-              <CoverageStatusPanel payload={latest.data} />
-          </section>
+            </aside>
           </div>
+          <section className="cockpit-table-zone">
+            <SignalWorkspaceTable
+              rows={activeSignalRows}
+              onSelect={setSelectedTicker}
+              selectedTicker={selectedTicker}
+              title={`${activeView} screener`}
+              subtitle="Dense signal table. Click any row to sync the left rail, chart, and decision panel."
+            />
+            <details className="diagnostics cockpit-diagnostics">
+              <summary>Diagnostics / Raw Data</summary>
+              <div className="cockpit-diagnostics-grid">
+                <div className="cockpit-diagnostics-copy">
+                  <p><strong>Coverage</strong> {String(workspace?.coverage_status?.universe_label ?? 'Active')} · {String(workspace?.coverage_status?.tickers_successfully_scanned ?? 0)}/{String(workspace?.coverage_status?.tickers_attempted ?? 0)} scanned · Tracked {String(workspace?.coverage_status?.tracked_tickers_count ?? 0)}</p>
+                  <p><strong>Selection</strong> {String(workspace?.selected_ticker_consistency_reason ?? 'No diagnostics loaded.')}</p>
+                  {workspace?.coverage_status?.universe_warning ? <p><strong>Universe note</strong> {String(workspace.coverage_status.universe_warning)}</p> : null}
+                </div>
+                <div>
+                  <h3>Data issues</h3>
+                  <DecisionList rows={(workspace?.data_issues ?? latest.data?.data_issues ?? []).slice(0, 8)} empty="No hidden data issues." />
+                </div>
+              </div>
+            </details>
+          </section>
         </>
       ) : (
-        <EmptyState title="No live daily decision loaded" action="Open scanner" onAction={() => setPage('Stock Picker')}>
+        <EmptyState title="No live daily decision loaded" action="Open Stock Picker" onAction={() => setPage('Stock Picker')}>
           Build a live decision snapshot with the real provider, or use Reports to inspect historical report snapshots.
         </EmptyState>
       )}
-    </Page>
-  );
-}
-
-function WorkspaceSummaryLine({ payload }: { payload: DecisionSnapshotPayload | null }) {
-  const workspace = payload?.workspace;
-  const sourceAwareTop = workspace?.source_aware_top ?? {};
-  const coverage = workspace?.coverage_status ?? payload?.data_coverage_status ?? {};
-  const overall = sourceAwareTop.overall_top_setup;
-  const broad = sourceAwareTop.best_broad_setup;
-  const tracked = sourceAwareTop.best_tracked_setup;
-  return (
-    <div className="workspace-summary-line">
-      <span><strong>Overall Top:</strong> {overall?.ticker ?? 'None'} {overall ? `· ${(overall.source_groups ?? [overall.source_group]).filter(Boolean).join(' + ')} · ${overall.actionability_label} · Score ${Math.round(Number(overall.actionability_score ?? 0))}` : ''}</span>
-      <span><strong>Best Broad:</strong> {broad?.ticker ?? 'None'}{broad ? ` · ${broad.actionability_label} · Score ${Math.round(Number(broad.actionability_score ?? 0))}` : ''}</span>
-      <span><strong>Best Tracked:</strong> {tracked?.ticker ?? 'None'}{tracked ? ` · ${tracked.actionability_label} · Score ${Math.round(Number(tracked.actionability_score ?? 0))}` : ''}</span>
-      <span><strong>Coverage:</strong> {String(coverage.universe_label ?? 'Active')} · {String(coverage.tickers_successfully_scanned ?? 0)}/{String(coverage.tickers_attempted ?? 0)} scanned</span>
     </div>
   );
 }
 
-function TrackedWatchlistManager({
-  payload,
-  value,
+function RailFilterTabs({
+  activeView,
+  counts,
   onChange,
-  onSubmit,
-  onRemove,
 }: {
-  payload: TrackedPayload | null;
-  value: string;
-  onChange: (value: string) => void;
-  onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void> | void;
-  onRemove: (ticker: string) => Promise<void> | void;
+  activeView: CockpitView;
+  counts: Record<string, number>;
+  onChange: (view: CockpitView) => void;
 }) {
+  const items: { key: CockpitView; countKey: string }[] = [
+    { key: 'Top', countKey: 'top' },
+    { key: 'Tracked', countKey: 'tracked' },
+    { key: 'Broad', countKey: 'broad' },
+    { key: 'Watch', countKey: 'watch' },
+    { key: 'Avoid', countKey: 'avoid' },
+    { key: 'All', countKey: 'all' },
+  ];
   return (
-    <div className="tracked-manager">
-      <Notice tone="neutral">{payload?.message ?? 'Tracked tickers are monitored every daily run and can become top candidates if setup is strong.'}</Notice>
-      <form className="tracked-form" onSubmit={onSubmit}>
-        <input value={value} onChange={(event) => onChange(event.target.value)} placeholder="Add ticker" aria-label="Add ticker" />
-        <button className="secondary" type="submit"><Plus size={14} /> Add</button>
-      </form>
-      <div className="tracked-chips">
-        {(payload?.tickers ?? []).map((ticker) => (
-          <button className="tracked-chip" key={ticker} onClick={() => onRemove(ticker)} type="button">
-            <span>{ticker}</span>
-            <Trash2 size={13} />
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function WatchlistSection({
-  title,
-  rows,
-  selectedTicker,
-  onSelect,
-  empty,
-}: {
-  title: string;
-  rows: UnifiedDecision[];
-  selectedTicker: string;
-  onSelect: (ticker: string) => void;
-  empty: string;
-}) {
-  return (
-    <div className="watchlist-section">
-      <div className="section-label">{title}</div>
-      {rows.length ? (
-        <div className="watchlist-table">
-          {rows.map((row) => (
-            <button
-              className={selectedTicker === row.ticker ? 'watchlist-row active' : 'watchlist-row'}
-              key={`${title}-${row.ticker}`}
-              onClick={() => onSelect(row.ticker)}
-              type="button"
-            >
-              <div>
-                <strong>{row.ticker}</strong>
-                <span>{row.source_row?.signal_summary ?? row.current_setup_state ?? row.actionability_label}</span>
-              </div>
-              <div className="watchlist-metrics">
-                <span>{cell(row.source_row?.current_price ?? row.source_row?.validated_price ?? 'n/a')}</span>
-                <span className={pctTone(row.source_row?.price_change_1d_pct)}>{pct(row.source_row?.price_change_1d_pct)}</span>
-                <span>RV {cell(row.source_row?.relative_volume_20d ?? 'n/a')}</span>
-                <span>{row.actionability_label ?? row.primary_action}</span>
-              </div>
-            </button>
-          ))}
-        </div>
-      ) : (
-        <p className="muted">{empty}</p>
-      )}
+    <div className="rail-filters">
+      {items.map((item) => (
+        <button className={activeView === item.key ? 'rail-filter active' : 'rail-filter'} key={item.key} onClick={() => onChange(item.key)} type="button">
+          <span>{item.key === 'Broad' ? 'Discovery' : item.key}</span>
+          <strong>{String(counts[item.countKey] ?? 0)}</strong>
+        </button>
+      ))}
     </div>
   );
 }
@@ -481,6 +446,8 @@ function MarketChartPanel({
   timeframe: '3M' | '6M' | '1Y' | '2Y';
   onTimeframeChange: (value: '3M' | '6M' | '1Y' | '2Y') => void;
 }) {
+  const [showEma, setShowEma] = useState(true);
+  const [showVolume, setShowVolume] = useState(true);
   const series = chart?.series ?? [];
   const latestPoint = series[series.length - 1];
   const signalSummary = String(chart?.signals?.signal_summary ?? decision?.source_row?.signal_summary ?? 'No Clean Signal');
@@ -489,18 +456,26 @@ function MarketChartPanel({
   const sourceGroups = (decision?.source_groups ?? [decision?.source_group]).filter(Boolean).join(' + ');
   return (
     <div className="market-chart-panel">
-      <div className="chart-toolbar">
+      <div className="chart-toolbar workspace-chart-toolbar">
         <div className="chart-heading">
+          <span className="eyebrow">Selected setup</span>
           <strong>{chart?.ticker ?? decision?.ticker ?? 'No symbol selected'}</strong>
-          <span>{decision?.company ?? sourceGroups ?? 'No company loaded'}</span>
-          <span>{actionability} · {signalSummary}</span>
+          <span>{shortCompanyName(decision?.company ?? '') || sourceGroups || 'No company loaded'}</span>
         </div>
-        <div className="tabs">
+        <div className="chart-price-strip">
+          <span className="chart-price">{money(Number(latestPoint?.close ?? decision?.source_row?.current_price ?? 0))}</span>
+          <span className={pctTone(decision?.source_row?.price_change_1d_pct)}>{pct(decision?.source_row?.price_change_1d_pct)}</span>
+          <span>{actionability}</span>
+          <span>{signalSummary}</span>
+        </div>
+        <div className="chart-controls">
           {(['3M', '6M', '1Y', '2Y'] as const).map((option) => (
             <button className={timeframe === option ? 'secondary active-tab' : 'ghost'} key={option} onClick={() => onTimeframeChange(option)} type="button">
               {option}
             </button>
           ))}
+          <button className={showEma ? 'secondary active-tab' : 'ghost'} onClick={() => setShowEma((value) => !value)} type="button">EMA</button>
+          <button className={showVolume ? 'secondary active-tab' : 'ghost'} onClick={() => setShowVolume((value) => !value)} type="button">Volume</button>
         </div>
       </div>
       {!chart?.available && !series.length ? (
@@ -509,11 +484,11 @@ function MarketChartPanel({
         </EmptyState>
         ) : (
         <>
-          <div className="chart-header-strip">
-            <span className="chart-price">{money(Number(latestPoint?.close ?? decision?.source_row?.current_price ?? 0))}</span>
-            <span className={pctTone(decision?.source_row?.price_change_1d_pct)}>{pct(decision?.source_row?.price_change_1d_pct)}</span>
+          <div className="chart-header-strip workspace-chart-strip">
             <span>{sourceGroups || 'Source unavailable'}</span>
-            <span>{compactDate(chart?.last_market_date)}</span>
+            <span>Updated {compactDate(chart?.last_market_date)}</span>
+            <span>RV {cell(chart?.signals?.relative_volume_20d ?? decision?.source_row?.relative_volume_20d ?? 'n/a')}</span>
+            <span>{String(chart?.signals?.ema_stack ?? decision?.source_row?.ema_stack ?? 'No EMA stack')}</span>
           </div>
           <div className="chart-dual">
             <div className="chart tall">
@@ -524,13 +499,14 @@ function MarketChartPanel({
                   <YAxis stroke="#9fb0c4" domain={['auto', 'auto']} />
                   <Tooltip contentStyle={{ background: '#101722', border: '1px solid #27364a', color: '#e8eef7' }} />
                   <Line type="monotone" dataKey="close" stroke="#e8eef7" dot={false} strokeWidth={2} />
-                  <Line type="monotone" dataKey="ema_21" stroke="#60d8c2" dot={false} strokeWidth={1.6} />
-                  <Line type="monotone" dataKey="ema_50" stroke="#f4c15d" dot={false} strokeWidth={1.6} />
-                  <Line type="monotone" dataKey="ema_150" stroke="#6fa2ff" dot={false} strokeWidth={1.4} />
-                  <Line type="monotone" dataKey="ema_200" stroke="#c88cff" dot={false} strokeWidth={1.4} />
+                  {showEma ? <Line type="monotone" dataKey="ema_21" stroke="#60d8c2" dot={false} strokeWidth={1.6} /> : null}
+                  {showEma ? <Line type="monotone" dataKey="ema_50" stroke="#f4c15d" dot={false} strokeWidth={1.6} /> : null}
+                  {showEma ? <Line type="monotone" dataKey="ema_150" stroke="#6fa2ff" dot={false} strokeWidth={1.4} /> : null}
+                  {showEma ? <Line type="monotone" dataKey="ema_200" stroke="#c88cff" dot={false} strokeWidth={1.4} /> : null}
                 </ReLineChart>
               </ResponsiveContainer>
             </div>
+            {showVolume ? (
             <div className="chart volume-chart">
               <ResponsiveContainer width="100%" height={110}>
                 <BarChart data={series}>
@@ -542,32 +518,32 @@ function MarketChartPanel({
                 </BarChart>
               </ResponsiveContainer>
             </div>
+            ) : null}
           </div>
-          <div className="chart-legend">
+          <div className="chart-legend workspace-chart-legend">
             <span><i className="legend-swatch ema21" /> EMA 21: {cell(latestPoint?.ema_21 ?? 'n/a')}</span>
             <span><i className="legend-swatch ema50" /> EMA 50: {cell(latestPoint?.ema_50 ?? 'n/a')}</span>
             <span><i className="legend-swatch ema150" /> EMA 150: {cell(latestPoint?.ema_150 ?? 'n/a')}</span>
             <span><i className="legend-swatch ema200" /> EMA 200: {cell(latestPoint?.ema_200 ?? 'n/a')}</span>
-            <span><i className="legend-swatch volume" /> Volume</span>
+            {showVolume ? <span><i className="legend-swatch volume" /> Volume</span> : null}
           </div>
-          <div className="chart-meta">
-            <Chip tone="neutral">Stack: {String(chart?.signals?.ema_stack ?? 'n/a')}</Chip>
-            <Chip tone="neutral">Signal: {signalSummary}</Chip>
-            <Chip tone="neutral">Rel Vol: {cell(chart?.signals?.relative_volume_20d ?? 'n/a')}</Chip>
-            <Chip tone="neutral">Price vs EMA21: {pct(chart?.signals?.price_vs_ema_21_pct)}</Chip>
-            <Chip tone="neutral">Price vs EMA50: {pct(chart?.signals?.price_vs_ema_50_pct)}</Chip>
-            <Chip tone="neutral">Price vs EMA200: {pct(chart?.signals?.price_vs_ema_200_pct)}</Chip>
+          <div className="chart-meta workspace-chart-meta">
+            <span>Signal {signalSummary}</span>
+            <span>Rel Vol {cell(chart?.signals?.relative_volume_20d ?? 'n/a')}</span>
+            <span>vs EMA21 {pct(chart?.signals?.price_vs_ema_21_pct)}</span>
+            <span>vs EMA50 {pct(chart?.signals?.price_vs_ema_50_pct)}</span>
+            <span>vs EMA200 {pct(chart?.signals?.price_vs_ema_200_pct)}</span>
           </div>
           {chart?.markers?.length ? (
-            <div className="chart-markers">
+            <div className="chart-markers workspace-chart-markers">
               {chart.markers.map((marker) => (
-                <Chip key={`${marker.date}-${marker.label}`} tone={marker.tone === 'good' ? 'good' : marker.tone === 'bad' ? 'bad' : 'neutral'}>
-                  {marker.label} • {compactDate(marker.date)}
-                </Chip>
+                <span className="marker-inline" key={`${marker.date}-${marker.label}`}>
+                  {marker.label} · {compactDate(marker.date)}
+                </span>
               ))}
             </div>
           ) : null}
-          <p className="signal-strip">{signalExplanation}</p>
+          <p className="signal-strip"><strong>{signalSummary}</strong> · {signalExplanation}</p>
         </>
       )}
     </div>
@@ -576,35 +552,40 @@ function MarketChartPanel({
 
 function SelectedDecisionPanel({
   row,
-  trackedTickers,
+  trackedTickers = [],
   onToggleTracked,
   onDeepResearch,
   onAICommittee,
 }: {
   row: UnifiedDecision;
-  trackedTickers: string[];
-  onToggleTracked: (ticker: string) => Promise<void> | void;
-  onDeepResearch: () => void;
-  onAICommittee: () => void;
+  trackedTickers?: string[];
+  onToggleTracked?: (ticker: string) => Promise<void> | void;
+  onDeepResearch?: () => void;
+  onAICommittee?: () => void;
 }) {
   const tracked = trackedTickers.includes(row.ticker);
   const visibleNotices = (row.decision_notices ?? []).filter((notice) => notice.severity !== 'debug');
   return (
     <div className="selected-decision">
-      <div className="provider-title compact-title">
+      <div className="decision-heading">
         <div>
           <span className="eyebrow">Selected ticker</span>
           <h3>{row.ticker}</h3>
-          <p>{row.actionability_label ?? row.primary_action ?? 'Decision unavailable'} · {(row.source_groups ?? [row.source_group]).filter(Boolean).join(' + ')}</p>
+          <p>{shortCompanyName(row.company ?? '') || 'Decision unavailable'} · {(row.source_groups ?? [row.source_group]).filter(Boolean).join(' + ')}</p>
         </div>
-        <strong className="summary-score">{Math.round(Number(row.actionability_score ?? row.score ?? 0))}</strong>
+        <div className="decision-score-block">
+          <span>{row.actionability_label ?? row.primary_action ?? 'Decision unavailable'}</span>
+          <strong className="summary-score">{Math.round(Number(row.actionability_score ?? row.score ?? 0))}</strong>
+        </div>
       </div>
-      <div className="pill-row">
-        <StatusPill status={row.actionability_label ?? row.primary_action} />
-        <Chip tone={String(row.risk_level).includes('High') ? 'warn' : 'neutral'}>{row.risk_level ?? 'Risk n/a'}</Chip>
-        <Chip tone="neutral">Evidence: {row.evidence_pill ?? 'Not enough evidence'}</Chip>
+      <div className="decision-inline-meta">
+        <span>Signal {row.source_row?.signal_summary ?? 'n/a'}</span>
+        <span>EMA {row.source_row?.ema_stack ?? 'n/a'}</span>
+        <span>Rel Vol {cell(row.source_row?.relative_volume_20d ?? 'n/a')}</span>
+        <span>Risk {row.risk_level ?? 'n/a'}</span>
+        <span>Updated {compactDate(row.latest_market_date)}</span>
       </div>
-      <div className="brief-grid">
+      <div className="brief-grid compact-brief-grid">
         <div>
           <span className="eyebrow">Why now</span>
           <p>{row.actionability_reason ?? row.reason ?? 'No thesis returned.'}</p>
@@ -623,67 +604,53 @@ function SelectedDecisionPanel({
           ))}
         </div>
       ) : null}
-      <div className="brief-grid">
+      <div className="decision-level-grid">
         <div>
           <span className="eyebrow">{row.trigger_needed ? 'Trigger / Better Entry' : row.entry_label ?? 'Entry'}</span>
           <p>{row.trigger_needed ? (row.action_trigger ?? row.entry_zone ?? 'Wait for setup.') : (row.entry_zone ?? 'No level')}</p>
         </div>
         <div>
-          <span className="eyebrow">{row.level_status === 'Conditional' ? 'Conditional levels' : 'Levels'}</span>
-          <p>Stop {cell(row.stop_loss ?? row.invalidation)} • TP1 {cell(row.tp1)} • TP2 {cell(row.tp2)}</p>
+          <span className="eyebrow">Stop / Invalidation</span>
+          <p>{cell(row.stop_loss ?? row.invalidation)}</p>
+        </div>
+        <div>
+          <span className="eyebrow">TP1</span>
+          <p>{cell(row.tp1)}</p>
+        </div>
+        <div>
+          <span className="eyebrow">TP2</span>
+          <p>{cell(row.tp2)}</p>
         </div>
       </div>
-      <div className="kv compact-kv">
+      <div className="decision-subfacts">
         <div><span>Signal</span><strong>{row.source_row?.signal_summary ?? 'n/a'}</strong></div>
-        <div><span>EMA Stack</span><strong>{row.source_row?.ema_stack ?? 'n/a'}</strong></div>
-        <div><span>Rel Vol</span><strong>{cell(row.source_row?.relative_volume_20d ?? 'n/a')}</strong></div>
+        <div><span>EMA stack</span><strong>{row.source_row?.ema_stack ?? 'n/a'}</strong></div>
         <div><span>Freshness</span><strong>{row.data_freshness ?? compactDate(row.latest_market_date)}</strong></div>
-        <div><span>Price source</span><strong>{row.price_source ?? 'n/a'}</strong></div>
-        <div><span>Updated</span><strong>{compactDate(row.latest_market_date)}</strong></div>
+        <div><span>Source tags</span><strong>{(row.source_groups ?? [row.source_group]).filter(Boolean).join(' + ') || 'n/a'}</strong></div>
       </div>
       <div className="action-strip">
-        <button className="secondary" onClick={onDeepResearch} type="button">Deep Research</button>
-        <button className="ghost" onClick={() => onToggleTracked(row.ticker)} type="button">{tracked ? 'Untrack' : 'Track'}</button>
+        {onDeepResearch ? <button className="secondary" onClick={onDeepResearch} type="button">Deep Research</button> : null}
+        {onToggleTracked ? <button className="ghost" onClick={() => onToggleTracked(row.ticker)} type="button">{tracked ? 'Untrack' : 'Track'}</button> : null}
         {row.source_row ? <TrackPredictionButton scannerRow={row.source_row} /> : null}
-        <button className="ghost" onClick={onAICommittee} type="button">Run AI Committee</button>
+        {onAICommittee ? <button className="ghost" onClick={onAICommittee} type="button">Run AI Committee</button> : null}
       </div>
     </div>
   );
 }
 
-function CoverageStatusPanel({ payload }: { payload: DecisionSnapshotPayload | null }) {
-  const status = payload?.workspace?.coverage_status ?? payload?.data_coverage_status ?? {};
-  const groups = (status.scan_groups as Record<string, unknown>[] | undefined) ?? [];
-  return (
-    <div className="coverage-status">
-      <p className="coverage-headline">
-        {String(status.universe_label ?? 'Active Universe')} · {String(status.tickers_successfully_scanned ?? 0)}/{String(status.tickers_attempted ?? 0)} scanned
-      </p>
-      {status.universe_warning ? <p className="muted">{String(status.universe_warning)}</p> : null}
-      <div className="kv compact-kv">
-        <div><span>Provider</span><strong>{String(status.provider ?? payload?.provider ?? 'unavailable')}</strong></div>
-        <div><span>Universe rows</span><strong>{String(status.universe_row_count ?? 0)}</strong></div>
-        <div><span>Coverage</span><strong>{String(status.coverage_percent ?? 'n/a')}%</strong></div>
-        <div><span>Tracked count</span><strong>{String(status.tracked_tickers_count ?? 0)}</strong></div>
-        <div><span>Portfolio count</span><strong>{String(status.portfolio_tickers_count ?? 0)}</strong></div>
-        <div><span>Cache TTL</span><strong>{String(status.cache_age_ttl_minutes ?? 'n/a')} min</strong></div>
-        <div><span>Cache hits</span><strong>{String(status.cache_hits ?? 0)}</strong></div>
-        <div><span>Cache misses</span><strong>{String(status.cache_misses ?? 0)}</strong></div>
-      </div>
-      <div className="coverage-list">
-        {groups.map((group) => (
-          <div className="coverage-row" key={`${group.source_group}-${group.universe}`}>
-            <strong>{String(group.source_group ?? 'Unknown')}</strong>
-            <span>{String(group.universe ?? '')}</span>
-            <span>{String(group.result_count ?? 0)} rows</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function SignalWorkspaceTable({ rows, onSelect, selectedTicker }: { rows: SignalTableRow[]; onSelect: (ticker: string) => void; selectedTicker: string }) {
+function SignalWorkspaceTable({
+  rows,
+  onSelect,
+  selectedTicker,
+  title = 'Signal table',
+  subtitle = 'Compact screener view.',
+}: {
+  rows: SignalTableRow[];
+  onSelect: (ticker: string) => void;
+  selectedTicker: string;
+  title?: string;
+  subtitle?: string;
+}) {
   const [sortBy, setSortBy] = useState<'actionability' | 'relative_volume_20d' | 'price_change_1d_pct'>('actionability');
   const sorted = [...rows].sort((left, right) => {
     if (sortBy === 'actionability') {
@@ -693,11 +660,17 @@ function SignalWorkspaceTable({ rows, onSelect, selectedTicker }: { rows: Signal
   });
   if (!rows.length) return <p className="muted">No signal table rows are available yet.</p>;
   return (
-    <div className="table-wrap">
-      <div className="pill-row">
+    <div className="table-wrap workspace-table-wrap">
+      <div className="table-head">
+        <div>
+          <strong>{title}</strong>
+          <p>{subtitle}</p>
+        </div>
+        <div className="pill-row">
         <button className={sortBy === 'actionability' ? 'secondary active-tab' : 'ghost'} onClick={() => setSortBy('actionability')} type="button">Sort: Actionability</button>
         <button className={sortBy === 'relative_volume_20d' ? 'secondary active-tab' : 'ghost'} onClick={() => setSortBy('relative_volume_20d')} type="button">Sort: Rel Vol</button>
         <button className={sortBy === 'price_change_1d_pct' ? 'secondary active-tab' : 'ghost'} onClick={() => setSortBy('price_change_1d_pct')} type="button">Sort: % Change</button>
+        </div>
       </div>
       <table className="signal-table">
         <thead>
@@ -759,6 +732,8 @@ function StockPicker() {
   const universes = useAsync(api.universes, []);
   const [scan, setScan] = useState<ScanState | null>(null);
   const [tab, setTab] = useState<'Best Ideas' | 'Research' | 'Watch' | 'Avoid' | 'All'>('Best Ideas');
+  const [selectedTicker, setSelectedTicker] = useState('');
+  const [timeframe, setTimeframe] = useState<'3M' | '6M' | '1Y' | '2Y'>('6M');
   const [error, setError] = useState<Error | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -783,6 +758,24 @@ function StockPicker() {
   }
 
   const rows = filterDecisionRows(scan?.decisions ?? [], tab);
+  const selectedDecision = rows.find((row) => row.ticker === selectedTicker) ?? rows[0] ?? null;
+  useEffect(() => {
+    if (!selectedTicker && rows[0]?.ticker) {
+      setSelectedTicker(rows[0].ticker);
+      return;
+    }
+    if (selectedTicker && !rows.some((row) => row.ticker === selectedTicker)) {
+      setSelectedTicker(rows[0]?.ticker ?? '');
+    }
+  }, [rows, selectedTicker]);
+  const chart = useAsync(
+    () => (
+      selectedDecision?.ticker
+        ? api.chart(selectedDecision.ticker, scan?.provider ?? 'sample', timeframe)
+        : Promise.resolve(emptyChartPayload())
+    ),
+    [selectedDecision?.ticker, scan?.provider, timeframe],
+  );
 
   return (
     <Page title="Stock Picker" subtitle="Run a deterministic scan, then review the results in a dense screener instead of a card wall.">
@@ -790,7 +783,7 @@ function StockPicker() {
       <form className="toolbar" onSubmit={submit}>
         <Select name="provider" label="Provider" options={['real', 'local', 'sample']} />
         <Select name="mode" label="Mode" options={['outliers', 'velocity', 'investing']} />
-        <UniverseField name="universe_path" label="Universe" defaultValue="config/active_outlier_universe.txt" universes={universes.data} />
+        <UniverseField name="universe_path" label="Universe" defaultValue="config/universe_us_broad_1000.txt" universes={universes.data} />
         <Field name="as_of_date" label="As of" defaultValue="2026-04-24" />
         <button className="primary" disabled={loading}>
           <RefreshCcw size={16} /> {loading ? 'Running' : 'Run Scan'}
@@ -811,19 +804,30 @@ function StockPicker() {
       {loading ? (
         <SkeletonGrid />
       ) : scan?.decisions?.length ? (
-        <div className="screener-layout">
-          <StockPickerScreenerTable rows={rows} />
-          <details className="diagnostics">
-            <summary>Diagnostics / Raw Data</summary>
-            <div className="grid">
-              <Panel title="Data Issues">
-                <DecisionList rows={(scan.data_issues ?? []).slice(0, 8)} empty="No price-validation issues in this scan." />
-              </Panel>
-              <Panel title="Raw Scanner Table">
-                <ScannerTable rows={filterScannerRows(scan.results ?? [], tab === 'All' ? 'All Decisions' : tab === 'Best Ideas' || tab === 'Research' ? 'Buy / Research' : tab)} />
-              </Panel>
-            </div>
-          </details>
+        <div className="picker-workspace">
+          <div className="picker-table-pane">
+            <StockPickerScreenerTable rows={rows} selectedTicker={selectedTicker} onSelect={setSelectedTicker} />
+            <details className="diagnostics">
+              <summary>Diagnostics / Raw Data</summary>
+              <div className="grid">
+                <Panel title="Data Issues">
+                  <DecisionList rows={(scan.data_issues ?? []).slice(0, 8)} empty="No price-validation issues in this scan." />
+                </Panel>
+                <Panel title="Raw Scanner Table">
+                  <ScannerTable rows={filterScannerRows(scan.results ?? [], tab === 'All' ? 'All Decisions' : tab === 'Best Ideas' || tab === 'Research' ? 'Buy / Research' : tab)} />
+                </Panel>
+              </div>
+            </details>
+          </div>
+          <aside className="picker-detail-pane">
+            <MarketChartPanel
+              chart={chart.data}
+              decision={selectedDecision}
+              timeframe={timeframe}
+              onTimeframeChange={(value) => setTimeframe(value)}
+            />
+            {selectedDecision ? <SelectedDecisionPanel row={selectedDecision} /> : null}
+          </aside>
         </div>
       ) : (
         <EmptyState title="Ready for a deterministic scan" action="Run real outlier scan">
@@ -834,11 +838,41 @@ function StockPicker() {
   );
 }
 
-function StockPickerScreenerTable({ rows }: { rows: UnifiedDecision[] }) {
-  const [expandedTicker, setExpandedTicker] = useState('');
+function StockPickerScreenerTable({
+  rows,
+  selectedTicker,
+  onSelect,
+}: {
+  rows: UnifiedDecision[];
+  selectedTicker: string;
+  onSelect: (ticker: string) => void;
+}) {
+  const [sortBy, setSortBy] = useState<'score' | 'actionability' | 'relative_volume_20d' | 'price_change_1d_pct' | 'signal' | 'source'>('score');
+  const sortedRows = [...rows].sort((left, right) => {
+    if (sortBy === 'actionability') return labelWeight(right.actionability_label) - labelWeight(left.actionability_label);
+    if (sortBy === 'score') return Number(right.actionability_score ?? right.score ?? 0) - Number(left.actionability_score ?? left.score ?? 0);
+    if (sortBy === 'relative_volume_20d') return Number(right.source_row?.relative_volume_20d ?? 0) - Number(left.source_row?.relative_volume_20d ?? 0);
+    if (sortBy === 'price_change_1d_pct') return Number(right.source_row?.price_change_1d_pct ?? 0) - Number(left.source_row?.price_change_1d_pct ?? 0);
+    if (sortBy === 'signal') return String(left.source_row?.signal_summary ?? '').localeCompare(String(right.source_row?.signal_summary ?? ''));
+    return String(left.best_source_group ?? left.source_group ?? '').localeCompare(String(right.best_source_group ?? right.source_group ?? ''));
+  });
   if (!rows.length) return <p className="muted">No names match this tab right now.</p>;
   return (
-    <div className="table-wrap">
+    <div className="table-wrap workspace-table-wrap">
+      <div className="table-head">
+        <div>
+          <strong>Stock screener</strong>
+          <p>Table-first scan output. Select a row to sync the chart and decision panel.</p>
+        </div>
+        <div className="pill-row">
+          <button className={sortBy === 'score' ? 'secondary active-tab' : 'ghost'} onClick={() => setSortBy('score')} type="button">Sort: Score</button>
+          <button className={sortBy === 'actionability' ? 'secondary active-tab' : 'ghost'} onClick={() => setSortBy('actionability')} type="button">Actionability</button>
+          <button className={sortBy === 'relative_volume_20d' ? 'secondary active-tab' : 'ghost'} onClick={() => setSortBy('relative_volume_20d')} type="button">Rel Vol</button>
+          <button className={sortBy === 'price_change_1d_pct' ? 'secondary active-tab' : 'ghost'} onClick={() => setSortBy('price_change_1d_pct')} type="button">% Change</button>
+          <button className={sortBy === 'signal' ? 'secondary active-tab' : 'ghost'} onClick={() => setSortBy('signal')} type="button">Signal</button>
+          <button className={sortBy === 'source' ? 'secondary active-tab' : 'ghost'} onClick={() => setSortBy('source')} type="button">Source</button>
+        </div>
+      </div>
       <table className="signal-table screener-table">
         <thead>
           <tr>
@@ -860,9 +894,8 @@ function StockPickerScreenerTable({ rows }: { rows: UnifiedDecision[] }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => (
-            <Fragment key={row.ticker}>
-              <tr key={row.ticker} onClick={() => setExpandedTicker((value) => value === row.ticker ? '' : row.ticker)}>
+          {sortedRows.map((row) => (
+            <tr className={selectedTicker === row.ticker ? 'selected' : ''} key={row.ticker} onClick={() => onSelect(row.ticker)}>
                 <td><strong>{row.ticker}</strong></td>
                 <td>{cell(row.company)}</td>
                 <td>{cell(row.primary_action)}</td>
@@ -879,21 +912,6 @@ function StockPickerScreenerTable({ rows }: { rows: UnifiedDecision[] }) {
                 <td>{cell(row.risk_level)}</td>
                 <td>{cell(row.reason)}</td>
               </tr>
-              {expandedTicker === row.ticker ? (
-                <tr className="expanded-row" key={`${row.ticker}-details`}>
-                  <td colSpan={15}>
-                    <div className="expanded-copy">
-                      <strong>Why not:</strong> {row.why_not ?? 'No major counter-thesis beyond routine review discipline.'}
-                      <br />
-                      <strong>Signal:</strong> {row.source_row?.signal_explanation ?? 'No signal explanation loaded.'}
-                      <div className="action-strip">
-                        {row.source_row ? <TrackPredictionButton scannerRow={row.source_row} /> : null}
-                      </div>
-                    </div>
-                  </td>
-                </tr>
-              ) : null}
-            </Fragment>
           ))}
         </tbody>
       </table>
@@ -1678,15 +1696,6 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
       <h2>{title}</h2>
       {children}
     </section>
-  );
-}
-
-function Status({ label, value, tone = 'neutral' }: { label: string; value: string; tone?: 'neutral' | 'good' | 'warn' | 'bad' }) {
-  return (
-    <div className={`status ${tone}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
   );
 }
 
@@ -2482,6 +2491,35 @@ function Chip({ tone, children }: { tone: 'good' | 'bad' | 'warn' | 'neutral'; c
 
 function missingEnvVars(rows: DataSourceRow[]) {
   return Array.from(new Set(rows.flatMap((row) => row.missing_env_vars_list))).sort();
+}
+
+function filterCockpitRows(rows: UnifiedDecision[], view: CockpitView) {
+  const actionable = rows.filter((row) => row.actionability_label === 'Actionable Today' || row.actionability_label === 'Research First');
+  if (view === 'Top') return actionable.slice(0, 24);
+  if (view === 'Tracked') return rows.filter((row) => (row.source_groups ?? [row.source_group]).includes('Tracked'));
+  if (view === 'Broad') return rows.filter((row) => (row.source_groups ?? [row.source_group]).includes('Broad') && !(row.source_groups ?? [row.source_group]).includes('Tracked'));
+  if (view === 'Watch') return rows.filter((row) => row.actionability_label === 'Wait for Better Entry' || row.actionability_label === 'Watch for Trigger');
+  if (view === 'Avoid') return rows.filter((row) => row.actionability_label === 'Avoid / Do Not Chase');
+  return rows;
+}
+
+function filterSignalRows(rows: SignalTableRow[], view: CockpitView) {
+  if (view === 'All') return rows;
+  if (view === 'Top') return rows.filter((row) => ['Actionable Today', 'Research First'].includes(String(row.actionability)));
+  if (view === 'Watch') return rows.filter((row) => ['Wait for Better Entry', 'Watch for Trigger'].includes(String(row.actionability)));
+  if (view === 'Avoid') return rows.filter((row) => String(row.actionability) === 'Avoid / Do Not Chase');
+  if (view === 'Tracked') return rows.filter((row) => String(row.source).includes('Tracked'));
+  if (view === 'Broad') return rows.filter((row) => String(row.source).includes('Broad'));
+  return rows;
+}
+
+function shortCompanyName(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  return trimmed
+    .replace(/\b(Inc\.?|Corporation|Corp\.?|Holdings?|Group|Company|Co\.?|Technologies|Technology|International|Systems|Limited|Ltd\.?)\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 function compactDate(value?: string) {

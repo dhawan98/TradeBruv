@@ -553,6 +553,8 @@ export type WorkspacePayload = {
   chart_data_by_ticker?: Record<string, ChartPayload>;
   coverage_status?: Record<string, unknown>;
   data_issues?: UnifiedDecision[];
+  view_counts?: Record<string, number>;
+  status_bar?: Record<string, unknown>;
   source_aware_top?: {
     overall_top_setup?: UnifiedDecision | null;
     best_tracked_setup?: UnifiedDecision | null;

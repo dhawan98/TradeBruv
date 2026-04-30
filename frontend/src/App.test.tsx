@@ -760,16 +760,16 @@ describe('App', () => {
 
   it('renders the shell navigation', async () => {
     render(<App />);
-    expect(await screen.findByText('TradeBruv')).toBeInTheDocument();
+    expect((await screen.findAllByText('TradeBruv')).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: /Stock Picker/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Data Sources/i })).toBeInTheDocument();
   });
 
-  it('renders the stock picker empty state on the home screen', async () => {
+  it('renders the chart-first decision cockpit workspace on the home screen', async () => {
     render(<App />);
-    expect(await screen.findByRole('heading', { name: /Decision Cockpit/i })).toBeInTheDocument();
-    expect(screen.getByText(/Overall Top:/i)).toBeInTheDocument();
-    expect(screen.getByText(/Tracked tickers are monitored every daily run/i)).toBeInTheDocument();
+    expect((await screen.findAllByText(/Decision Cockpit/i)).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Tracked, daily leaders, and broad discovery in one canonical list\./i)).toBeInTheDocument();
+    expect(screen.getByText(/Top screener/i)).toBeInTheDocument();
     expect(screen.getAllByText(/Large Cap Starter/i).length).toBeGreaterThan(0);
     expect((await screen.findAllByText((_, element) => element?.textContent?.includes('EMA 21:') ?? false)).length).toBeGreaterThan(0);
     expect(screen.queryByText(/Adjusted price series may include split-adjusted closes\./i)).not.toBeInTheDocument();

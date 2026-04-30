@@ -483,7 +483,7 @@ def _build_workspace_payload(
     top_n: int,
 ) -> dict[str, Any]:
     picker_view = _build_picker_view(decisions, data_issues=data_issues)
-    top_candidates = [row for row in decisions if row.get("actionability_label") in {"Actionable Today", "Research First"}][:4]
+    top_candidates = [row for row in decisions if row.get("actionability_label") in {"Actionable Today", "Research First"}][:8]
     tracked_rows = [row for row in decisions if _has_source_group(row, "Tracked")]
     broad_rows = [row for row in decisions if _has_source_group(row, "Broad")]
     watch_rows = [row for row in decisions if row.get("actionability_label") in {"Wait for Better Entry", "Watch for Trigger"}][:5]
@@ -518,6 +518,23 @@ def _build_workspace_payload(
         "chart_data_by_ticker": {},
         "coverage_status": coverage_status,
         "data_issues": data_issues,
+        "view_counts": {
+            "all": len(decisions),
+            "top": len([row for row in decisions if row.get("actionability_label") in {"Actionable Today", "Research First"}]),
+            "tracked": len(tracked_rows),
+            "broad": len(broad_rows),
+            "watch": len([row for row in decisions if row.get("actionability_label") in {"Wait for Better Entry", "Watch for Trigger"}]),
+            "avoid": len([row for row in decisions if row.get("actionability_label") == "Avoid / Do Not Chase"]),
+            "data_issues": len(data_issues),
+        },
+        "status_bar": {
+            "provider": coverage_status.get("provider"),
+            "last_scan": coverage_status.get("last_broad_scan_time"),
+            "coverage_summary": f"{coverage_status.get('tickers_successfully_scanned', 0)}/{coverage_status.get('tickers_attempted', 0)} scanned",
+            "universe_label": coverage_status.get("universe_label"),
+            "tracked_count": coverage_status.get("tracked_tickers_count", 0),
+            "data_issues": len(data_issues),
+        },
         "source_aware_top": {
             "overall_top_setup": picker_view.get("top_candidate"),
             "best_tracked_setup": _best_from_source(decisions, "Tracked"),

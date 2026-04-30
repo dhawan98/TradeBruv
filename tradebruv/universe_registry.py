@@ -57,6 +57,28 @@ TOP1000_STYLE_STARTER = tuple(dict.fromkeys(
     )
 ))
 
+US_BROAD_EXTRA = (
+    "A","AAL","AAP","AEE","AEP","AES","AFL","AIG","AJG","AKAM","ALB","ALGN","ALLE","ALL","AMCR","AME","AMP","AOS","APA","APTV",
+    "ARE","ATO","AWK","BBWI","BBY","BEN","BG","BAX","BIO","BRO","BSX","BXP","CAG","CAH","CARR","CBRE","CE","CEG","CF","CHD",
+    "CHRW","CHTR","CINF","CLX","CMS","CNC","CNP","COF","COO","COR","CPB","CTRA","CTVA","DAL","DAY","DD","DFS","DGX","DHI","DOV",
+    "DOW","DPZ","DTE","DVA","DVN","EBAY","ECL","ED","EFX","EIX","EL","EPAM","EQT","ERIE","ES","ESS","ETR","EVRG","EXPE","EXR",
+    "FDS","FDX","FE","FICO","FITB","FMC","FRT","FSLR","FTV","GEHC","GEN","GPN","GRMN","HAS","HBAN","HES","HIG","HLT","HOLX",
+    "HPE","HPQ","HRL","HSIC","HST","HSY","HUM","HWM","IDXX","INCY","INVH","IP","IPG","IQV","IRM","IT","ITW","JBHT","JKHY","JNPR",
+    "K","KEY","KHC","KIM","KMX","LDOS","LEN","LKQ","LNT","LUV","LW","LYV","MAA","MAS","MCK","MET","MGM","MKC","MKTX","MLM","MOH",
+    "MOS","MPC","MRNA","MSCI","MTB","MTD","NCLH","NDAQ","NDSN","NEE","NEM","NI","NOC","NRG","NSC","NTRS","NUE","NVR","NWSA","O",
+    "ODFL","OKE","OMC","ON","OTIS","OXY","PARA","PEAK","PFG","PKG","PNR","PNW","PODD","POOL","PPG","PPL","PTC","PWR","RCL","REG",
+    "RF","RJF","RMD","ROK","ROL","SJM","SLG","SNA","SPG","SRE","STE","STT","STX","SWK","SWKS","SYF","TECH","TEL","TER","TFC",
+    "TFX","TPR","TRGP","TRMB","TRV","TSCO","TTWO","TXT","TYL","UAL","UDR","UHS","ULTA","URI","VFC","VICI","VLTO","VMC","VRSK",
+    "VTR","VTRS","WAB","WAT","WBA","WEC","WELL","WDC","WRB","WSM","WTW","WY","WYNN","XEL","XYL","YUM","ZBH","ZBRA","ZION",
+    "CAR","GME","CVNA","DKNG","DASH","CHWY","ETSY","ROKU","AFRM","UPST","SOFI","LYFT","PTON","BROS","ELF","CROX","ONON","HIMS",
+    "ASTS","IONQ","APP","APPF","DUOL","MRNA","SMR","ACHR","JOBY","TEM","ALAB",
+)
+
+US_BROAD_1000_TARGET = tuple(dict.fromkeys(
+    TOP1000_STYLE_STARTER
+    + US_BROAD_EXTRA
+))
+
 
 UNIVERSE_DEFINITIONS: dict[str, UniverseDefinition] = {
     "sp500": UniverseDefinition(
@@ -82,6 +104,14 @@ UNIVERSE_DEFINITIONS: dict[str, UniverseDefinition] = {
         starter_note="Static curated starter file, not a live official Russell 1000 membership feed.",
         tickers=TOP1000_STYLE_STARTER,
         default_output=Path("config/universe_russell1000_or_top1000.txt"),
+    ),
+    "us_broad_1000": UniverseDefinition(
+        source="us_broad_1000",
+        label="US Broad 1000 Target",
+        description="Broader static U.S. discovery starter that combines large caps, liquid midcaps, and unusual movers without defaulting into microcaps.",
+        starter_note="Static curated starter file that targets broad-market discovery. It is intentionally honest about partial coverage versus a live official top-1000 feed.",
+        tickers=US_BROAD_1000_TARGET,
+        default_output=Path("config/universe_us_broad_1000.txt"),
     ),
     "liquid_growth": UniverseDefinition(
         source="liquid_growth",
@@ -111,7 +141,7 @@ UNIVERSE_DEFINITIONS: dict[str, UniverseDefinition] = {
 
 
 def list_universe_definitions() -> list[UniverseDefinition]:
-    return [UNIVERSE_DEFINITIONS[key] for key in ("sp500", "nasdaq100", "top1000", "liquid_growth", "ai_semis_software", "tracked")]
+    return [UNIVERSE_DEFINITIONS[key] for key in ("sp500", "nasdaq100", "top1000", "us_broad_1000", "liquid_growth", "ai_semis_software", "tracked")]
 
 
 def get_universe_definition(source: str) -> UniverseDefinition:
@@ -142,6 +172,9 @@ def validate_universe_file(path: Path) -> dict[str, Any]:
     elif "nasdaq100" in file_name:
         expected_universe_size = 100
         universe_label = "Nasdaq 100"
+    elif "us_broad_1000" in file_name:
+        expected_universe_size = 1000
+        universe_label = "US Broad 1000 Target"
     elif "top1000" in file_name or "russell1000" in file_name:
         expected_universe_size = 1000
         universe_label = "Top 1000 Style Starter"

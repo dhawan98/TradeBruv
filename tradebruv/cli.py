@@ -578,7 +578,7 @@ def build_parser() -> argparse.ArgumentParser:
     universe_subparsers = universe.add_subparsers(dest="universe_command", required=True)
     universe_subparsers.add_parser("list", help="List built-in universe sources.")
     universe_build = universe_subparsers.add_parser("build", help="Write a curated starter universe file.")
-    universe_build.add_argument("--source", choices=("sp500", "nasdaq100", "top1000", "liquid_growth", "ai_semis_software", "tracked"), required=True)
+    universe_build.add_argument("--source", choices=("sp500", "nasdaq100", "top1000", "us_broad_1000", "liquid_growth", "ai_semis_software", "tracked"), required=True)
     universe_build.add_argument("--output", type=Path, required=True)
     universe_validate = universe_subparsers.add_parser("validate", help="Validate universe coverage labels and expected size.")
     universe_validate.add_argument("path", type=Path)
