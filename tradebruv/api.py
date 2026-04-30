@@ -72,6 +72,18 @@ def create_app() -> "FastAPI":
     def scan(payload: dict[str, Any]) -> dict[str, Any]:
         return services.run_scan(payload)
 
+    @app.post("/api/scan/start")
+    def scan_start(payload: dict[str, Any]) -> dict[str, Any]:
+        return services.scan_start(payload)
+
+    @app.get("/api/scan/status/{job_id}")
+    def scan_status(job_id: str) -> dict[str, Any]:
+        return services.scan_status(job_id)
+
+    @app.get("/api/scan/result/{job_id}")
+    def scan_result(job_id: str) -> dict[str, Any]:
+        return services.scan_result(job_id)
+
     @app.get("/api/reports/latest")
     def reports_latest() -> dict[str, Any]:
         return services.reports_latest()

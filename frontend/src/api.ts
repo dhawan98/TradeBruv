@@ -179,6 +179,12 @@ export const api = {
   portfolio: () => request<PortfolioPayload>('/api/portfolio'),
   scan: (payload: Record<string, unknown>) =>
     request<ScanPayload>('/api/scan', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
+  startScan: (payload: Record<string, unknown>) =>
+    request<ScanJobStatus>('/api/scan/start', { method: 'POST', body: JSON.stringify(payload) }),
+  scanStatus: (jobId: string) =>
+    request<ScanJobStatus>(`/api/scan/status/${encodeURIComponent(jobId)}`),
+  scanResult: (jobId: string) =>
+    request<ScanPayload>(`/api/scan/result/${encodeURIComponent(jobId)}`, undefined, { timeoutMs: LONG_TIMEOUT_MS }),
   deepResearch: (payload: Record<string, unknown>) =>
     request<ResearchPayload>('/api/deep-research', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
   portfolioAnalyze: (payload: Record<string, unknown>) =>
@@ -462,6 +468,22 @@ export type ScanPayload = {
   decisions?: UnifiedDecision[];
   data_issues?: UnifiedDecision[];
   validation_context?: ValidationContext;
+  scan_failures?: { ticker?: string; reason?: string; category?: string }[];
+  provider_health?: Record<string, unknown>;
+  scan_health?: Record<string, unknown>;
+  cache_stats?: Record<string, unknown>;
+};
+
+export type ScanJobStatus = {
+  available?: boolean;
+  job_id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'missing' | string;
+  attempted?: number;
+  scanned?: number;
+  failed?: number;
+  provider_health?: Record<string, unknown>;
+  current_batch?: string;
+  error?: string;
 };
 
 export type LatestReport = ScanPayload & { available: boolean; path?: string };
@@ -475,6 +497,7 @@ export type DecisionSnapshotPayload = ScanPayload & {
   overall_top_candidate?: UnifiedDecision | null;
   best_tracked_setup?: UnifiedDecision | null;
   best_broad_setup?: UnifiedDecision | null;
+  best_mover_setup?: UnifiedDecision | null;
   research_candidates?: UnifiedDecision[];
   watch_candidates?: UnifiedDecision[];
   avoid_candidates?: UnifiedDecision[];
@@ -482,6 +505,7 @@ export type DecisionSnapshotPayload = ScanPayload & {
   compact_board?: UnifiedDecision[];
   tracked_watchlist_table?: SignalTableRow[];
   broad_scan_top_table?: SignalTableRow[];
+  movers_table?: SignalTableRow[];
   signal_table?: SignalTableRow[];
   no_clean_candidate_reason?: string;
   data_coverage_status?: Record<string, unknown>;
@@ -546,6 +570,7 @@ export type WorkspacePayload = {
   top_candidates?: UnifiedDecision[];
   tracked_rows?: UnifiedDecision[];
   broad_rows?: UnifiedDecision[];
+  mover_rows?: UnifiedDecision[];
   watch_rows?: UnifiedDecision[];
   avoid_rows?: UnifiedDecision[];
   signal_table_rows?: SignalTableRow[];
@@ -559,6 +584,7 @@ export type WorkspacePayload = {
     overall_top_setup?: UnifiedDecision | null;
     best_tracked_setup?: UnifiedDecision | null;
     best_broad_setup?: UnifiedDecision | null;
+    best_mover_setup?: UnifiedDecision | null;
   };
   selected_ticker_consistency_status?: 'PASS' | 'FAIL' | string;
   selected_ticker_consistency_reason?: string;

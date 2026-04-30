@@ -139,6 +139,7 @@ def main(argv: list[str] | None = None) -> int:
                 velocity_universe=args.velocity_universe,
                 broad_universe=args.broad_universe,
                 tracked=args.tracked,
+                include_movers=args.include_movers,
                 top_n=args.top_n,
                 history_period=args.history_period,
                 data_dir=args.data_dir,
@@ -155,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "universe":
-        from .universe_registry import list_universe_definitions, universe_text, validate_universe_file
+        from .universe_registry import clean_universe_file, import_universe_csv, list_universe_definitions, universe_text, validate_universe_file
 
         if args.universe_command == "list":
             for definition in list_universe_definitions():
@@ -169,6 +170,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.universe_command == "validate":
             print(json.dumps(validate_universe_file(args.path), indent=2))
+            return 0
+        if args.universe_command == "import-csv":
+            print(json.dumps(import_universe_csv(args.input, ticker_column=args.ticker_column, output_path=args.output), indent=2))
+            return 0
+        if args.universe_command == "clean":
+            print(json.dumps(clean_universe_file(args.input, args.output), indent=2))
             return 0
 
     if args.command == "tracked":
@@ -212,6 +219,43 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Broad scan JSON: {payload.json_path}")
         print(f"Broad scan CSV:  {payload.csv_path}")
         print(f"Broad scan MD:   {payload.markdown_path}")
+        return 0
+
+    if args.command == "market-health":
+        try:
+            from .market_reliability import build_market_health_report
+
+            payload = build_market_health_report(args.provider, history_period=args.history_period, sample_ticker=args.ticker)
+        except (ProviderConfigurationError, ValueError) as exc:
+            print(f"Market-health error: {exc}")
+            return 2
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    if args.command == "movers":
+        try:
+            from .movers import run_movers_scan
+
+            payload = run_movers_scan(
+                universe=load_universe(args.universe),
+                provider_name=args.provider,
+                analysis_date=args.as_of_date or date.today(),
+                history_period=args.history_period,
+                data_dir=args.data_dir,
+                top_n=args.top_n,
+                min_price=args.min_price,
+                min_dollar_volume=args.min_dollar_volume,
+                include_speculative=args.include_speculative,
+                output_dir=args.output_dir,
+                refresh_cache=args.refresh_cache,
+                progress=print,
+            )
+        except (ProviderConfigurationError, FileNotFoundError, ValueError) as exc:
+            print(f"Movers error: {exc}")
+            return 2
+        print(f"Movers JSON: {payload.json_path}")
+        print(f"Movers CSV:  {payload.csv_path}")
+        print(f"Movers MD:   {payload.markdown_path}")
         return 0
 
     if args.command == "review":
@@ -567,6 +611,7 @@ def build_parser() -> argparse.ArgumentParser:
     decision_today.add_argument("--velocity-universe", type=Path, default=Path("config/active_velocity_universe.txt"))
     decision_today.add_argument("--broad-universe", type=Path)
     decision_today.add_argument("--tracked", type=Path, default=Path("config/tracked_tickers.txt"))
+    decision_today.add_argument("--include-movers", action="store_true")
     decision_today.add_argument("--top-n", type=int, default=25)
     decision_today.add_argument("--data-dir", type=Path)
     decision_today.add_argument("--history-period", default="3y")
@@ -582,6 +627,13 @@ def build_parser() -> argparse.ArgumentParser:
     universe_build.add_argument("--output", type=Path, required=True)
     universe_validate = universe_subparsers.add_parser("validate", help="Validate universe coverage labels and expected size.")
     universe_validate.add_argument("path", type=Path)
+    universe_import = universe_subparsers.add_parser("import-csv", help="Import a CSV ticker list into a newline universe file.")
+    universe_import.add_argument("--input", type=Path, required=True)
+    universe_import.add_argument("--ticker-column", required=True)
+    universe_import.add_argument("--output", type=Path, required=True)
+    universe_clean = universe_subparsers.add_parser("clean", help="Clean, normalize, and dedupe a universe file.")
+    universe_clean.add_argument("--input", type=Path, required=True)
+    universe_clean.add_argument("--output", type=Path, required=True)
 
     tracked = subparsers.add_parser("tracked", help="Manage the tracked-tickers watchlist file.")
     tracked_subparsers = tracked.add_subparsers(dest="tracked_command", required=True)
@@ -606,6 +658,24 @@ def build_parser() -> argparse.ArgumentParser:
     broad_scan.add_argument("--output-dir", type=Path, default=Path("outputs/broad_scan"))
     broad_scan.add_argument("--refresh-cache", action="store_true")
     broad_scan.add_argument("--as-of-date", type=_parse_date)
+
+    market_health = subparsers.add_parser("market-health", help="Check live provider health and fallback readiness.")
+    market_health.add_argument("--provider", choices=("sample", "local", "real"), default="real")
+    market_health.add_argument("--history-period", default="6mo")
+    market_health.add_argument("--ticker", default="SPY")
+
+    movers = subparsers.add_parser("movers", help="Scan for top gainers, losers, and unusual-volume setups.")
+    movers.add_argument("--universe", type=Path, required=True)
+    movers.add_argument("--provider", choices=("sample", "local", "real"), default="real")
+    movers.add_argument("--data-dir", type=Path)
+    movers.add_argument("--history-period", default="3y")
+    movers.add_argument("--top-n", type=int, default=25)
+    movers.add_argument("--min-price", type=float, default=5.0)
+    movers.add_argument("--min-dollar-volume", type=float, default=20_000_000.0)
+    movers.add_argument("--include-speculative", action="store_true")
+    movers.add_argument("--output-dir", type=Path, default=Path("outputs/movers"))
+    movers.add_argument("--refresh-cache", action="store_true")
+    movers.add_argument("--as-of-date", type=_parse_date)
 
     review = subparsers.add_parser("review", help="Review a saved scan report against later OHLCV data.")
     _add_review_provider_args(review)

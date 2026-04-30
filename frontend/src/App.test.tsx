@@ -750,6 +750,15 @@ vi.stubGlobal(
       },
     };
     const pathname = new URL(url, 'http://localhost:8000').pathname;
+    if (pathname === '/api/scan/start') {
+      return Promise.resolve(new Response(JSON.stringify({ job_id: 'job-1', status: 'queued' }), { status: 200 }));
+    }
+    if (pathname === '/api/scan/status/job-1') {
+      return Promise.resolve(new Response(JSON.stringify({ job_id: 'job-1', status: 'completed', attempted: 1, scanned: 1, failed: 0, provider_health: { status: 'healthy' } }), { status: 200 }));
+    }
+    if (pathname === '/api/scan/result/job-1') {
+      return Promise.resolve(new Response(JSON.stringify(payloads['/api/scan']), { status: 200 }));
+    }
     const key = Object.keys(payloads).find((path) => pathname === path);
     return Promise.resolve(new Response(JSON.stringify(payloads[key ?? '/api/alerts']), { status: 200 }));
   }),
@@ -768,7 +777,7 @@ describe('App', () => {
   it('renders the chart-first decision cockpit workspace on the home screen', async () => {
     render(<App />);
     expect((await screen.findAllByText(/Decision Cockpit/i)).length).toBeGreaterThan(0);
-    expect(screen.getByText(/Tracked, daily leaders, and broad discovery in one canonical list\./i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Movers/i })).toBeInTheDocument();
     expect(screen.getByText(/Top screener/i)).toBeInTheDocument();
     expect(screen.getAllByText(/Large Cap Starter/i).length).toBeGreaterThan(0);
     expect((await screen.findAllByText((_, element) => element?.textContent?.includes('EMA 21:') ?? false)).length).toBeGreaterThan(0);

@@ -46,18 +46,28 @@ class FileCacheMarketDataProvider:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.cache_hits = 0
         self.cache_misses = 0
+        self.cache_stale_hits = 0
+        self.cache_fallback_hits = 0
 
     def get_security_data(self, ticker: str) -> SecurityData:
         ticker = ticker.upper()
-        cache_path = self._cache_path(ticker)
-        if not self.refresh_cache and cache_path.exists():
-            cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            created_at = datetime.fromisoformat(str(cached["cached_at"]).replace("Z", "+00:00"))
-            if datetime.utcnow() - created_at.replace(tzinfo=None) <= timedelta(minutes=self.ttl_minutes):
-                self.cache_hits += 1
-                return _security_from_dict(cached["security"])
+        fresh = self.load_cached_security(ticker, allow_stale=False)
+        if not self.refresh_cache and fresh is not None:
+            self.cache_hits += 1
+            return fresh
         self.cache_misses += 1
-        security = self.provider.get_security_data(ticker)
+        try:
+            security = self.provider.get_security_data(ticker)
+        except Exception:
+            cached_fallback = self.load_cached_security(
+                ticker,
+                allow_stale=bool(_truthy_env("TRADEBRUV_ALLOW_CACHE_ON_PROVIDER_FAILURE", default=True)),
+                max_age_hours=int(os.getenv("TRADEBRUV_MAX_CACHE_AGE_HOURS", "24")),
+            )
+            if cached_fallback is None:
+                raise
+            self.cache_fallback_hits += 1
+            return _with_cache_note(cached_fallback, "cached stale" if self.is_cached_stale(ticker) else "cached fresh")
         payload = {
             "cached_at": datetime.utcnow().isoformat() + "Z",
             "ticker": ticker,
@@ -66,7 +76,7 @@ class FileCacheMarketDataProvider:
             "interval": self.interval,
             "security": _security_to_dict(security),
         }
-        cache_path.write_text(json.dumps(payload), encoding="utf-8")
+        self._cache_path(ticker).write_text(json.dumps(payload), encoding="utf-8")
         return security
 
     def cache_stats(self) -> dict[str, Any]:
@@ -75,12 +85,109 @@ class FileCacheMarketDataProvider:
             "ttl_minutes": self.ttl_minutes,
             "hits": self.cache_hits,
             "misses": self.cache_misses,
+            "stale_hits": self.cache_stale_hits,
+            "fallback_hits": self.cache_fallback_hits,
             "refresh_cache": self.refresh_cache,
         }
+
+    def load_cached_security(
+        self,
+        ticker: str,
+        *,
+        allow_stale: bool,
+        max_age_hours: int | None = None,
+    ) -> SecurityData | None:
+        cached = self.load_cached_entry(ticker)
+        if cached is None:
+            return None
+        created_at = _coerce_cached_at(cached)
+        if created_at is None:
+            return None
+        age = datetime.utcnow() - created_at
+        fresh = age <= timedelta(minutes=self.ttl_minutes)
+        within_stale_window = max_age_hours is None or age <= timedelta(hours=max_age_hours)
+        if fresh:
+            return _security_from_dict(cached["security"])
+        if allow_stale and within_stale_window:
+            self.cache_stale_hits += 1
+            return _with_cache_note(_security_from_dict(cached["security"]), "cached stale")
+        return None
+
+    def load_cached_entry(self, ticker: str) -> dict[str, Any] | None:
+        cache_path = self._cache_path(ticker.upper())
+        if not cache_path.exists():
+            return None
+        return json.loads(cache_path.read_text(encoding="utf-8"))
+
+    def is_cached_stale(self, ticker: str) -> bool:
+        cached = self.load_cached_entry(ticker)
+        if cached is None:
+            return False
+        created_at = _coerce_cached_at(cached)
+        if created_at is None:
+            return False
+        return datetime.utcnow() - created_at > timedelta(minutes=self.ttl_minutes)
+
+    def health_report(self) -> dict[str, Any]:
+        report = getattr(self.provider, "health_report", None)
+        if callable(report):
+            return report()
+        return {"provider": self.provider_name, "status": "healthy"}
+
+    def should_stop_scan(self) -> bool:
+        return bool(getattr(self.provider, "should_stop_scan", lambda: False)())
 
     def _cache_path(self, ticker: str) -> Path:
         key = f"{self.provider_name}_{ticker}_{self.history_period}_{self.interval}.json".replace("/", "_")
         return self.cache_dir / key
+
+
+def _coerce_cached_at(payload: dict[str, Any]) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(payload["cached_at"]).replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def _truthy_env(name: str, *, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _with_cache_note(security: SecurityData, cache_source: str) -> SecurityData:
+    notes = list(security.data_notes)
+    note = f"Loaded from {cache_source} market cache."
+    if note not in notes:
+        notes.append(note)
+    return SecurityData(
+        ticker=security.ticker,
+        company_name=security.company_name,
+        sector=security.sector,
+        industry=security.industry,
+        bars=security.bars,
+        market_cap=security.market_cap,
+        ipo_date=security.ipo_date,
+        fundamentals=security.fundamentals,
+        catalyst=security.catalyst,
+        next_earnings_date=security.next_earnings_date,
+        short_interest=security.short_interest,
+        social_attention=security.social_attention,
+        catalyst_items=security.catalyst_items,
+        alternative_data_items=security.alternative_data_items,
+        options_data=security.options_data,
+        theme_tags=security.theme_tags,
+        catalyst_tags=security.catalyst_tags,
+        provider_name=security.provider_name,
+        source_notes=list(security.source_notes),
+        data_notes=notes,
+        quote_price_if_available=security.quote_price_if_available,
+        quote_timestamp=security.quote_timestamp,
+        latest_available_close=security.latest_available_close,
+        last_market_date=security.last_market_date,
+        is_adjusted_price=security.is_adjusted_price,
+    )
 
 
 def _security_to_dict(security: SecurityData) -> dict[str, Any]:

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from .ai_explanations import apply_ai_explanations, build_explanation_provider
 from .ai_committee import combine_recommendations, run_ai_committee
@@ -17,6 +17,8 @@ from .catalysts import CatalystOverlayProvider, load_catalyst_repository
 from .cli import build_provider, load_universe
 from .data_sources import build_data_source_status, data_health_summary
 from .journal import DEFAULT_JOURNAL_PATH, journal_stats, read_journal
+from .market_cache import DEFAULT_MARKET_CACHE_DIR, FileCacheMarketDataProvider
+from .market_reliability import ResilientMarketDataProvider
 from .portfolio import (
     DEFAULT_PORTFOLIO_PATH,
     delete_position,
@@ -70,6 +72,9 @@ class DashboardReport:
     results: list[dict[str, Any]]
     source: str
     market_regime: dict[str, Any]
+    scan_failures: list[dict[str, Any]] = field(default_factory=list)
+    provider_health: dict[str, Any] = field(default_factory=dict)
+    cache_stats: dict[str, Any] = field(default_factory=dict)
 
 
 def run_dashboard_scan(
@@ -85,6 +90,7 @@ def run_dashboard_scan(
     alternative_data_file: Path | None = DEFAULT_ALTERNATIVE_DATA_PATH,
     ai_explanations: bool = False,
     mock_ai_explanations: bool = False,
+    progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> DashboardReport:
     as_of = analysis_date or date.today()
     args = SimpleNamespace(
@@ -93,14 +99,22 @@ def run_dashboard_scan(
         history_period=history_period,
     )
     provider = build_provider(args=args, analysis_date=as_of)
+    provider = ResilientMarketDataProvider(provider, provider_name=provider_name, history_period=history_period) if provider_name == "real" else provider
     catalyst_repository = load_catalyst_repository(catalyst_file)
     if catalyst_repository.items_by_ticker:
         provider = CatalystOverlayProvider(provider, catalyst_repository)
     alternative_repository = load_alternative_data_repository(alternative_data_file)
     if alternative_repository.items_by_ticker:
         provider = AlternativeDataOverlayProvider(provider, alternative_repository)
-    scanner = DeterministicScanner(provider=provider, analysis_date=as_of)
-    results = scanner.scan(load_universe(universe_path), mode=mode)
+    cacheable_provider = FileCacheMarketDataProvider(
+        provider,
+        provider_name=provider_name,
+        history_period=history_period,
+        cache_dir=DEFAULT_MARKET_CACHE_DIR,
+    )
+    scanner = DeterministicScanner(provider=cacheable_provider, analysis_date=as_of)
+    diagnostics = scanner.scan_with_diagnostics(load_universe(universe_path), mode=mode, include_failures_in_results=False, progress=progress)
+    results = diagnostics.results
     if ai_explanations:
         explanation_provider = build_explanation_provider(enabled=True, mock=mock_ai_explanations)
         apply_ai_explanations(results, explanation_provider)
@@ -115,6 +129,9 @@ def run_dashboard_scan(
         results=result_rows,
         source=f"live scan: {universe_path}",
         market_regime=build_market_regime(provider=provider, results=result_rows),
+        scan_failures=diagnostics.failures,
+        provider_health=diagnostics.provider_health,
+        cache_stats=cacheable_provider.cache_stats(),
     )
 
 
@@ -130,6 +147,9 @@ def load_dashboard_report(path: Path) -> DashboardReport:
         results=results,
         source=str(path),
         market_regime=build_market_regime(provider=None, results=results),
+        scan_failures=payload.get("scan_failures", []),
+        provider_health=payload.get("provider_health", {}),
+        cache_stats=payload.get("cache_stats", {}),
     )
 
 

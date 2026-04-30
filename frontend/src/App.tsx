@@ -32,6 +32,7 @@ import {
   ProofReport,
   ReplayPayload,
   ResearchPayload,
+  ScanJobStatus,
   ScannerRow,
   SignalTableRow,
   UnifiedDecision,
@@ -189,11 +190,13 @@ function TopBar({
 }) {
   const coverage = latest?.workspace?.coverage_status ?? latest?.data_coverage_status ?? {};
   const statusBar = latest?.workspace?.status_bar ?? {};
+  const coverageHealth = coverage.provider_health as Record<string, unknown> | undefined;
   const warnings = [
-    latest?.demo_mode ? 'Demo mode' : '',
-    latest?.report_snapshot ? 'Report snapshot' : '',
-    latest?.stale_data ? 'Stale rows hidden' : '',
-    healthError ? 'Backend warning' : '',
+    String(statusBar.provider_health ?? coverageHealth?.status ?? '') === 'rate_limited' ? 'Rate-limited' : '',
+    String(statusBar.provider_health ?? coverageHealth?.status ?? '') === 'degraded' ? 'Degraded' : '',
+    latest?.report_snapshot ? 'Snapshot' : '',
+    latest?.stale_data ? 'Stale' : '',
+    healthError ? 'Backend' : '',
   ].filter(Boolean);
   return (
     <header className="topbar terminal-topbar">
@@ -207,6 +210,7 @@ function TopBar({
         <span><label>Coverage</label><strong>{String(statusBar.coverage_summary ?? `${coverage.tickers_successfully_scanned ?? 0}/${coverage.tickers_attempted ?? 0} scanned`)}</strong></span>
         <span><label>Universe</label><strong>{String(statusBar.universe_label ?? coverage.universe_label ?? 'Active')}</strong></span>
         <span><label>Tracked</label><strong>{String(statusBar.tracked_count ?? coverage.tracked_tickers_count ?? 0)}</strong></span>
+        <span><label>Health</label><strong>{String(statusBar.provider_health ?? coverageHealth?.status ?? 'healthy')}</strong></span>
       </div>
       {warnings.length ? (
         <div className="topbar-warnings">
@@ -220,7 +224,7 @@ function TopBar({
   );
 }
 
-type CockpitView = 'Top' | 'Tracked' | 'Broad' | 'Watch' | 'Avoid' | 'All';
+type CockpitView = 'Top' | 'Movers' | 'Tracked' | 'Broad' | 'Watch' | 'Avoid' | 'All';
 
 function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
   const latest = useAsync(api.dailyDecisionLatest, []);
@@ -294,20 +298,9 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
       {tracked.error && <ApiErrorPanel error={tracked.error} onRetry={tracked.retry} compact />}
       {latest.data?.available ? (
         <>
-          <div className="cockpit-statusline">
-            <strong>Decision Cockpit</strong>
-            <span>{String(workspace?.coverage_status?.universe_label ?? 'Active')} · {String(workspace?.coverage_status?.tickers_successfully_scanned ?? 0)}/{String(workspace?.coverage_status?.tickers_attempted ?? 0)} scanned</span>
-            <span>{selectedDecision?.ticker ? `Selected ${selectedDecision.ticker}` : 'No symbol selected'}</span>
-            <span>{activeView === 'Broad' ? 'Discovery view' : `${activeView} view`}</span>
-            <span>{String((workspace?.data_issues ?? latest.data?.data_issues ?? []).length)} hidden data issues</span>
-          </div>
           <div className="cockpit-grid">
             <aside className="cockpit-rail">
               <div className="rail-header">
-                <div>
-                  <span className="eyebrow">Symbols</span>
-                  <strong>Tracked, daily leaders, and broad discovery in one canonical list.</strong>
-                </div>
                 <form className="rail-add-form" onSubmit={addTrackedTicker}>
                   <input value={trackedInput} onChange={(event) => setTrackedInput(event.target.value)} placeholder="Add ticker" aria-label="Add tracked ticker" />
                   <button className="ghost" type="submit"><Plus size={14} /> Add</button>
@@ -318,14 +311,17 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
                 counts={(workspace?.view_counts ?? {}) as Record<string, number>}
                 onChange={setActiveView}
               />
-              <div className="tracked-chip-strip">
-                {(tracked.data?.tickers ?? []).slice(0, 18).map((ticker) => (
-                  <button className="tracked-chip subtle" key={ticker} onClick={() => removeTrackedTicker(ticker)} type="button" title={`Remove ${ticker} from tracked`}>
-                    <span>{ticker}</span>
-                    <Trash2 size={12} />
-                  </button>
-                ))}
-              </div>
+              <details className="rail-managed-list">
+                <summary>Tracked</summary>
+                <div className="tracked-chip-strip">
+                  {(tracked.data?.tickers ?? []).slice(0, 18).map((ticker) => (
+                    <button className="tracked-chip subtle" key={ticker} onClick={() => removeTrackedTicker(ticker)} type="button" title={`Remove ${ticker} from tracked`}>
+                      <span>{ticker}</span>
+                      <Trash2 size={12} />
+                    </button>
+                  ))}
+                </div>
+              </details>
               <div className="rail-list">
                 {activeRows.length ? activeRows.map((row) => (
                   <button
@@ -342,8 +338,8 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
                       <span>{cell(row.source_row?.current_price ?? 'n/a')}</span>
                       <span className={pctTone(row.source_row?.price_change_1d_pct)}>{pct(row.source_row?.price_change_1d_pct)}</span>
                       <span>RV {cell(row.source_row?.relative_volume_20d ?? 'n/a')}</span>
-                      <span>{row.source_row?.signal_summary ?? row.actionability_label ?? row.primary_action}</span>
-                      <span>{row.actionability_label ?? row.primary_action}</span>
+                      <span>{row.source_row?.signal_summary ?? 'No Clean Signal'}</span>
+                      <span>{shortAction(row.actionability_label ?? row.primary_action)}</span>
                     </div>
                   </button>
                 )) : <p className="muted">No rows in this view right now.</p>}
@@ -379,7 +375,6 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
               onSelect={setSelectedTicker}
               selectedTicker={selectedTicker}
               title={`${activeView} screener`}
-              subtitle="Dense signal table. Click any row to sync the left rail, chart, and decision panel."
             />
             <details className="diagnostics cockpit-diagnostics">
               <summary>Diagnostics / Raw Data</summary>
@@ -417,6 +412,7 @@ function RailFilterTabs({
 }) {
   const items: { key: CockpitView; countKey: string }[] = [
     { key: 'Top', countKey: 'top' },
+    { key: 'Movers', countKey: 'movers' },
     { key: 'Tracked', countKey: 'tracked' },
     { key: 'Broad', countKey: 'broad' },
     { key: 'Watch', countKey: 'watch' },
@@ -427,7 +423,7 @@ function RailFilterTabs({
     <div className="rail-filters">
       {items.map((item) => (
         <button className={activeView === item.key ? 'rail-filter active' : 'rail-filter'} key={item.key} onClick={() => onChange(item.key)} type="button">
-          <span>{item.key === 'Broad' ? 'Discovery' : item.key}</span>
+          <span>{item.key}</span>
           <strong>{String(counts[item.countKey] ?? 0)}</strong>
         </button>
       ))}
@@ -458,7 +454,6 @@ function MarketChartPanel({
     <div className="market-chart-panel">
       <div className="chart-toolbar workspace-chart-toolbar">
         <div className="chart-heading">
-          <span className="eyebrow">Selected setup</span>
           <strong>{chart?.ticker ?? decision?.ticker ?? 'No symbol selected'}</strong>
           <span>{shortCompanyName(decision?.company ?? '') || sourceGroups || 'No company loaded'}</span>
         </div>
@@ -528,22 +523,13 @@ function MarketChartPanel({
             {showVolume ? <span><i className="legend-swatch volume" /> Volume</span> : null}
           </div>
           <div className="chart-meta workspace-chart-meta">
-            <span>Signal {signalSummary}</span>
+            <span>{signalSummary}</span>
             <span>Rel Vol {cell(chart?.signals?.relative_volume_20d ?? 'n/a')}</span>
             <span>vs EMA21 {pct(chart?.signals?.price_vs_ema_21_pct)}</span>
             <span>vs EMA50 {pct(chart?.signals?.price_vs_ema_50_pct)}</span>
             <span>vs EMA200 {pct(chart?.signals?.price_vs_ema_200_pct)}</span>
           </div>
-          {chart?.markers?.length ? (
-            <div className="chart-markers workspace-chart-markers">
-              {chart.markers.map((marker) => (
-                <span className="marker-inline" key={`${marker.date}-${marker.label}`}>
-                  {marker.label} · {compactDate(marker.date)}
-                </span>
-              ))}
-            </div>
-          ) : null}
-          <p className="signal-strip"><strong>{signalSummary}</strong> · {signalExplanation}</p>
+          <p className="signal-strip">{signalSummary} · {signalExplanation}</p>
         </>
       )}
     </div>
@@ -569,13 +555,12 @@ function SelectedDecisionPanel({
     <div className="selected-decision">
       <div className="decision-heading">
         <div>
-          <span className="eyebrow">Selected ticker</span>
           <h3>{row.ticker}</h3>
-          <p>{shortCompanyName(row.company ?? '') || 'Decision unavailable'} · {(row.source_groups ?? [row.source_group]).filter(Boolean).join(' + ')}</p>
+          <p>{row.actionability_label ?? row.primary_action ?? 'Decision unavailable'} · Score {Math.round(Number(row.actionability_score ?? row.score ?? 0))}</p>
         </div>
         <div className="decision-score-block">
-          <span>{row.actionability_label ?? row.primary_action ?? 'Decision unavailable'}</span>
-          <strong className="summary-score">{Math.round(Number(row.actionability_score ?? row.score ?? 0))}</strong>
+          <span>{money(Number(row.source_row?.current_price ?? 0))}</span>
+          <strong className={pctTone(row.source_row?.price_change_1d_pct)}>{pct(row.source_row?.price_change_1d_pct)}</strong>
         </div>
       </div>
       <div className="decision-inline-meta">
@@ -585,19 +570,9 @@ function SelectedDecisionPanel({
         <span>Risk {row.risk_level ?? 'n/a'}</span>
         <span>Updated {compactDate(row.latest_market_date)}</span>
       </div>
-      <div className="brief-grid compact-brief-grid">
-        <div>
-          <span className="eyebrow">Why now</span>
-          <p>{row.actionability_reason ?? row.reason ?? 'No thesis returned.'}</p>
-        </div>
-        <div>
-          <span className="eyebrow">Why not</span>
-          <p>{row.why_not ?? 'No major counter-thesis beyond routine review discipline.'}</p>
-        </div>
-      </div>
       {visibleNotices.length ? (
         <div className="notice-stack">
-          {visibleNotices.slice(0, 3).map((notice) => (
+          {visibleNotices.slice(0, 1).map((notice) => (
             <div className={`notice-line ${notice.severity}`} key={`${notice.severity}-${notice.message}`}>
               <span>{notice.message}</span>
             </div>
@@ -624,9 +599,9 @@ function SelectedDecisionPanel({
       </div>
       <div className="decision-subfacts">
         <div><span>Signal</span><strong>{row.source_row?.signal_summary ?? 'n/a'}</strong></div>
-        <div><span>EMA stack</span><strong>{row.source_row?.ema_stack ?? 'n/a'}</strong></div>
-        <div><span>Freshness</span><strong>{row.data_freshness ?? compactDate(row.latest_market_date)}</strong></div>
-        <div><span>Source tags</span><strong>{(row.source_groups ?? [row.source_group]).filter(Boolean).join(' + ') || 'n/a'}</strong></div>
+        <div><span>EMA</span><strong>{row.source_row?.ema_stack ?? 'n/a'}</strong></div>
+        <div><span>Fresh</span><strong>{row.data_freshness ?? compactDate(row.latest_market_date)}</strong></div>
+        <div><span>Source</span><strong>{(row.source_groups ?? [row.source_group]).filter(Boolean).join(' + ') || 'n/a'}</strong></div>
       </div>
       <div className="action-strip">
         {onDeepResearch ? <button className="secondary" onClick={onDeepResearch} type="button">Deep Research</button> : null}
@@ -634,6 +609,18 @@ function SelectedDecisionPanel({
         {row.source_row ? <TrackPredictionButton scannerRow={row.source_row} /> : null}
         {onAICommittee ? <button className="ghost" onClick={onAICommittee} type="button">Run AI Committee</button> : null}
       </div>
+      <details className="decision-disclosure">
+        <summary>Why</summary>
+        <p>{row.actionability_reason ?? row.reason ?? 'No thesis returned.'}</p>
+      </details>
+      <details className="decision-disclosure">
+        <summary>Risk</summary>
+        <p>{row.why_not ?? 'No major counter-thesis beyond routine review discipline.'}</p>
+      </details>
+      <details className="decision-disclosure">
+        <summary>Sources</summary>
+        <p>{(row.source_groups ?? [row.source_group]).filter(Boolean).join(' + ') || 'No source tags loaded.'}</p>
+      </details>
     </div>
   );
 }
@@ -643,13 +630,13 @@ function SignalWorkspaceTable({
   onSelect,
   selectedTicker,
   title = 'Signal table',
-  subtitle = 'Compact screener view.',
+  subtitle,
 }: {
   rows: SignalTableRow[];
   onSelect: (ticker: string) => void;
   selectedTicker: string;
   title?: string;
-  subtitle?: string;
+  subtitle?: string | null;
 }) {
   const [sortBy, setSortBy] = useState<'actionability' | 'relative_volume_20d' | 'price_change_1d_pct'>('actionability');
   const sorted = [...rows].sort((left, right) => {
@@ -664,7 +651,7 @@ function SignalWorkspaceTable({
       <div className="table-head">
         <div>
           <strong>{title}</strong>
-          <p>{subtitle}</p>
+          {subtitle ? <p>{subtitle}</p> : null}
         </div>
         <div className="pill-row">
         <button className={sortBy === 'actionability' ? 'secondary active-tab' : 'ghost'} onClick={() => setSortBy('actionability')} type="button">Sort: Actionability</button>
@@ -699,10 +686,7 @@ function SignalWorkspaceTable({
               <td className={pctTone(row.price_change_1d_pct)}>{pct(row.price_change_1d_pct)}</td>
               <td>{cell(row.relative_volume_20d)}</td>
               <td>{cell(row.ema_stack)}</td>
-              <td>
-                <strong>{cell(row.signal)}</strong>
-                <div className="table-subtext">{cell(row.signal_explanation)}</div>
-              </td>
+              <td><strong>{cell(row.signal)}</strong></td>
               <td>{cell(row.actionability)}</td>
               <td>{cell(row.risk)}</td>
               <td>{cell(row.entry_or_trigger)}</td>
@@ -731,6 +715,7 @@ function emptyChartPayload(): ChartPayload {
 function StockPicker() {
   const universes = useAsync(api.universes, []);
   const [scan, setScan] = useState<ScanState | null>(null);
+  const [scanJob, setScanJob] = useState<ScanJobStatus | null>(null);
   const [tab, setTab] = useState<'Best Ideas' | 'Research' | 'Watch' | 'Avoid' | 'All'>('Best Ideas');
   const [selectedTicker, setSelectedTicker] = useState('');
   const [timeframe, setTimeframe] = useState<'3M' | '6M' | '1Y' | '2Y'>('6M');
@@ -743,12 +728,14 @@ function StockPicker() {
     setError(null);
     const form = new FormData(event.currentTarget);
     try {
-      const payload = await api.scan({
+      const job = await api.startScan({
         provider: form.get('provider'),
         mode: form.get('mode'),
         universe_path: form.get('universe_path'),
         as_of_date: form.get('as_of_date'),
       });
+      setScanJob(job);
+      const payload = await waitForScanResult(job.job_id, setScanJob);
       setScan(payload);
     } catch (err) {
       setError(err instanceof Error ? err : new Error('Scan failed'));
@@ -793,7 +780,13 @@ function StockPicker() {
       {scan?.demo_mode && <Notice tone="warn">DEMO MODE. Demo sample data — not real prices.</Notice>}
       {scan?.report_snapshot && <Notice tone="warn">Report Snapshot. Historical rows are not actionable.</Notice>}
       {error && <ApiErrorPanel error={error} onRetry={() => setError(null)} />}
-      {loading && <Notice tone="neutral">Running the scanner can take a bit with the real provider. Results will appear here without changing your data.</Notice>}
+      {loading && (
+        <Notice tone="neutral">
+          {scanJob
+            ? `Scan ${scanJob.status}. Attempted ${scanJob.attempted ?? 0} · scanned ${scanJob.scanned ?? 0} · failed ${scanJob.failed ?? 0}${scanJob.current_batch ? ` · ${scanJob.current_batch}` : ''}${scanJob.provider_health?.status ? ` · ${String(scanJob.provider_health.status)}` : ''}`
+            : 'Starting scan job…'}
+        </Notice>
+      )}
       {scan?.decisions?.length ? (
         <div className="tabs">
           {(['Best Ideas', 'Research', 'Watch', 'Avoid', 'All'] as const).map((item) => (
@@ -2496,6 +2489,7 @@ function missingEnvVars(rows: DataSourceRow[]) {
 function filterCockpitRows(rows: UnifiedDecision[], view: CockpitView) {
   const actionable = rows.filter((row) => row.actionability_label === 'Actionable Today' || row.actionability_label === 'Research First');
   if (view === 'Top') return actionable.slice(0, 24);
+  if (view === 'Movers') return rows.filter((row) => (row.source_groups ?? [row.source_group]).includes('Movers'));
   if (view === 'Tracked') return rows.filter((row) => (row.source_groups ?? [row.source_group]).includes('Tracked'));
   if (view === 'Broad') return rows.filter((row) => (row.source_groups ?? [row.source_group]).includes('Broad') && !(row.source_groups ?? [row.source_group]).includes('Tracked'));
   if (view === 'Watch') return rows.filter((row) => row.actionability_label === 'Wait for Better Entry' || row.actionability_label === 'Watch for Trigger');
@@ -2508,9 +2502,25 @@ function filterSignalRows(rows: SignalTableRow[], view: CockpitView) {
   if (view === 'Top') return rows.filter((row) => ['Actionable Today', 'Research First'].includes(String(row.actionability)));
   if (view === 'Watch') return rows.filter((row) => ['Wait for Better Entry', 'Watch for Trigger'].includes(String(row.actionability)));
   if (view === 'Avoid') return rows.filter((row) => String(row.actionability) === 'Avoid / Do Not Chase');
+  if (view === 'Movers') return rows.filter((row) => String(row.source).includes('Movers'));
   if (view === 'Tracked') return rows.filter((row) => String(row.source).includes('Tracked'));
   if (view === 'Broad') return rows.filter((row) => String(row.source).includes('Broad'));
   return rows;
+}
+
+async function waitForScanResult(jobId: string, onStatus: (status: ScanJobStatus) => void): Promise<ScanState> {
+  for (let attempt = 0; attempt < 180; attempt += 1) {
+    const status = await api.scanStatus(jobId);
+    onStatus(status);
+    if (status.status === 'completed') {
+      return api.scanResult(jobId) as Promise<ScanState>;
+    }
+    if (status.status === 'failed') {
+      throw new Error(status.error || 'Background scan failed.');
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+  }
+  throw new Error('Background scan timed out before results were ready.');
 }
 
 function shortCompanyName(value: string) {
@@ -2525,6 +2535,16 @@ function shortCompanyName(value: string) {
 function compactDate(value?: string) {
   if (!value || value === 'unavailable') return 'Unavailable';
   return value.replace('T', ' ').replace('Z', '').slice(0, 16);
+}
+
+function shortAction(value: unknown) {
+  const text = String(value ?? '');
+  if (text.includes('Actionable')) return 'Actionable';
+  if (text.includes('Research')) return 'Research';
+  if (text.includes('Wait')) return 'Wait';
+  if (text.includes('Avoid')) return 'Avoid';
+  if (text.includes('Data')) return 'Data';
+  return text || 'n/a';
 }
 
 function money(value: number) {

@@ -1,5 +1,161 @@
 # TradeBruv
 
+## Pass 18: Reliable Market Discovery + Minimal Trading Workspace
+
+TradeBruv now treats market-data reliability as a first-class concern instead of pretending failed scans are stock conclusions.
+
+### What changed
+
+- **Provider health and graceful scan stops**
+  - `yfinance` failures such as `Too Many Requests`, `Invalid Crumb`, `Unauthorized`, and timeout/network issues are detected and classified.
+  - Provider health states now include `healthy`, `degraded`, `rate_limited`, `unauthorized`, and `unavailable`.
+  - When the live provider is clearly failing, scans stop early and preserve partial results instead of filling the app with fake `Data Insufficient` conclusions.
+- **Fallback providers**
+  - TradeBruv checks for configured fallback keys and can try:
+    - `FINNHUB_API_KEY`
+    - `ALPHA_VANTAGE_API_KEY`
+    - `TWELVE_DATA_API_KEY`
+    - `POLYGON_API_KEY`
+    - `FINANCIAL_MODELING_PREP_API_KEY`
+  - If no fallback provider is configured, TradeBruv fails cleanly and tells you what would improve reliability.
+- **Cache fallback**
+  - OHLCV responses are cached under `data/cache/market/`.
+  - If the live provider fails, TradeBruv can reuse cached data when allowed.
+  - Row freshness is treated as:
+    - `live`
+    - `cached fresh`
+    - `cached stale`
+    - `unavailable`
+  - `cached stale` rows can be shown for context, but they should not become actionable live picks.
+- **Movers / discovery scan**
+  - New mover categories include:
+    - Top Gainers
+    - Top Losers
+    - Unusual Volume
+    - Relative Volume Leaders
+    - Breakout with Volume
+    - Gap Up / Gap Down
+    - New 20D High / 52W High
+    - Reclaim EMA 21/50
+    - Distribution / Heavy Selling
+- **Minimal cockpit**
+  - The main page is now a chart-first workspace:
+    - thin top status bar
+    - compact left watchlist rail
+    - dominant center chart
+    - compact right decision ticket
+    - bottom screener / movers table
+  - The cockpit uses canonical ticker rows and merged source tags instead of duplicated cards.
+- **Async Stock Picker scans**
+  - Broad scans no longer need to block one request until timeout.
+  - The frontend can start a scan job, poll progress, and load results when ready.
+
+### Current workflow
+
+1. Run a broad scan or movers scan.
+2. Open the Decision Cockpit and use the left rail to switch between `Top`, `Movers`, `Tracked`, `Watch`, `Avoid`, and `All`.
+3. Read the chart first.
+4. Use the right-side decision ticket only for the selected symbol.
+5. Use Deep Research only for the top few names.
+
+### Market health and cache settings
+
+```bash
+python3 -m tradebruv market-health --provider real
+```
+
+Environment variables:
+
+```bash
+TRADEBRUV_MARKET_CACHE_TTL_MINUTES=60
+TRADEBRUV_ALLOW_CACHE_ON_PROVIDER_FAILURE=true
+TRADEBRUV_MAX_CACHE_AGE_HOURS=24
+```
+
+If `yfinance` is rate-limited or fails DNS/network checks, TradeBruv will:
+
+- stop broad scans gracefully
+- preserve the rows that already succeeded
+- place failed names in `scan_failures`
+- avoid turning provider failure into `Watch`, `Avoid`, or fake ranked output
+
+### Discovery commands
+
+Broad scan:
+
+```bash
+python3 -m tradebruv broad-scan \
+  --universe config/universe_us_broad_1000.txt \
+  --provider real \
+  --limit 100 \
+  --batch-size 10 \
+  --top-n 25
+```
+
+Movers scan:
+
+```bash
+python3 -m tradebruv movers \
+  --provider real \
+  --universe config/universe_us_broad_1000.txt \
+  --top-n 25 \
+  --min-price 5 \
+  --min-dollar-volume 20000000
+```
+
+Daily decision with broad discovery, tracked names, and movers:
+
+```bash
+python3 -m tradebruv decision-today \
+  --provider real \
+  --broad-universe config/universe_us_broad_1000.txt \
+  --tracked config/tracked_tickers.txt \
+  --include-movers \
+  --top-n 50
+```
+
+### Universe import and validation
+
+TradeBruv still ships curated starter universes. They are useful, but some are partial and are labeled honestly. For example, a 492-row file should not be presented as a full top-1000 universe.
+
+You can import your own broader universe CSV:
+
+```bash
+python3 -m tradebruv universe import-csv \
+  --input path/to/tickers.csv \
+  --ticker-column Symbol \
+  --output config/custom_universe.txt
+```
+
+Then validate or clean it:
+
+```bash
+python3 -m tradebruv universe validate config/custom_universe.txt
+python3 -m tradebruv universe clean \
+  --input config/custom_universe.txt \
+  --output config/custom_universe_clean.txt
+```
+
+CSV import supports common ticker columns such as `ticker` or `symbol`, dedupes rows, and applies provider-safe ticker normalization.
+
+### Stock Picker scan behavior
+
+Small scans can still use the normal scan flow. Broad scans should use the async job flow exposed by the backend:
+
+- `POST /api/scan/start`
+- `GET /api/scan/status/{job_id}`
+- `GET /api/scan/result/{job_id}`
+
+The frontend shows:
+
+- attempted
+- scanned
+- failed
+- current batch
+- provider health
+
+so broad scans do not silently hang for 90 seconds.
+
 ## Pass 11: Core Investing / Regular Investing
 
 TradeBruv now has three separate research lanes:

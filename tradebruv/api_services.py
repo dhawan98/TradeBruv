@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import uuid
 from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,6 +56,7 @@ from .replay import (
 from .signal_quality import load_latest_signal_quality, run_case_study, run_signal_audit
 from .journal import DEFAULT_JOURNAL_PATH, add_journal_entry, journal_stats, update_journal_entry
 from .market_cache import DEFAULT_MARKET_CACHE_DIR, FileCacheMarketDataProvider
+from .market_reliability import ResilientMarketDataProvider
 from .portfolio import DEFAULT_PORTFOLIO_PATH, delete_position, import_portfolio_csv, save_portfolio
 from .price_sanity import build_price_sanity_from_row
 from .reporting import write_csv_report, write_json_report
@@ -73,6 +76,8 @@ ACTIVE_CORE_UNIVERSE = Path("config/active_core_investing_universe.txt")
 ACTIVE_OUTLIER_UNIVERSE = Path("config/active_outlier_universe.txt")
 ACTIVE_VELOCITY_UNIVERSE = Path("config/active_velocity_universe.txt")
 FAMOUS_CASE_STUDIES = Path("config/famous_outlier_case_studies.txt")
+SCAN_JOBS: dict[str, dict[str, Any]] = {}
+SCAN_JOBS_LOCK = threading.Lock()
 
 
 def health() -> dict[str, Any]:
@@ -140,6 +145,7 @@ def run_scan(payload: dict[str, Any]) -> dict[str, Any]:
         alternative_data_file=Path(str(payload.get("alternative_data_file") or DEFAULT_ALTERNATIVE_DATA_PATH)),
         ai_explanations=bool(payload.get("ai_explanations", False)),
         mock_ai_explanations=bool(payload.get("mock_ai_explanations", False)),
+        progress=payload.get("progress_callback"),
     )
     output_dir = Path(str(payload.get("output_dir") or "outputs"))
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -191,6 +197,17 @@ def run_scan(payload: dict[str, Any]) -> dict[str, Any]:
         "source": report.source,
         "market_regime": report.market_regime,
         "results": enriched_results,
+        "scan_failures": report.scan_failures,
+        "provider_health": report.provider_health,
+        "scan_health": {
+            "provider_health": report.provider_health,
+            "attempted": len(enriched_results) + len(report.scan_failures),
+            "scanned": len(enriched_results),
+            "failed": len(report.scan_failures),
+            "partial": bool(report.provider_health.get("stop_scan")),
+            "message": report.provider_health.get("stop_reason") or report.provider_health.get("message") or "",
+        },
+        "cache_stats": report.cache_stats,
         "summary": build_daily_summary(enriched_results),
         "decisions": decisions,
         "data_issues": [decision for decision in decisions if decision.get("price_validation_status") != "PASS"],
@@ -198,6 +215,94 @@ def run_scan(payload: dict[str, Any]) -> dict[str, Any]:
         "json_path": str(json_path),
         "csv_path": str(csv_path),
     }
+
+
+def scan_start(payload: dict[str, Any]) -> dict[str, Any]:
+    job_id = uuid.uuid4().hex
+    job = {
+        "job_id": job_id,
+        "status": "queued",
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+        "attempted": 0,
+        "scanned": 0,
+        "failed": 0,
+        "provider_health": {"provider": str(payload.get("provider") or "sample"), "status": "healthy"},
+        "current_batch": "",
+        "result": None,
+        "error": "",
+    }
+    with SCAN_JOBS_LOCK:
+        SCAN_JOBS[job_id] = job
+    worker = threading.Thread(target=_run_scan_job, args=(job_id, dict(payload)), daemon=True)
+    worker.start()
+    return {"job_id": job_id, "status": "queued"}
+
+
+def scan_status(job_id: str) -> dict[str, Any]:
+    with SCAN_JOBS_LOCK:
+        job = dict(SCAN_JOBS.get(job_id) or {})
+    if not job:
+        return {"available": False, "job_id": job_id, "status": "missing"}
+    job["available"] = True
+    return job
+
+
+def scan_result(job_id: str) -> dict[str, Any]:
+    with SCAN_JOBS_LOCK:
+        job = dict(SCAN_JOBS.get(job_id) or {})
+    if not job:
+        return {"available": False, "job_id": job_id, "status": "missing"}
+    if job.get("status") != "completed":
+        return {
+            "available": False,
+            "job_id": job_id,
+            "status": job.get("status"),
+            "attempted": job.get("attempted", 0),
+            "scanned": job.get("scanned", 0),
+            "failed": job.get("failed", 0),
+            "provider_health": job.get("provider_health", {}),
+        }
+    return dict(job.get("result") or {})
+
+
+def _run_scan_job(job_id: str, payload: dict[str, Any]) -> None:
+    def progress(update: dict[str, Any]) -> None:
+        with SCAN_JOBS_LOCK:
+            job = SCAN_JOBS.get(job_id)
+            if not job:
+                return
+            job["status"] = "running"
+            job["updated_at"] = datetime.utcnow().isoformat() + "Z"
+            job["attempted"] = int(update.get("attempted") or job.get("attempted", 0))
+            job["scanned"] = int(update.get("scanned") or job.get("scanned", 0))
+            job["failed"] = int(update.get("failed") or job.get("failed", 0))
+            job["current_batch"] = str(update.get("ticker") or "")
+            if update.get("failure"):
+                job["last_failure"] = update["failure"]
+
+    try:
+        with SCAN_JOBS_LOCK:
+            if job_id in SCAN_JOBS:
+                SCAN_JOBS[job_id]["status"] = "running"
+                SCAN_JOBS[job_id]["updated_at"] = datetime.utcnow().isoformat() + "Z"
+        payload["progress_callback"] = progress
+        result = run_scan(payload)
+        with SCAN_JOBS_LOCK:
+            if job_id in SCAN_JOBS:
+                SCAN_JOBS[job_id]["status"] = "completed"
+                SCAN_JOBS[job_id]["updated_at"] = datetime.utcnow().isoformat() + "Z"
+                SCAN_JOBS[job_id]["attempted"] = int(result.get("scan_health", {}).get("attempted", 0))
+                SCAN_JOBS[job_id]["scanned"] = int(result.get("scan_health", {}).get("scanned", len(result.get("results", []))))
+                SCAN_JOBS[job_id]["failed"] = int(result.get("scan_health", {}).get("failed", len(result.get("scan_failures", []))))
+                SCAN_JOBS[job_id]["provider_health"] = result.get("provider_health") or result.get("scan_health", {}).get("provider_health", {})
+                SCAN_JOBS[job_id]["result"] = result
+    except Exception as exc:
+        with SCAN_JOBS_LOCK:
+            if job_id in SCAN_JOBS:
+                SCAN_JOBS[job_id]["status"] = "failed"
+                SCAN_JOBS[job_id]["updated_at"] = datetime.utcnow().isoformat() + "Z"
+                SCAN_JOBS[job_id]["error"] = str(exc)
 
 
 def reports_latest() -> dict[str, Any]:
@@ -380,6 +485,7 @@ def chart_data(ticker: str, *, provider_name: str = "sample", timeframe: str = "
         args=SimpleNamespace(provider=provider_name, data_dir=None, history_period=history_period),
         analysis_date=date.today(),
     )
+    provider = ResilientMarketDataProvider(provider, provider_name=provider_name, history_period=history_period) if provider_name == "real" else provider
     provider = FileCacheMarketDataProvider(
         provider,
         provider_name=provider_name,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from .alternative_data import build_alternative_data_signal
 from .catalysts import build_catalyst_intelligence
@@ -21,6 +21,15 @@ STRATEGIES = (
     "Confirmed Strength Reset",
     "Institutional Accumulation",
 )
+
+
+@dataclass
+class ScanDiagnostics:
+    results: list[ScannerResult]
+    failures: list[dict[str, Any]]
+    attempted: int
+    aborted_tickers: list[str]
+    provider_health: dict[str, Any]
 
 
 def _coerce_float_or_none(value: Any) -> float | None:
@@ -115,16 +124,44 @@ class DeterministicScanner:
         self._cache: dict[str, SecurityData] = {}
 
     def scan(self, tickers: Iterable[str], mode: str = "standard") -> list[ScannerResult]:
+        diagnostics = self.scan_with_diagnostics(tickers, mode=mode, include_failures_in_results=True)
+        return diagnostics.results
+
+    def scan_with_diagnostics(
+        self,
+        tickers: Iterable[str],
+        *,
+        mode: str = "standard",
+        include_failures_in_results: bool = False,
+        progress: Callable[[dict[str, Any]], None] | None = None,
+    ) -> ScanDiagnostics:
         results: list[ScannerResult] = []
-        for raw_ticker in tickers:
-            ticker = raw_ticker.strip().upper()
-            if not ticker:
-                continue
+        failures: list[dict[str, Any]] = []
+        normalized = [raw_ticker.strip().upper() for raw_ticker in tickers if raw_ticker.strip()]
+        attempted = 0
+        aborted_tickers: list[str] = []
+        for index, ticker in enumerate(normalized):
             try:
                 security = self._get_data(ticker)
                 results.append(self._scan_security(security))
+                attempted += 1
+                if progress:
+                    progress({"attempted": attempted, "scanned": len(results), "failed": len(failures), "ticker": ticker})
             except Exception as exc:
-                results.append(self._failure_result(ticker, exc))
+                attempted += 1
+                failure = {
+                    "ticker": ticker,
+                    "reason": str(exc),
+                    "category": getattr(exc, "status", "fetch_error"),
+                }
+                failures.append(failure)
+                if include_failures_in_results:
+                    results.append(self._failure_result(ticker, exc))
+                if progress:
+                    progress({"attempted": attempted, "scanned": len(results), "failed": len(failures), "ticker": ticker, "failure": failure})
+                if bool(getattr(self.provider, "should_stop_scan", lambda: False)()):
+                    aborted_tickers = normalized[index + 1 :]
+                    break
 
         if mode == "velocity":
             results.sort(key=lambda result: (-result.velocity_score, result.risk_score, -result.outlier_score, result.ticker))
@@ -134,7 +171,14 @@ class DeterministicScanner:
             results.sort(key=lambda result: (-result.regular_investing_score, result.risk_score, -result.winner_score, result.ticker))
         else:
             results.sort(key=lambda result: (-result.winner_score, result.risk_score, -result.outlier_score, result.ticker))
-        return results
+        provider_health = getattr(self.provider, "health_report", lambda: {"provider": "unavailable", "status": "healthy"})()
+        return ScanDiagnostics(
+            results=results,
+            failures=failures,
+            attempted=attempted,
+            aborted_tickers=aborted_tickers,
+            provider_health=provider_health,
+        )
 
     def _get_data(self, ticker: str) -> SecurityData:
         if ticker not in self._cache:

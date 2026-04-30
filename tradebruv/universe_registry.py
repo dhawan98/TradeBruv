@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -157,11 +158,7 @@ def universe_text(source: str) -> str:
 
 
 def validate_universe_file(path: Path) -> dict[str, Any]:
-    rows = [
-        display_ticker(line.strip())
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    ]
+    rows = clean_ticker_lines(path.read_text(encoding="utf-8").splitlines())
     row_count = len(rows)
     file_name = path.name.lower()
     universe_label = "Custom Universe"
@@ -196,5 +193,43 @@ def validate_universe_file(path: Path) -> dict[str, Any]:
         "coverage_percent": coverage_percent,
         "is_partial_universe": is_partial_universe,
         "universe_warning": universe_warning,
+        "sample_tickers": rows[:10],
+    }
+
+
+def clean_ticker_lines(lines: list[str]) -> list[str]:
+    rows: list[str] = []
+    for raw in lines:
+        ticker = display_ticker(raw.strip())
+        if not ticker or ticker.startswith("#") or ticker in rows:
+            continue
+        rows.append(ticker)
+    return rows
+
+
+def import_universe_csv(input_path: Path, *, ticker_column: str, output_path: Path) -> dict[str, Any]:
+    with input_path.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        if ticker_column not in (reader.fieldnames or []):
+            raise KeyError(f"Ticker column '{ticker_column}' not found in CSV.")
+        rows = clean_ticker_lines([str(row.get(ticker_column) or "") for row in reader])
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(rows) + ("\n" if rows else ""), encoding="utf-8")
+    return {
+        "input": str(input_path),
+        "output": str(output_path),
+        "row_count": len(rows),
+        "sample_tickers": rows[:10],
+    }
+
+
+def clean_universe_file(input_path: Path, output_path: Path) -> dict[str, Any]:
+    rows = clean_ticker_lines(input_path.read_text(encoding="utf-8").splitlines())
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(rows) + ("\n" if rows else ""), encoding="utf-8")
+    return {
+        "input": str(input_path),
+        "output": str(output_path),
+        "row_count": len(rows),
         "sample_tickers": rows[:10],
     }

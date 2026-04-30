@@ -843,28 +843,13 @@ th {
 
 .cockpit-page {
   display: grid;
-  gap: 14px;
-}
-
-.cockpit-statusline {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
-  align-items: center;
-  border-bottom: 1px solid #132030;
-  color: #99afc7;
-  padding-bottom: 10px;
-  font-size: 12px;
-}
-
-.cockpit-statusline strong {
-  color: #eef4fb;
+  gap: 10px;
 }
 
 .cockpit-grid {
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr) 340px;
-  gap: 12px;
+  grid-template-columns: 268px minmax(0, 1.8fr) 300px;
+  gap: 10px;
   align-items: start;
 }
 
@@ -876,11 +861,18 @@ th {
   min-width: 0;
 }
 
-.cockpit-rail,
+.cockpit-rail {
+  border-right: 1px solid #132030;
+  padding-right: 10px;
+  position: sticky;
+  top: 66px;
+  align-self: start;
+}
+
 .cockpit-panel,
 .picker-detail-pane {
   border-left: 1px solid #132030;
-  padding-left: 12px;
+  padding-left: 10px;
   position: sticky;
   top: 66px;
   align-self: start;
@@ -888,19 +880,12 @@ th {
 
 .cockpit-canvas {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .rail-header {
-  display: grid;
-  gap: 10px;
-  margin-bottom: 10px;
-}
-
-.rail-header strong {
   display: block;
-  font-size: 14px;
-  line-height: 1.4;
+  margin-bottom: 10px;
 }
 
 .rail-add-form {
@@ -921,7 +906,7 @@ th {
 
 .rail-filters {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
   margin-bottom: 10px;
 }
@@ -930,17 +915,17 @@ th {
   display: grid;
   gap: 2px;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: 6px;
   background: #08111b;
   color: #9cb0c6;
-  padding: 8px;
+  padding: 7px 6px;
   text-align: left;
   cursor: pointer;
 }
 
 .rail-filter strong {
   color: #eef4fb;
-  font-size: 14px;
+  font-size: 12px;
 }
 
 .rail-filter.active,
@@ -949,11 +934,21 @@ th {
   background: #0c1724;
 }
 
+.rail-managed-list {
+  margin-bottom: 8px;
+}
+
+.rail-managed-list summary {
+  cursor: pointer;
+  color: #8ea1b7;
+  font-size: 12px;
+}
+
 .tracked-chip-strip {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 10px;
+  margin-top: 8px;
 }
 
 .tracked-chip.subtle {
@@ -966,21 +961,21 @@ th {
 .rail-list {
   display: grid;
   gap: 2px;
-  max-height: calc(100vh - 230px);
+  max-height: calc(100vh - 180px);
   overflow: auto;
   padding-right: 4px;
 }
 
 .rail-row {
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: 70px minmax(0, 1fr);
+  gap: 8px;
   align-items: start;
   border: 0;
-  border-radius: 8px;
+  border-radius: 6px;
   background: transparent;
   color: #e7edf5;
-  padding: 8px 6px;
+  padding: 7px 4px;
   text-align: left;
   cursor: pointer;
 }
@@ -1012,9 +1007,9 @@ th {
 
 .cockpit-table-zone {
   display: grid;
-  gap: 12px;
+  gap: 10px;
   border-top: 1px solid #132030;
-  padding-top: 12px;
+  padding-top: 10px;
 }
 
 .workspace-table-wrap {
@@ -1072,7 +1067,7 @@ th {
 .selected-decision,
 .market-chart-panel {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .tracked-form {
@@ -1180,7 +1175,7 @@ th {
 
 .workspace-chart-toolbar {
   border-bottom: 1px solid #132030;
-  padding-bottom: 10px;
+  padding-bottom: 8px;
 }
 
 .chart-toolbar strong,
@@ -1203,7 +1198,11 @@ th {
 
 .chart-dual {
   display: grid;
-  gap: 8px;
+  gap: 6px;
+}
+
+.chart.tall {
+  min-height: 500px;
 }
 
 .chart-header-strip,
@@ -1215,7 +1214,7 @@ th {
 }
 
 .chart-price {
-  font-size: 28px;
+  font-size: 32px;
   font-weight: 700;
 }
 
@@ -1255,14 +1254,13 @@ th {
 
 .workspace-chart-meta span,
 .workspace-chart-strip span,
-.workspace-chart-legend span,
-.marker-inline {
+.workspace-chart-legend span {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  border-radius: 999px;
+  border-radius: 6px;
   background: #0b1623;
-  padding: 5px 9px;
+  padding: 4px 7px;
 }
 
 .compact-kv {
@@ -1274,6 +1272,10 @@ th {
 .table-subtext {
   color: #9cb0c6;
   font-size: 12px;
+}
+
+.signal-strip {
+  margin: 0;
 }
 
 .notice-stack {
@@ -1355,6 +1357,24 @@ th {
   font-size: 13px;
 }
 
+.decision-disclosure {
+  border-top: 1px solid #132030;
+  padding-top: 8px;
+}
+
+.decision-disclosure summary {
+  cursor: pointer;
+  color: #9cb0c6;
+  font-size: 12px;
+}
+
+.decision-disclosure p {
+  margin: 8px 0 0;
+  color: #cfdcea;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .coverage-list {
   display: grid;
   gap: 8px;
@@ -1388,8 +1408,8 @@ th {
 
 .picker-workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.9fr);
-  gap: 14px;
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.9fr);
+  gap: 12px;
   align-items: start;
 }
 

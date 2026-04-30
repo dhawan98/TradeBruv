@@ -10,6 +10,7 @@ from typing import Any, Callable, Iterable
 from .cli import build_provider
 from .decision_engine import build_unified_decisions, build_validation_context
 from .market_cache import DEFAULT_MARKET_CACHE_DIR, FileCacheMarketDataProvider
+from .market_reliability import ResilientMarketDataProvider
 from .price_sanity import build_price_sanity_from_row
 from .scanner import DeterministicScanner
 from .tracked import DEFAULT_TRACKED_TICKERS_PATH, list_tracked_tickers
@@ -51,6 +52,7 @@ def run_broad_scan(
         },
     )()
     provider = build_provider(args=args, analysis_date=analysis_date)
+    provider = ResilientMarketDataProvider(provider, provider_name=provider_name, history_period=history_period) if provider_name == "real" else provider
     provider = FileCacheMarketDataProvider(
         provider,
         provider_name=provider_name,
@@ -64,12 +66,26 @@ def run_broad_scan(
     if limit:
         tickers = tickers[:limit]
     rows: list[dict[str, Any]] = []
+    failed_rows: list[dict[str, Any]] = []
+    provider_health: dict[str, Any] = {"provider": provider_name, "status": "healthy"}
+    attempted = 0
+    aborted_tickers: list[str] = []
     for start in range(0, len(tickers), batch_size):
         batch = tickers[start : start + batch_size]
         if progress:
             progress(f"Scanning batch {start // batch_size + 1} of {(len(tickers) + batch_size - 1) // batch_size}: {', '.join(batch[:3])}{'...' if len(batch) > 3 else ''}")
-        results = scanner.scan(batch, mode="outliers")
-        rows.extend(result.to_dict() | {"scan_source_group": "Broad"} for result in results)
+        diagnostics = scanner.scan_with_diagnostics(batch, mode="outliers", include_failures_in_results=False)
+        attempted += diagnostics.attempted
+        provider_health = diagnostics.provider_health
+        aborted_tickers.extend(diagnostics.aborted_tickers)
+        rows.extend(result.to_dict() | {"scan_source_group": "Broad"} for result in diagnostics.results)
+        failed_rows.extend(diagnostics.failures)
+        if diagnostics.aborted_tickers:
+            failed_rows.extend(
+                {"ticker": ticker, "reason": provider_health.get("stop_reason") or "Scan aborted after provider failure.", "category": provider_health.get("status", "unavailable")}
+                for ticker in diagnostics.aborted_tickers
+            )
+            break
 
     validation_context = build_validation_context()
     enriched_rows = [
@@ -126,14 +142,6 @@ def run_broad_scan(
     avoid = [row for row in ranked if row.get("primary_action") == "Avoid"][:top_n]
     top_signal_rows = sorted(signal_rows, key=lambda row: (-_signal_rank(str(row.get("signal_grade"))), -float(row.get("actionability_score") or 0), str(row.get("ticker"))))[:top_n]
 
-    failed_rows = [
-        {
-            "ticker": row.get("ticker"),
-            "reason": next(iter(row.get("data_availability_notes") or row.get("warnings") or ["Unknown failure"])),
-        }
-        for row in enriched_rows
-        if row.get("current_price") in (0, 0.0) or row.get("price_validation_status") == "FAIL"
-    ]
     tracked_opportunities = [
         row for row in ranked if row.get("ticker") in tracked and row.get("price_validation_status") == "PASS"
     ][:top_n]
@@ -148,9 +156,14 @@ def run_broad_scan(
         "provider": provider_name,
         "analysis_date": analysis_date.isoformat(),
         "universe_size": len(universe),
-        "tickers_attempted": len(tickers),
-        "successfully_scanned": len([row for row in enriched_rows if row.get("current_price") not in (0, 0.0)]),
+        "tickers_attempted": attempted or len(tickers),
+        "successfully_scanned": len(enriched_rows),
         "failed_tickers": failed_rows,
+        "scan_failures": failed_rows,
+        "provider_health": provider_health,
+        "scan_incomplete": bool(provider_health.get("stop_scan")),
+        "scan_health_message": provider_health.get("stop_reason") or provider_health.get("message") or "",
+        "aborted_tickers": aborted_tickers,
         "cache": provider.cache_stats(),
         "results": enriched_rows,
         "decisions": ranked[:top_n],
@@ -241,10 +254,24 @@ def _build_summary_markdown(payload: dict[str, Any]) -> str:
         f"- Successfully scanned: {payload.get('successfully_scanned')}",
         f"- Failed tickers: {len(payload.get('failed_tickers', []))}",
         f"- Provider: {payload.get('provider')}",
+        f"- Provider health: {payload.get('provider_health', {}).get('status', 'unknown')}",
         f"- Cache hits / misses: {payload.get('cache', {}).get('hits', 0)} / {payload.get('cache', {}).get('misses', 0)}",
         "",
-        "## Top Buy / Research Candidates",
     ]
+    if payload.get("scan_incomplete"):
+        lines.extend(
+            [
+                "## Scan Health",
+                "",
+                f"- {payload.get('scan_health_message') or 'Provider scan stopped early.'}",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+        "## Top Buy / Research Candidates",
+        ]
+    )
     top_buy = payload.get("top_buy_research_candidates", [])
     if top_buy:
         lines.extend(

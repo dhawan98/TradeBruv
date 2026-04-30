@@ -1,0 +1,353 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+import time
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from tradebruv.broad_scan import run_broad_scan
+from tradebruv.daily_decision import run_daily_decision
+from tradebruv.market_cache import FileCacheMarketDataProvider
+from tradebruv.market_reliability import ProviderStopError, ResilientMarketDataProvider, classify_provider_error
+from tradebruv.models import PriceBar, SecurityData
+from tradebruv.movers import run_movers_scan
+from tradebruv.scanner import ScanDiagnostics
+
+
+def _security(ticker: str, closes: list[float], *, volumes: list[float] | None = None) -> SecurityData:
+    volume_series = volumes or [1_000_000.0 for _ in closes]
+    start = date(2025, 1, 1)
+    bars = [
+        PriceBar(
+            date=start + timedelta(days=index),
+            open=closes[index - 1] if index else closes[index] * 0.99,
+            high=close * 1.01,
+            low=close * 0.99,
+            close=close,
+            volume=volume_series[index],
+        )
+        for index, close in enumerate(closes)
+    ]
+    return SecurityData(
+        ticker=ticker,
+        company_name=ticker,
+        sector="Technology" if ticker not in {"SPY", "QQQ"} else None,
+        industry="Software",
+        bars=bars,
+        provider_name="sample",
+        latest_available_close=bars[-1].close,
+        last_market_date=bars[-1].date,
+        quote_price_if_available=bars[-1].close,
+    )
+
+
+def test_rate_limit_classification_and_resilient_provider_stop() -> None:
+    class FailingProvider:
+        def get_security_data(self, ticker: str) -> SecurityData:
+            raise RuntimeError(f"Too Many Requests for {ticker}")
+
+    resilient = ResilientMarketDataProvider(FailingProvider(), provider_name="yfinance", history_period="6mo")
+    assert classify_provider_error(RuntimeError("429 Too Many Requests"))["status"] == "rate_limited"
+    with pytest.raises(ProviderStopError):
+        resilient.get_security_data("NVDA")
+    assert resilient.health_report()["status"] == "rate_limited"
+    assert resilient.should_stop_scan() is True
+
+
+def test_broad_scan_keeps_failures_out_of_ranked_rows(monkeypatch, tmp_path: Path) -> None:
+    class FakeResult:
+        def __init__(self, ticker: str, score: int) -> None:
+            self.ticker = ticker
+            self.score = score
+
+        def to_dict(self) -> dict[str, object]:
+            return {
+                "ticker": self.ticker,
+                "company_name": self.ticker,
+                "current_price": 100.0,
+                "regular_investing_score": self.score,
+                "outlier_score": self.score,
+                "velocity_score": 25,
+                "last_market_date": "2026-04-29",
+                "price_change_1d_pct": 3.4,
+                "relative_volume_20d": 1.8,
+                "ema_stack": "Bullish Stack",
+                "signal_summary": "Breakout with Volume",
+                "signal_grade": "A",
+            }
+
+    def fake_scan(self, tickers, **_: object):
+        return ScanDiagnostics(
+            results=[FakeResult("NVDA", 92)],
+            failures=[{"ticker": "FAIL", "reason": "Too Many Requests", "category": "rate_limited"}],
+            attempted=2,
+            aborted_tickers=["AAPL"],
+            provider_health={"provider": "real", "status": "rate_limited", "stop_scan": True, "stop_reason": "Provider rate-limited after 1 symbols"},
+        )
+
+    monkeypatch.setattr("tradebruv.broad_scan.DeterministicScanner.scan_with_diagnostics", fake_scan)
+    result = run_broad_scan(
+        universe=["NVDA", "FAIL", "AAPL"],
+        provider_name="sample",
+        analysis_date=date(2026, 4, 29),
+        output_dir=tmp_path / "outputs" / "broad_scan",
+    )
+
+    assert [row["ticker"] for row in result.payload["decisions"]] == ["NVDA"]
+    assert result.payload["scan_incomplete"] is True
+    assert {row["ticker"] for row in result.payload["scan_failures"]} == {"FAIL", "AAPL"}
+    assert result.payload["top_avoid_names"] == []
+
+
+def test_movers_scan_finds_gainers_losers_and_unusual_volume(monkeypatch, tmp_path: Path) -> None:
+    provider_map = {
+        "SPY": _security("SPY", list(range(100, 360))),
+        "QQQ": _security("QQQ", list(range(100, 360))),
+        "GAIN": _security("GAIN", [100.0] * 40 + [101, 102, 103, 104, 105, 106, 107, 108, 109, 115], volumes=[1_000_000.0] * 49 + [3_200_000.0]),
+        "DROP": _security("DROP", list(range(180, 120, -1))),
+        "VOLUME": _security("VOLUME", [80.0 + (index * 0.2) for index in range(60)], volumes=[600_000.0] * 59 + [2_400_000.0]),
+    }
+
+    class Provider:
+        def get_security_data(self, ticker: str) -> SecurityData:
+            return provider_map[ticker]
+
+    monkeypatch.setattr("tradebruv.movers.build_provider", lambda **_: Provider())
+    result = run_movers_scan(
+        universe=["GAIN", "DROP", "VOLUME"],
+        provider_name="sample",
+        analysis_date=date(2026, 4, 29),
+        output_dir=tmp_path / "outputs" / "movers",
+    )
+
+    assert result.payload["top_gainers"][0]["ticker"] == "GAIN"
+    assert result.payload["top_losers"][0]["ticker"] == "DROP"
+    assert any(row["ticker"] == "VOLUME" for row in result.payload["unusual_volume"])
+
+
+def test_market_cache_falls_back_to_cached_security(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("TRADEBRUV_ALLOW_CACHE_ON_PROVIDER_FAILURE", "true")
+    monkeypatch.setenv("TRADEBRUV_MAX_CACHE_AGE_HOURS", "24")
+
+    class Provider:
+        def __init__(self, security: SecurityData | None) -> None:
+            self.security = security
+
+        def get_security_data(self, ticker: str) -> SecurityData:
+            if self.security is None:
+                raise RuntimeError("Too Many Requests")
+            return self.security
+
+    security = _security("NVDA", list(range(100, 360)))
+    cache_dir = tmp_path / "cache"
+    writer = FileCacheMarketDataProvider(Provider(security), provider_name="real", cache_dir=cache_dir, ttl_minutes=1)
+    writer.get_security_data("NVDA")
+    cache_file = next(cache_dir.glob("*.json"))
+    payload = json.loads(cache_file.read_text(encoding="utf-8"))
+    payload["cached_at"] = (datetime.utcnow() - timedelta(hours=2)).isoformat() + "Z"
+    cache_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    reader = FileCacheMarketDataProvider(Provider(None), provider_name="real", cache_dir=cache_dir, ttl_minutes=1)
+    cached = reader.get_security_data("NVDA")
+
+    assert cached.ticker == "NVDA"
+    assert reader.cache_stats()["fallback_hits"] == 1
+
+
+def test_daily_decision_dedupes_failures_and_uses_movers_sections(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    broad_path = config_dir / "broad.txt"
+    tracked_path = config_dir / "tracked.txt"
+    core_path = config_dir / "core.txt"
+    outlier_path = config_dir / "outlier.txt"
+    velocity_path = config_dir / "velocity.txt"
+    broad_path.write_text("NVDA\nFAIL\n", encoding="utf-8")
+    tracked_path.write_text("NVDA\nFAIL\n", encoding="utf-8")
+    core_path.write_text("", encoding="utf-8")
+    outlier_path.write_text("", encoding="utf-8")
+    velocity_path.write_text("", encoding="utf-8")
+
+    empty_scan = SimpleNamespace(
+        generated_at="2026-04-29T12:00:00Z",
+        provider="real",
+        source="baseline",
+        market_regime={},
+        results=[],
+        scan_failures=[],
+        cache_stats={"hits": 0, "misses": 0, "ttl_minutes": 60},
+    )
+
+    def fake_run_custom_scan(*, tickers: list[str], **_: object):
+        return SimpleNamespace(
+            generated_at="2026-04-29T12:00:00Z",
+            provider="real",
+            source="custom",
+            market_regime={},
+            results=[{
+                "ticker": "NVDA",
+                "company_name": "NVIDIA",
+                "current_price": 210.0,
+                "regular_investing_score": 88,
+                "outlier_score": 88,
+                "velocity_score": 35,
+                "last_market_date": "2026-04-29",
+                "relative_volume_20d": 2.4,
+                "ema_stack": "Bullish Stack",
+                "signal_summary": "Breakout with Volume",
+                "price_change_1d_pct": 6.2,
+            }],
+            scan_failures=[{"ticker": "FAIL", "reason": "Too Many Requests", "category": "rate_limited"}],
+            provider_health={"provider": "real", "status": "rate_limited", "stop_scan": True, "stop_reason": "Provider rate-limited after 1 symbols"},
+            cache_stats={"hits": 1, "misses": 1, "ttl_minutes": 60},
+        )
+
+    def fake_run_movers_scan(**_: object):
+        return SimpleNamespace(
+            payload={
+                "generated_at": "2026-04-29T12:00:00Z",
+                "results": [],
+                "scan_failures": [{"ticker": "FAIL", "reason": "Too Many Requests", "category": "rate_limited"}],
+                "provider_health": {"provider": "real", "status": "rate_limited", "stop_scan": True, "stop_reason": "Provider rate-limited after 1 symbols"},
+                "cache": {"hits": 1, "misses": 1, "ttl_minutes": 60},
+                "top_gainers": [{
+                    "ticker": "NVDA",
+                    "company": "NVIDIA",
+                    "price": 210.0,
+                    "percent_change": 6.2,
+                    "relative_volume": 2.4,
+                    "dollar_volume": 50000000.0,
+                    "mover_type": "Top Gainers",
+                    "signal": "Breakout with Volume",
+                    "freshness": "2026-04-29",
+                }],
+                "top_losers": [],
+                "unusual_volume": [{
+                    "ticker": "NVDA",
+                    "company": "NVIDIA",
+                    "price": 210.0,
+                    "percent_change": 6.2,
+                    "relative_volume": 2.4,
+                    "dollar_volume": 50000000.0,
+                    "mover_type": "Unusual Volume",
+                    "signal": "Breakout with Volume",
+                    "freshness": "2026-04-29",
+                }],
+            }
+        )
+
+    def fake_build_unified_decisions(rows: list[dict[str, object]], **_: object):
+        decisions = []
+        for row in rows:
+            source_group = str(row.get("scan_source_group"))
+            decisions.append(
+                {
+                    "ticker": "NVDA",
+                    "company": "NVIDIA",
+                    "primary_action": "Research / Buy Candidate",
+                    "action_lane": "Outlier",
+                    "source_group": source_group,
+                    "source_groups": [source_group],
+                    "score": 88,
+                    "regular_investing_score": 88,
+                    "actionability_score": 91,
+                    "actionability_label": "Actionable Today",
+                    "actionability_reason": "Breakout with volume.",
+                    "reason": "Breakout with volume.",
+                    "why_not": "Needs trend to hold.",
+                    "level_status": "Actionable",
+                    "entry_label": "Entry",
+                    "entry_zone": "205 - 210",
+                    "stop_loss": 198.0,
+                    "tp1": 225.0,
+                    "tp2": 240.0,
+                    "risk_level": "Low",
+                    "latest_market_date": "2026-04-29",
+                    "trigger_needed": False,
+                    "source_row": row,
+                    "price_validation_status": "PASS",
+                    "data_freshness": "Fresh enough",
+                }
+            )
+        return decisions
+
+    monkeypatch.setattr("tradebruv.daily_decision.run_dashboard_scan", lambda **_: empty_scan)
+    monkeypatch.setattr("tradebruv.daily_decision._run_custom_scan", fake_run_custom_scan)
+    monkeypatch.setattr("tradebruv.daily_decision.run_movers_scan", fake_run_movers_scan)
+    monkeypatch.setattr("tradebruv.daily_decision.build_unified_decisions", fake_build_unified_decisions)
+    monkeypatch.setattr("tradebruv.daily_decision.load_dashboard_portfolio", lambda: [])
+    monkeypatch.setattr("tradebruv.daily_decision.build_daily_summary", lambda rows: {"count": len(rows)})
+
+    payload = run_daily_decision(
+        provider_name="real",
+        core_universe=core_path,
+        outlier_universe=outlier_path,
+        velocity_universe=velocity_path,
+        broad_universe=broad_path,
+        tracked=tracked_path,
+        include_movers=True,
+        analysis_date=date(2026, 4, 29),
+        output_dir=tmp_path / "outputs" / "daily",
+    )
+
+    assert payload["scan_failures"] == [{
+        "ticker": "FAIL",
+        "reason": "Too Many Requests",
+        "category": "rate_limited",
+        "source_groups": ["Broad", "Movers", "Tracked"],
+        "lanes": ["Outlier"],
+    }]
+    assert payload["data_coverage_status"]["tickers_failed"] == 1
+    assert payload["top_gainers"][0]["ticker"] == "NVDA"
+    assert payload["top_gainers"][0]["percent_change"] == 6.2
+    assert payload["unusual_volume"][0]["relative_volume"] == 2.4
+
+
+pytestmark_api = pytest.mark.skipif(importlib.util.find_spec("fastapi") is None, reason="FastAPI is not installed")
+
+
+@pytestmark_api
+def test_async_scan_endpoints_return_job_progress(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "outputs").mkdir()
+    source_template = Path(__file__).resolve().parents[1] / ".env.example"
+    (tmp_path / ".env.example").write_text(source_template.read_text(encoding="utf-8"), encoding="utf-8")
+
+    def fake_run_scan(payload: dict[str, object]) -> dict[str, object]:
+        callback = payload.get("progress_callback")
+        if callable(callback):
+            callback({"attempted": 3, "scanned": 2, "failed": 1, "ticker": "NVDA"})
+        return {
+            "generated_at": "2026-04-29T12:00:00Z",
+            "provider": "sample",
+            "mode": "outliers",
+            "results": [],
+            "summary": {},
+            "market_regime": {},
+            "decisions": [],
+            "data_issues": [],
+            "scan_health": {"attempted": 3, "scanned": 2, "failed": 1, "provider_health": {"status": "degraded"}},
+            "provider_health": {"status": "degraded"},
+            "scan_failures": [{"ticker": "FAIL", "reason": "Provider timed out"}],
+        }
+
+    monkeypatch.setattr("tradebruv.api_services.run_scan", fake_run_scan)
+
+    from fastapi.testclient import TestClient
+    from tradebruv.api import create_app
+
+    client = TestClient(create_app())
+    started = client.post("/api/scan/start", json={"provider": "sample", "mode": "outliers", "universe_path": "config/sample_universe.txt"}).json()
+    time.sleep(0.1)
+    status = client.get(f"/api/scan/status/{started['job_id']}").json()
+    result = client.get(f"/api/scan/result/{started['job_id']}").json()
+
+    assert status["status"] == "completed"
+    assert status["attempted"] == 3
+    assert result["scan_failures"][0]["ticker"] == "FAIL"

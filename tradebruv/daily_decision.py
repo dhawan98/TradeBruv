@@ -15,6 +15,8 @@ from .dashboard_data import (
 from .decision_merge import merge_canonical_rows
 from .decision_engine import build_unified_decisions, build_validation_context
 from .market_cache import DEFAULT_MARKET_CACHE_DIR, FileCacheMarketDataProvider
+from .market_reliability import ResilientMarketDataProvider
+from .movers import run_movers_scan
 from .price_sanity import build_price_sanity_from_row
 from .scanner import DeterministicScanner
 from .tracked import DEFAULT_TRACKED_TICKERS_PATH, list_tracked_tickers
@@ -33,6 +35,7 @@ def run_daily_decision(
     velocity_universe: Path,
     broad_universe: Path | None = None,
     tracked: Path | None = None,
+    include_movers: bool = False,
     top_n: int = 25,
     history_period: str = "3y",
     data_dir: Path | None = None,
@@ -63,6 +66,7 @@ def run_daily_decision(
             "universe": str(velocity_universe),
         },
     ]
+    movers_payload: dict[str, Any] | None = None
 
     if broad_universe:
         scans.append(
@@ -81,6 +85,34 @@ def run_daily_decision(
                 "universe": str(broad_universe),
             }
         )
+        if include_movers:
+            movers_result = run_movers_scan(
+                universe=load_universe(broad_universe),
+                provider_name=provider_name,
+                analysis_date=as_of,
+                history_period=history_period,
+                data_dir=data_dir,
+                top_n=top_n,
+                refresh_cache=refresh_cache,
+            )
+            movers_payload = movers_result.payload
+            scans.append(
+                {
+                    "lane": "Outlier",
+                    "source_group": "Movers",
+                    "scan": SimpleNamespace(
+                        generated_at=movers_result.payload["generated_at"],
+                        provider=provider_name,
+                        source="movers scan",
+                        market_regime={},
+                        results=movers_result.payload["results"],
+                        scan_failures=movers_result.payload.get("scan_failures", []),
+                        provider_health=movers_result.payload.get("provider_health", {}),
+                        cache_stats=movers_result.payload.get("cache", {}),
+                    ),
+                    "universe": f"{broad_universe} movers",
+                }
+            )
 
     tracked_path = tracked or DEFAULT_TRACKED_TICKERS_PATH
     tracked_tickers = list_tracked_tickers(tracked_path)
@@ -123,11 +155,13 @@ def run_daily_decision(
 
     combined_rows: list[dict[str, Any]] = []
     combined_decisions: list[dict[str, Any]] = []
+    scan_failures: list[dict[str, Any]] = []
     scan_summaries: list[dict[str, Any]] = []
     coverage_attempted = 0
     coverage_success = 0
     coverage_failed = 0
     cache_stats: dict[str, Any] = {"hits": 0, "misses": 0, "ttl_minutes": "unavailable"}
+    provider_health_rows: list[dict[str, Any]] = []
     for item in scans:
         lane = item["lane"]
         source_group = item["source_group"]
@@ -159,12 +193,21 @@ def run_daily_decision(
         )
         combined_rows.extend(rows)
         combined_decisions.extend(decisions)
-        coverage_attempted += len(rows)
-        coverage_success += len([row for row in rows if row.get("current_price") not in (0, 0.0)])
-        coverage_failed += len([row for row in rows if row.get("current_price") in (0, 0.0)])
+        item_failures = [
+            dict(failure) | {"source_group": source_group, "lane": lane}
+            for failure in (getattr(scan, "scan_failures", []) or [])
+        ]
+        coverage_attempted += len(rows) + len(item_failures)
+        coverage_success += len(rows)
+        coverage_failed += len(item_failures)
+        scan_failures.extend(item_failures)
+        if getattr(scan, "provider_health", None):
+            provider_health_rows.append(scan.provider_health)
         if getattr(scan, "cache_stats", None):
             cache_stats["hits"] = int(cache_stats.get("hits", 0)) + int(scan.cache_stats.get("hits", 0))
             cache_stats["misses"] = int(cache_stats.get("misses", 0)) + int(scan.cache_stats.get("misses", 0))
+            cache_stats["stale_hits"] = int(cache_stats.get("stale_hits", 0)) + int(scan.cache_stats.get("stale_hits", 0))
+            cache_stats["fallback_hits"] = int(cache_stats.get("fallback_hits", 0)) + int(scan.cache_stats.get("fallback_hits", 0))
             if scan.cache_stats.get("ttl_minutes") not in (None, "unavailable"):
                 cache_stats["ttl_minutes"] = scan.cache_stats.get("ttl_minutes")
         scan_summaries.append(
@@ -177,12 +220,15 @@ def run_daily_decision(
                 "universe": item["universe"],
                 "result_count": len(rows),
                 "market_regime": scan.market_regime,
+                "scan_failures": item_failures,
+                "provider_health": getattr(scan, "provider_health", {}),
             }
         )
 
     merged = merge_canonical_rows(combined_rows, combined_decisions)
     merged_rows = merged["canonical_rows"]
     merged_decisions = merged["canonical_decisions"]
+    unique_scan_failures = _dedupe_scan_failures(scan_failures)
     data_issues = [decision for decision in merged_decisions if decision.get("price_validation_status") != "PASS"]
     picker_view = _build_picker_view(merged_decisions, data_issues=data_issues)
     broad_universe_status = validate_universe_file(broad_universe) if broad_universe else {
@@ -207,7 +253,9 @@ def run_daily_decision(
         ],
         "tickers_attempted": coverage_attempted,
         "tickers_successfully_scanned": coverage_success,
-        "tickers_failed": coverage_failed,
+        "tickers_failed": len(unique_scan_failures),
+        "failure_events": coverage_failed,
+        "scan_failures": unique_scan_failures,
         "tracked_tickers_count": len(tracked_tickers),
         "portfolio_tickers_count": len(portfolio_tickers),
         "last_broad_scan_time": next((item["generated_at"] for item in scan_summaries if item["source_group"] == "Broad"), "not run"),
@@ -215,6 +263,10 @@ def run_daily_decision(
         "cache_age_ttl_minutes": cache_stats.get("ttl_minutes", "unavailable"),
         "cache_hits": cache_stats.get("hits", 0),
         "cache_misses": cache_stats.get("misses", 0),
+        "cache_stale_hits": cache_stats.get("stale_hits", 0),
+        "cache_fallback_hits": cache_stats.get("fallback_hits", 0),
+        "provider_health_rows": provider_health_rows,
+        "provider_health": _overall_provider_health(provider_health_rows),
         **broad_universe_status,
     }
     workspace = _build_workspace_payload(
@@ -238,6 +290,7 @@ def run_daily_decision(
         "top_candidate": picker_view["top_candidate"],
         "best_tracked_setup": _best_from_source(merged_decisions, "Tracked"),
         "best_broad_setup": _best_from_source(merged_decisions, "Broad"),
+        "best_mover_setup": _best_from_source(merged_decisions, "Movers"),
         "research_candidates": picker_view["research_candidates"],
         "watch_candidates": picker_view["watch_candidates"],
         "avoid_candidates": picker_view["avoid_candidates"],
@@ -245,9 +298,12 @@ def run_daily_decision(
         "compact_board": picker_view["compact_board"],
         "tracked_watchlist_table": _compact_signal_table(merged_decisions, source_group="Tracked", limit=10),
         "broad_scan_top_table": _compact_signal_table(merged_decisions, source_group="Broad", limit=top_n),
+        "movers_table": _compact_signal_table(merged_decisions, source_group="Movers", limit=top_n),
         "signal_table": _compact_signal_table(merged_decisions, source_group=None, limit=max(top_n, 25)),
         "no_clean_candidate_reason": picker_view["no_clean_candidate_reason"],
         "data_coverage_status": coverage_status,
+        "scan_health": coverage_status.get("provider_health", {}),
+        "scan_failures": unique_scan_failures,
         "validation_context": validation_context,
         "market_regime": _pick_market_regime(scan_summaries),
         "scans": scan_summaries,
@@ -255,6 +311,9 @@ def run_daily_decision(
         "report_snapshot": False,
         "stale_data": any(bool(decision.get("price_sanity", {}).get("is_stale")) for decision in merged_decisions),
         "workspace": workspace,
+        "top_gainers": _daily_mover_rows(movers_payload, merged_decisions, section="top_gainers", limit=10),
+        "top_losers": _daily_mover_rows(movers_payload, merged_decisions, section="top_losers", limit=10),
+        "unusual_volume": _daily_mover_rows(movers_payload, merged_decisions, section="unusual_volume", limit=10),
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "decision_today.json"
@@ -425,6 +484,7 @@ def _run_custom_scan(
 ) -> SimpleNamespace:
     args = SimpleNamespace(provider=provider_name, data_dir=data_dir, history_period=history_period)
     provider = build_provider(args=args, analysis_date=analysis_date)
+    provider = ResilientMarketDataProvider(provider, provider_name=provider_name, history_period=history_period) if provider_name == "real" else provider
     provider = FileCacheMarketDataProvider(
         provider,
         provider_name=provider_name,
@@ -433,15 +493,97 @@ def _run_custom_scan(
         refresh_cache=refresh_cache,
     )
     scanner = DeterministicScanner(provider=provider, analysis_date=analysis_date)
-    results = scanner.scan(tickers, mode=mode)
+    diagnostics = scanner.scan_with_diagnostics(tickers, mode=mode, include_failures_in_results=False)
     return SimpleNamespace(
         generated_at=datetime.utcnow().isoformat() + "Z",
         provider=provider_name,
         source=f"custom scan: {mode}",
         market_regime={},
-        results=[result.to_dict() for result in results],
+        results=[result.to_dict() for result in diagnostics.results],
+        scan_failures=diagnostics.failures + [
+            {"ticker": ticker, "reason": diagnostics.provider_health.get("stop_reason") or "Scan aborted after provider failure.", "category": diagnostics.provider_health.get("status", "unavailable")}
+            for ticker in diagnostics.aborted_tickers
+        ],
+        provider_health=diagnostics.provider_health,
         cache_stats=provider.cache_stats(),
     )
+
+
+def _overall_provider_health(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not rows:
+        return {"provider": "unavailable", "status": "healthy", "message": ""}
+    for status in ("rate_limited", "unauthorized", "unavailable", "degraded"):
+        match = next((row for row in rows if row.get("status") == status), None)
+        if match:
+            return match
+    return rows[0]
+
+
+def _dedupe_scan_failures(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        ticker = str(row.get("ticker") or "").upper()
+        if not ticker:
+            continue
+        current = deduped.get(ticker)
+        if current is None:
+            deduped[ticker] = {
+                "ticker": ticker,
+                "reason": str(row.get("reason") or "Provider failure."),
+                "category": str(row.get("category") or "fetch_error"),
+                "source_groups": [str(row.get("source_group"))] if row.get("source_group") else [],
+                "lanes": [str(row.get("lane"))] if row.get("lane") else [],
+            }
+            continue
+        reasons = [part.strip() for part in str(current.get("reason") or "").split(" | ") if part.strip()]
+        candidate_reason = str(row.get("reason") or "").strip()
+        if candidate_reason and candidate_reason not in reasons:
+            reasons.append(candidate_reason)
+        current["reason"] = " | ".join(reasons[:3]) or "Provider failure."
+        category = str(row.get("category") or current.get("category") or "fetch_error")
+        current["category"] = _worse_failure_category(str(current.get("category") or ""), category)
+        for field in ("source_groups", "lanes"):
+            value = str(row.get("source_group" if field == "source_groups" else "lane") or "").strip()
+            if value and value not in current[field]:
+                current[field].append(value)
+    return sorted(deduped.values(), key=lambda item: item["ticker"])
+
+
+def _worse_failure_category(left: str, right: str) -> str:
+    order = {"rate_limited": 0, "unauthorized": 1, "unavailable": 2, "degraded": 3, "fetch_error": 4}
+    return left if order.get(left, 99) <= order.get(right, 99) else right
+
+
+def _daily_mover_rows(
+    movers_payload: dict[str, Any] | None,
+    decisions: list[dict[str, Any]],
+    *,
+    section: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not movers_payload:
+        return []
+    decisions_by_ticker = {str(row.get("ticker")): row for row in decisions}
+    output: list[dict[str, Any]] = []
+    for row in movers_payload.get(section, [])[:limit]:
+        decision = decisions_by_ticker.get(str(row.get("ticker")), {})
+        output.append(
+            {
+                "ticker": row.get("ticker"),
+                "company": row.get("company"),
+                "price": row.get("price"),
+                "percent_change": row.get("percent_change"),
+                "relative_volume": row.get("relative_volume"),
+                "dollar_volume": row.get("dollar_volume"),
+                "mover_type": row.get("mover_type"),
+                "signal": row.get("signal"),
+                "actionability": decision.get("actionability_label"),
+                "actionability_score": decision.get("actionability_score"),
+                "risk": decision.get("risk_level"),
+                "freshness": row.get("freshness"),
+            }
+        )
+    return output
 
 
 def _best_from_source(decisions: list[dict[str, Any]], source_group: str) -> dict[str, Any] | None:
@@ -486,6 +628,7 @@ def _build_workspace_payload(
     top_candidates = [row for row in decisions if row.get("actionability_label") in {"Actionable Today", "Research First"}][:8]
     tracked_rows = [row for row in decisions if _has_source_group(row, "Tracked")]
     broad_rows = [row for row in decisions if _has_source_group(row, "Broad")]
+    mover_rows = [row for row in decisions if _has_source_group(row, "Movers")]
     watch_rows = [row for row in decisions if row.get("actionability_label") in {"Wait for Better Entry", "Watch for Trigger"}][:5]
     avoid_rows = [row for row in decisions if row.get("actionability_label") == "Avoid / Do Not Chase"][:5]
     selected_ticker = (
@@ -511,6 +654,7 @@ def _build_workspace_payload(
         "top_candidates": top_candidates,
         "tracked_rows": tracked_rows[:10],
         "broad_rows": broad_rows[:top_n],
+        "mover_rows": mover_rows[:top_n],
         "watch_rows": watch_rows,
         "avoid_rows": avoid_rows,
         "signal_table_rows": _compact_signal_table(decisions, source_group=None, limit=max(25, top_n)),
@@ -523,6 +667,7 @@ def _build_workspace_payload(
             "top": len([row for row in decisions if row.get("actionability_label") in {"Actionable Today", "Research First"}]),
             "tracked": len(tracked_rows),
             "broad": len(broad_rows),
+            "movers": len(mover_rows),
             "watch": len([row for row in decisions if row.get("actionability_label") in {"Wait for Better Entry", "Watch for Trigger"}]),
             "avoid": len([row for row in decisions if row.get("actionability_label") == "Avoid / Do Not Chase"]),
             "data_issues": len(data_issues),
@@ -533,12 +678,14 @@ def _build_workspace_payload(
             "coverage_summary": f"{coverage_status.get('tickers_successfully_scanned', 0)}/{coverage_status.get('tickers_attempted', 0)} scanned",
             "universe_label": coverage_status.get("universe_label"),
             "tracked_count": coverage_status.get("tracked_tickers_count", 0),
+            "provider_health": coverage_status.get("provider_health", {}).get("status", "healthy"),
             "data_issues": len(data_issues),
         },
         "source_aware_top": {
             "overall_top_setup": picker_view.get("top_candidate"),
             "best_tracked_setup": _best_from_source(decisions, "Tracked"),
             "best_broad_setup": _best_from_source(decisions, "Broad"),
+            "best_mover_setup": _best_from_source(decisions, "Movers"),
         },
         "selected_ticker_consistency_status": consistency_status,
         "selected_ticker_consistency_reason": consistency_reason,
@@ -564,6 +711,7 @@ def _build_daily_decision_markdown(payload: dict[str, Any]) -> str:
         f"- Analysis date: {payload.get('analysis_date', 'unavailable')}",
         f"- Provider: {payload.get('provider', 'unavailable')}",
         f"- Demo mode: {payload.get('demo_mode', False)}",
+        f"- Scan health: {(payload.get('scan_health') or {}).get('status', 'healthy')}",
         "",
     ]
     if top_candidate:
@@ -621,6 +769,11 @@ def _build_daily_decision_markdown(payload: dict[str, Any]) -> str:
         lines.extend(["", "## Data Issues"])
         for row in data_issues[:10]:
             lines.append(f"- {row.get('ticker')}: {row.get('price_validation_reason') or row.get('reason')}")
+    failures = payload.get("scan_failures", [])
+    if failures:
+        lines.extend(["", "## Scan Failures"])
+        for row in failures[:10]:
+            lines.append(f"- {row.get('ticker')}: {row.get('reason')}")
     return "\n".join(lines)
 
 
