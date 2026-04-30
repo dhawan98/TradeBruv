@@ -195,6 +195,9 @@ vi.stubGlobal(
             updated: '2026-04-24',
           },
         ],
+        top_gainers: [{ ticker: 'SBUX', percent_change: 9.3, relative_volume: 2.85, signal: 'Breakout with Volume' }],
+        top_losers: [{ ticker: 'NVDA', percent_change: -1.8, relative_volume: 0.79, signal: 'Bullish Trend Stack' }],
+        unusual_volume: [{ ticker: 'SBUX', percent_change: 9.3, relative_volume: 2.85, signal: 'Breakout with Volume' }],
         data_coverage_status: {
           universe_label: 'Large Cap Starter',
           universe_row_count: 120,
@@ -754,7 +757,7 @@ vi.stubGlobal(
       return Promise.resolve(new Response(JSON.stringify({ job_id: 'job-1', status: 'queued' }), { status: 200 }));
     }
     if (pathname === '/api/scan/status/job-1') {
-      return Promise.resolve(new Response(JSON.stringify({ job_id: 'job-1', status: 'completed', attempted: 1, scanned: 1, failed: 0, provider_health: { status: 'healthy' } }), { status: 200 }));
+      return Promise.resolve(new Response(JSON.stringify({ job_id: 'job-1', status: 'completed', attempted: 1, scanned: 1, failed: 0, provider_health: { status: 'healthy' }, preview_rows: [{ ticker: 'NVDA', current_price: 100, price_change_1d_pct: 2.4, relative_volume_20d: 1.8, signal_summary: 'Breakout with Volume', outlier_score: 82 }] }), { status: 200 }));
     }
     if (pathname === '/api/scan/result/job-1') {
       return Promise.resolve(new Response(JSON.stringify(payloads['/api/scan']), { status: 200 }));
@@ -782,6 +785,9 @@ describe('App', () => {
     expect(screen.getAllByText(/Large Cap Starter/i).length).toBeGreaterThan(0);
     expect((await screen.findAllByText((_, element) => element?.textContent?.includes('EMA 21:') ?? false)).length).toBeGreaterThan(0);
     expect(screen.queryByText(/Adjusted price series may include split-adjusted closes\./i)).not.toBeInTheDocument();
+    expect(screen.getByText('Gainer')).toBeInTheDocument();
+    expect(screen.getByText('Why')).toBeInTheDocument();
+    expect(screen.queryByText(/Validated price, acceptable risk\/reward, and current setup all line up\./i)).not.toBeInTheDocument();
     expect(screen.getAllByText('NVDA').length).toBeGreaterThan(0);
     expect(screen.getAllByText('PLTR')).toHaveLength(1);
     expect(screen.queryByText('This strategy beat SPY/QQQ but did not beat random baseline.')).not.toBeInTheDocument();

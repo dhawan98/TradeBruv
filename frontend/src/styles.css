@@ -944,6 +944,19 @@ th {
   font-size: 12px;
 }
 
+.rail-settings {
+  width: 100%;
+}
+
+.rail-settings summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: #9cb0c6;
+  font-size: 12px;
+}
+
 .tracked-chip-strip {
   display: flex;
   flex-wrap: wrap;
@@ -956,6 +969,38 @@ th {
   background: #08111b;
   padding: 5px 8px;
   font-size: 11px;
+}
+
+.market-leaders-panel {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.market-leader-row {
+  display: grid;
+  grid-template-columns: 42px 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: #0a1420;
+  color: #d8e3ef;
+  padding: 7px 8px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.market-leader-row span,
+.market-leader-row small {
+  color: #8ea1b7;
+  font-size: 11px;
+}
+
+.market-leader-row em {
+  color: #d8e3ef;
+  font-size: 12px;
+  font-style: normal;
 }
 
 .rail-list {

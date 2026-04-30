@@ -111,6 +111,11 @@ class CatalystOverlayProvider:
             data_notes=notes,
         )
 
+    def prefetch_many(self, tickers: list[str], *, batch_size: int = 25) -> None:
+        prefetch = getattr(self.base_provider, "prefetch_many", None)
+        if callable(prefetch):
+            prefetch(tickers, batch_size=batch_size)
+
 
 def load_catalyst_repository(path: Path | None) -> CatalystRepository:
     if path is None:

@@ -229,6 +229,7 @@ def scan_start(payload: dict[str, Any]) -> dict[str, Any]:
         "failed": 0,
         "provider_health": {"provider": str(payload.get("provider") or "sample"), "status": "healthy"},
         "current_batch": "",
+        "preview_rows": [],
         "result": None,
         "error": "",
     }
@@ -262,6 +263,7 @@ def scan_result(job_id: str) -> dict[str, Any]:
             "scanned": job.get("scanned", 0),
             "failed": job.get("failed", 0),
             "provider_health": job.get("provider_health", {}),
+            "preview_rows": job.get("preview_rows", []),
         }
     return dict(job.get("result") or {})
 
@@ -278,6 +280,24 @@ def _run_scan_job(job_id: str, payload: dict[str, Any]) -> None:
             job["scanned"] = int(update.get("scanned") or job.get("scanned", 0))
             job["failed"] = int(update.get("failed") or job.get("failed", 0))
             job["current_batch"] = str(update.get("ticker") or "")
+            latest_result = update.get("latest_result")
+            if isinstance(latest_result, dict) and latest_result.get("ticker"):
+                preview_rows = list(job.get("preview_rows", []))
+                preview_rows = [row for row in preview_rows if row.get("ticker") != latest_result.get("ticker")]
+                preview_rows.append(
+                    {
+                        "ticker": latest_result.get("ticker"),
+                        "current_price": latest_result.get("current_price"),
+                        "price_change_1d_pct": latest_result.get("price_change_1d_pct"),
+                        "relative_volume_20d": latest_result.get("relative_volume_20d"),
+                        "signal_summary": latest_result.get("signal_summary"),
+                        "outlier_score": latest_result.get("outlier_score"),
+                        "regular_investing_score": latest_result.get("regular_investing_score"),
+                        "velocity_score": latest_result.get("velocity_score"),
+                    }
+                )
+                preview_rows.sort(key=lambda row: -float(row.get("outlier_score") or row.get("regular_investing_score") or row.get("velocity_score") or 0))
+                job["preview_rows"] = preview_rows[:10]
             if update.get("failure"):
                 job["last_failure"] = update["failure"]
 

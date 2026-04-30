@@ -42,6 +42,11 @@ class AlternativeDataOverlayProvider:
         tags = sorted(dict.fromkeys([*security.catalyst_tags, "Insider/politician activity"]))
         return replace(security, alternative_data_items=[*security.alternative_data_items, *items], catalyst_tags=tags, data_notes=notes)
 
+    def prefetch_many(self, tickers: list[str], *, batch_size: int = 25) -> None:
+        prefetch = getattr(self.base_provider, "prefetch_many", None)
+        if callable(prefetch):
+            prefetch(tickers, batch_size=batch_size)
+
 
 def load_alternative_data_repository(path: Path | None = DEFAULT_ALTERNATIVE_DATA_PATH) -> AlternativeDataRepository:
     if path is None or not path.exists():

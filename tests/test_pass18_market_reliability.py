@@ -12,9 +12,10 @@ import pytest
 from tradebruv.broad_scan import run_broad_scan
 from tradebruv.daily_decision import run_daily_decision
 from tradebruv.market_cache import FileCacheMarketDataProvider
-from tradebruv.market_reliability import ProviderStopError, ResilientMarketDataProvider, classify_provider_error
+from tradebruv.market_reliability import ProviderStopError, ResilientMarketDataProvider, build_provider_check_report, classify_provider_error
 from tradebruv.models import PriceBar, SecurityData
 from tradebruv.movers import run_movers_scan
+from tradebruv.providers import ProviderFetchError
 from tradebruv.scanner import ScanDiagnostics
 
 
@@ -52,10 +53,53 @@ def test_rate_limit_classification_and_resilient_provider_stop() -> None:
 
     resilient = ResilientMarketDataProvider(FailingProvider(), provider_name="yfinance", history_period="6mo")
     assert classify_provider_error(RuntimeError("429 Too Many Requests"))["status"] == "rate_limited"
-    with pytest.raises(ProviderStopError):
+    with pytest.raises(Exception):
         resilient.get_security_data("NVDA")
+    with pytest.raises(Exception):
+        resilient.get_security_data("MSFT")
+    with pytest.raises(ProviderStopError):
+        resilient.get_security_data("AAPL")
     assert resilient.health_report()["status"] == "rate_limited"
     assert resilient.should_stop_scan() is True
+
+
+def test_ticker_failure_does_not_mark_provider_degraded() -> None:
+    class MixedProvider:
+        def get_security_data(self, ticker: str) -> SecurityData:
+            if ticker == "BAD":
+                raise ProviderFetchError("possibly delisted; no price data found")
+            return _security(ticker, list(range(100, 360)))
+
+    resilient = ResilientMarketDataProvider(MixedProvider(), provider_name="yfinance", history_period="6mo")
+    with pytest.raises(ProviderFetchError) as exc_info:
+        resilient.get_security_data("BAD")
+    good = resilient.get_security_data("GOOD")
+
+    assert getattr(exc_info.value, "category", "") == "delisted_or_invalid"
+    assert good.ticker == "GOOD"
+    health = resilient.health_report()
+    assert health["ticker_failures_count"] == 1
+    assert health["provider_failures_count"] == 0
+    assert health["status"] == "healthy"
+    assert resilient.should_stop_scan() is False
+
+
+def test_repeated_rate_limits_trigger_provider_stop() -> None:
+    class RateLimitedProvider:
+        def get_security_data(self, ticker: str) -> SecurityData:
+            raise RuntimeError("429 Too Many Requests")
+
+    resilient = ResilientMarketDataProvider(RateLimitedProvider(), provider_name="yfinance", history_period="6mo")
+    for ticker in ("A", "B"):
+        with pytest.raises(Exception):
+            resilient.get_security_data(ticker)
+    assert resilient.should_stop_scan() is False
+    with pytest.raises(ProviderStopError):
+        resilient.get_security_data("C")
+    health = resilient.health_report()
+    assert health["rate_limit_failures"] == 3
+    assert health["status"] == "rate_limited"
+    assert health["stop_scan"] is True
 
 
 def test_broad_scan_keeps_failures_out_of_ranked_rows(monkeypatch, tmp_path: Path) -> None:
@@ -127,6 +171,35 @@ def test_movers_scan_finds_gainers_losers_and_unusual_volume(monkeypatch, tmp_pa
     assert result.payload["top_gainers"][0]["ticker"] == "GAIN"
     assert result.payload["top_losers"][0]["ticker"] == "DROP"
     assert any(row["ticker"] == "VOLUME" for row in result.payload["unusual_volume"])
+
+
+def test_movers_continue_after_one_invalid_ticker(monkeypatch, tmp_path: Path) -> None:
+    provider_map = {
+        "SPY": _security("SPY", list(range(100, 360))),
+        "QQQ": _security("QQQ", list(range(100, 360))),
+        "GAIN": _security("GAIN", [100.0] * 40 + [101, 102, 103, 104, 105, 106, 107, 108, 109, 115], volumes=[1_000_000.0] * 49 + [3_200_000.0]),
+        "VOLUME": _security("VOLUME", [80.0 + (index * 0.2) for index in range(60)], volumes=[600_000.0] * 59 + [2_400_000.0]),
+    }
+
+    class Provider:
+        def get_security_data(self, ticker: str) -> SecurityData:
+            if ticker == "BAD":
+                raise ProviderFetchError("possibly delisted; no price data found")
+            return provider_map[ticker]
+
+    monkeypatch.setattr("tradebruv.movers.build_provider", lambda **_: Provider())
+    result = run_movers_scan(
+        universe=["GAIN", "BAD", "VOLUME"],
+        provider_name="sample",
+        analysis_date=date(2026, 4, 29),
+        output_dir=tmp_path / "outputs" / "movers",
+    )
+
+    assert result.payload["tickers_attempted"] == 3
+    assert result.payload["tickers_successfully_scanned"] == 2
+    assert len(result.payload["scan_failures"]) == 1
+    assert result.payload["scan_failures"][0]["ticker"] == "BAD"
+    assert {row["ticker"] for row in result.payload["results"]} == {"GAIN", "VOLUME"}
 
 
 def test_market_cache_falls_back_to_cached_security(monkeypatch, tmp_path: Path) -> None:
@@ -308,6 +381,103 @@ def test_daily_decision_dedupes_failures_and_uses_movers_sections(monkeypatch, t
     assert payload["unusual_volume"][0]["relative_volume"] == 2.4
 
 
+def test_provider_check_uses_fallback_when_primary_fails(monkeypatch) -> None:
+    class PrimaryProvider:
+        def __init__(self, history_period: str = "6mo") -> None:
+            self.history_period = history_period
+
+        def get_security_data(self, ticker: str) -> SecurityData:
+            raise RuntimeError("timeout")
+
+    class FallbackProvider:
+        def __init__(self, history_period: str = "6mo") -> None:
+            self.history_period = history_period
+
+        def get_security_data(self, ticker: str) -> SecurityData:
+            return _security(ticker, list(range(100, 360)))
+
+    monkeypatch.setattr("tradebruv.providers.YFinanceMarketDataProvider", PrimaryProvider)
+    monkeypatch.setattr("tradebruv.market_reliability._build_fallback_providers", lambda **_: [("finnhub", FallbackProvider())])
+
+    report = build_provider_check_report("NVDA", provider_name="real", include_fallbacks=True)
+
+    assert report["success"] is True
+    assert report["final_selected_source"] == "sample"
+    assert report["fallback_used"] is True
+    assert any(check["provider"] == "finnhub" and check["success"] for check in report["checks"])
+
+
+def test_daily_decision_reuses_unique_fetches_once_per_run(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "core.txt").write_text("NVDA\nAAPL\n", encoding="utf-8")
+    (config_dir / "outlier.txt").write_text("NVDA\n", encoding="utf-8")
+    (config_dir / "velocity.txt").write_text("AAPL\n", encoding="utf-8")
+    (config_dir / "broad.txt").write_text("NVDA\nAAPL\n", encoding="utf-8")
+    (config_dir / "tracked.txt").write_text("NVDA\n", encoding="utf-8")
+
+    counts: dict[str, int] = {}
+
+    class CountingProvider:
+        def get_security_data(self, ticker: str) -> SecurityData:
+            counts[ticker] = counts.get(ticker, 0) + 1
+            return _security(ticker, list(range(100, 360)))
+
+    def fake_build_unified_decisions(rows: list[dict[str, object]], **_: object):
+        return [
+            {
+                "ticker": str(row["ticker"]),
+                "company": str(row["ticker"]),
+                "primary_action": "Research / Buy Candidate",
+                "action_lane": "Outlier",
+                "source_group": str(row.get("scan_source_group") or "Broad"),
+                "source_groups": [str(row.get("scan_source_group") or "Broad")],
+                "score": 80,
+                "regular_investing_score": 80,
+                "actionability_score": 80,
+                "actionability_label": "Actionable Today",
+                "actionability_reason": "Shared cache test.",
+                "reason": "Shared cache test.",
+                "why_not": "Watch risk.",
+                "level_status": "Actionable",
+                "entry_label": "Entry",
+                "entry_zone": "99 - 101",
+                "stop_loss": 94.0,
+                "tp1": 110.0,
+                "tp2": 118.0,
+                "risk_level": "Low",
+                "latest_market_date": "2026-04-29",
+                "trigger_needed": False,
+                "source_row": row,
+                "price_validation_status": "PASS",
+                "data_freshness": "Fresh enough",
+            }
+            for row in rows
+        ]
+
+    monkeypatch.setattr("tradebruv.daily_decision.build_provider", lambda **_: CountingProvider())
+    monkeypatch.setattr("tradebruv.daily_decision.load_dashboard_portfolio", lambda: [])
+    monkeypatch.setattr("tradebruv.daily_decision.build_unified_decisions", fake_build_unified_decisions)
+    monkeypatch.setattr("tradebruv.daily_decision.build_daily_summary", lambda rows: {"count": len(rows)})
+
+    payload = run_daily_decision(
+        provider_name="sample",
+        core_universe=config_dir / "core.txt",
+        outlier_universe=config_dir / "outlier.txt",
+        velocity_universe=config_dir / "velocity.txt",
+        broad_universe=config_dir / "broad.txt",
+        tracked=config_dir / "tracked.txt",
+        include_movers=True,
+        analysis_date=date(2026, 4, 29),
+        output_dir=tmp_path / "outputs" / "daily",
+    )
+
+    assert counts["NVDA"] == 1
+    assert counts["AAPL"] == 1
+    assert payload["data_coverage_status"]["unique_candidate_tickers_requested"] == 2
+
+
 pytestmark_api = pytest.mark.skipif(importlib.util.find_spec("fastapi") is None, reason="FastAPI is not installed")
 
 
@@ -322,7 +492,7 @@ def test_async_scan_endpoints_return_job_progress(monkeypatch, tmp_path: Path) -
     def fake_run_scan(payload: dict[str, object]) -> dict[str, object]:
         callback = payload.get("progress_callback")
         if callable(callback):
-            callback({"attempted": 3, "scanned": 2, "failed": 1, "ticker": "NVDA"})
+            callback({"attempted": 3, "scanned": 2, "failed": 1, "ticker": "NVDA", "latest_result": {"ticker": "NVDA", "current_price": 100.0, "price_change_1d_pct": 2.0, "relative_volume_20d": 1.5, "signal_summary": "Breakout with Volume", "outlier_score": 82}})
         return {
             "generated_at": "2026-04-29T12:00:00Z",
             "provider": "sample",
@@ -350,4 +520,5 @@ def test_async_scan_endpoints_return_job_progress(monkeypatch, tmp_path: Path) -
 
     assert status["status"] == "completed"
     assert status["attempted"] == 3
+    assert status["preview_rows"][0]["ticker"] == "NVDA"
     assert result["scan_failures"][0]["ticker"] == "FAIL"

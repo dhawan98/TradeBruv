@@ -301,27 +301,27 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
           <div className="cockpit-grid">
             <aside className="cockpit-rail">
               <div className="rail-header">
-                <form className="rail-add-form" onSubmit={addTrackedTicker}>
-                  <input value={trackedInput} onChange={(event) => setTrackedInput(event.target.value)} placeholder="Add ticker" aria-label="Add tracked ticker" />
-                  <button className="ghost" type="submit"><Plus size={14} /> Add</button>
-                </form>
+                <details className="rail-settings">
+                  <summary><Plus size={14} /> Watchlist</summary>
+                  <form className="rail-add-form" onSubmit={addTrackedTicker}>
+                    <input value={trackedInput} onChange={(event) => setTrackedInput(event.target.value)} placeholder="Add ticker" aria-label="Add tracked ticker" />
+                    <button className="ghost" type="submit">Add</button>
+                  </form>
+                  <div className="tracked-chip-strip">
+                    {(tracked.data?.tickers ?? []).slice(0, 18).map((ticker) => (
+                      <button className="tracked-chip subtle" key={ticker} onClick={() => removeTrackedTicker(ticker)} type="button" title={`Remove ${ticker} from tracked`}>
+                        <span>{ticker}</span>
+                        <Trash2 size={12} />
+                      </button>
+                    ))}
+                  </div>
+                </details>
               </div>
               <RailFilterTabs
                 activeView={activeView}
                 counts={(workspace?.view_counts ?? {}) as Record<string, number>}
                 onChange={setActiveView}
               />
-              <details className="rail-managed-list">
-                <summary>Tracked</summary>
-                <div className="tracked-chip-strip">
-                  {(tracked.data?.tickers ?? []).slice(0, 18).map((ticker) => (
-                    <button className="tracked-chip subtle" key={ticker} onClick={() => removeTrackedTicker(ticker)} type="button" title={`Remove ${ticker} from tracked`}>
-                      <span>{ticker}</span>
-                      <Trash2 size={12} />
-                    </button>
-                  ))}
-                </div>
-              </details>
               <div className="rail-list">
                 {activeRows.length ? activeRows.map((row) => (
                   <button
@@ -355,13 +355,21 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
             </section>
             <aside className="cockpit-panel">
               {selectedDecision ? (
-                <SelectedDecisionPanel
-                  row={selectedDecision}
-                  trackedTickers={tracked.data?.tickers ?? []}
-                  onToggleTracked={toggleTrackedTicker}
-                  onDeepResearch={() => setPage('Deep Research')}
-                  onAICommittee={() => setPage('AI Committee')}
-                />
+                <>
+                  <SelectedDecisionPanel
+                    row={selectedDecision}
+                    trackedTickers={tracked.data?.tickers ?? []}
+                    onToggleTracked={toggleTrackedTicker}
+                    onDeepResearch={() => setPage('Deep Research')}
+                    onAICommittee={() => setPage('AI Committee')}
+                  />
+                  <MarketLeadersPanel
+                    gainers={latest.data?.top_gainers ?? []}
+                    losers={latest.data?.top_losers ?? []}
+                    unusualVolume={latest.data?.unusual_volume ?? []}
+                    onSelect={setSelectedTicker}
+                  />
+                </>
               ) : (
                 <EmptyState title="No Clean Candidate Today" action="Open Stock Picker" onAction={() => setPage('Stock Picker')}>
                   {latest.data?.no_clean_candidate_reason ?? 'No validated setup passed the actionability gate today.'}
@@ -380,7 +388,7 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
               <summary>Diagnostics / Raw Data</summary>
               <div className="cockpit-diagnostics-grid">
                 <div className="cockpit-diagnostics-copy">
-                  <p><strong>Coverage</strong> {String(workspace?.coverage_status?.universe_label ?? 'Active')} · {String(workspace?.coverage_status?.tickers_successfully_scanned ?? 0)}/{String(workspace?.coverage_status?.tickers_attempted ?? 0)} scanned · Tracked {String(workspace?.coverage_status?.tracked_tickers_count ?? 0)}</p>
+                  <p><strong>Coverage</strong> {String(workspace?.coverage_status?.universe_label ?? 'Active')} · {String(workspace?.coverage_status?.tickers_successfully_scanned ?? 0)}/{String(workspace?.coverage_status?.tickers_attempted ?? 0)} scanned · Unique {String(workspace?.coverage_status?.unique_candidate_tickers_requested ?? 0)}</p>
                   <p><strong>Selection</strong> {String(workspace?.selected_ticker_consistency_reason ?? 'No diagnostics loaded.')}</p>
                   {workspace?.coverage_status?.universe_warning ? <p><strong>Universe note</strong> {String(workspace.coverage_status.universe_warning)}</p> : null}
                 </div>
@@ -625,6 +633,38 @@ function SelectedDecisionPanel({
   );
 }
 
+function MarketLeadersPanel({
+  gainers,
+  losers,
+  unusualVolume,
+  onSelect,
+}: {
+  gainers: Record<string, unknown>[];
+  losers: Record<string, unknown>[];
+  unusualVolume: Record<string, unknown>[];
+  onSelect: (ticker: string) => void;
+}) {
+  const rows = [
+    { label: 'Gainer', row: gainers[0] },
+    { label: 'Loser', row: losers[0] },
+    { label: 'Rel Vol', row: unusualVolume[0] },
+    { label: 'Breakout', row: gainers.find((item) => String(item.signal ?? '') === 'Breakout with Volume') ?? gainers[0] },
+  ].filter((item) => item.row && item.row.ticker);
+  if (!rows.length) return null;
+  return (
+    <div className="market-leaders-panel">
+      {rows.map(({ label, row }) => (
+        <button className="market-leader-row" key={`${label}-${String(row?.ticker)}`} onClick={() => onSelect(String(row?.ticker))} type="button">
+          <span>{label}</span>
+          <strong>{String(row?.ticker)}</strong>
+          <em>{pct(row?.percent_change)}</em>
+          <small>RV {cell(row?.relative_volume)}</small>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function SignalWorkspaceTable({
   rows,
   onSelect,
@@ -721,6 +761,7 @@ function StockPicker() {
   const [timeframe, setTimeframe] = useState<'3M' | '6M' | '1Y' | '2Y'>('6M');
   const [error, setError] = useState<Error | null>(null);
   const [loading, setLoading] = useState(false);
+  const previewRows = (scanJob?.preview_rows ?? []) as Record<string, unknown>[];
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -787,6 +828,39 @@ function StockPicker() {
             : 'Starting scan job…'}
         </Notice>
       )}
+      {loading && previewRows.length ? (
+        <div className="table-wrap workspace-table-wrap">
+          <div className="table-head">
+            <div>
+              <strong>Live preview</strong>
+            </div>
+          </div>
+          <table className="signal-table screener-table">
+            <thead>
+              <tr>
+                <th>Ticker</th>
+                <th>Price</th>
+                <th>% Change</th>
+                <th>Rel Vol</th>
+                <th>Signal</th>
+                <th>Score</th>
+              </tr>
+            </thead>
+            <tbody>
+              {previewRows.map((row) => (
+                <tr key={String(row.ticker ?? row.current_price)}>
+                  <td><strong>{cell(row.ticker)}</strong></td>
+                  <td>{cell(row.current_price)}</td>
+                  <td className={pctTone(row.price_change_1d_pct)}>{pct(row.price_change_1d_pct)}</td>
+                  <td>{cell(row.relative_volume_20d)}</td>
+                  <td>{cell(row.signal_summary)}</td>
+                  <td>{cell(row.outlier_score ?? row.regular_investing_score ?? row.velocity_score)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
       {scan?.decisions?.length ? (
         <div className="tabs">
           {(['Best Ideas', 'Research', 'Watch', 'Avoid', 'All'] as const).map((item) => (
@@ -823,8 +897,8 @@ function StockPicker() {
           </aside>
         </div>
       ) : (
-        <EmptyState title="Ready for a deterministic scan" action="Run real outlier scan">
-          Sample mode is demo-only and stays non-actionable.
+        <EmptyState title={scanJob?.status === 'running' ? 'Scan in progress' : 'Ready for a deterministic scan'} action="Run real outlier scan">
+          {scanJob?.status === 'running' ? 'Broad scan is still running in the background.' : 'Sample mode is demo-only and stays non-actionable.'}
         </EmptyState>
       )}
     </Page>
@@ -855,7 +929,6 @@ function StockPickerScreenerTable({
       <div className="table-head">
         <div>
           <strong>Stock screener</strong>
-          <p>Table-first scan output. Select a row to sync the chart and decision panel.</p>
         </div>
         <div className="pill-row">
           <button className={sortBy === 'score' ? 'secondary active-tab' : 'ghost'} onClick={() => setSortBy('score')} type="button">Sort: Score</button>

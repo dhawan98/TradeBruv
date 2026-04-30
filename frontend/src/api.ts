@@ -483,6 +483,7 @@ export type ScanJobStatus = {
   failed?: number;
   provider_health?: Record<string, unknown>;
   current_batch?: string;
+  preview_rows?: Record<string, unknown>[];
   error?: string;
 };
 
@@ -507,6 +508,9 @@ export type DecisionSnapshotPayload = ScanPayload & {
   broad_scan_top_table?: SignalTableRow[];
   movers_table?: SignalTableRow[];
   signal_table?: SignalTableRow[];
+  top_gainers?: Record<string, unknown>[];
+  top_losers?: Record<string, unknown>[];
+  unusual_volume?: Record<string, unknown>[];
   no_clean_candidate_reason?: string;
   data_coverage_status?: Record<string, unknown>;
   workspace?: WorkspacePayload;

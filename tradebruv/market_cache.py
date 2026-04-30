@@ -137,6 +137,32 @@ class FileCacheMarketDataProvider:
     def should_stop_scan(self) -> bool:
         return bool(getattr(self.provider, "should_stop_scan", lambda: False)())
 
+    def prefetch_many(self, tickers: list[str], *, batch_size: int = 25) -> None:
+        prefetch = getattr(self.provider, "prefetch_many", None)
+        if not callable(prefetch):
+            return
+        pending = [ticker.upper() for ticker in tickers if ticker and (self.refresh_cache or self.load_cached_security(ticker.upper(), allow_stale=False) is None)]
+        if not pending:
+            return
+        prefetch(pending, batch_size=batch_size)
+        for ticker in pending:
+            fresh = getattr(self.provider, "get_security_data", None)
+            if not callable(fresh):
+                continue
+            try:
+                security = fresh(ticker)
+            except Exception:
+                continue
+            payload = {
+                "cached_at": datetime.utcnow().isoformat() + "Z",
+                "ticker": ticker,
+                "provider": self.provider_name,
+                "history_period": self.history_period,
+                "interval": self.interval,
+                "security": _security_to_dict(security),
+            }
+            self._cache_path(ticker).write_text(json.dumps(payload), encoding="utf-8")
+
     def _cache_path(self, ticker: str) -> Path:
         key = f"{self.provider_name}_{ticker}_{self.history_period}_{self.interval}.json".replace("/", "_")
         return self.cache_dir / key

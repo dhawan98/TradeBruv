@@ -138,21 +138,28 @@ class DeterministicScanner:
         results: list[ScannerResult] = []
         failures: list[dict[str, Any]] = []
         normalized = [raw_ticker.strip().upper() for raw_ticker in tickers if raw_ticker.strip()]
+        prefetch = getattr(self.provider, "prefetch_many", None)
+        if callable(prefetch):
+            try:
+                prefetch([*normalized, "SPY", "QQQ", *SECTOR_BENCHMARKS.values()], batch_size=25)
+            except Exception:
+                pass
         attempted = 0
         aborted_tickers: list[str] = []
         for index, ticker in enumerate(normalized):
             try:
                 security = self._get_data(ticker)
-                results.append(self._scan_security(security))
+                scanned = self._scan_security(security)
+                results.append(scanned)
                 attempted += 1
                 if progress:
-                    progress({"attempted": attempted, "scanned": len(results), "failed": len(failures), "ticker": ticker})
+                    progress({"attempted": attempted, "scanned": len(results), "failed": len(failures), "ticker": ticker, "latest_result": scanned.to_dict()})
             except Exception as exc:
                 attempted += 1
                 failure = {
                     "ticker": ticker,
                     "reason": str(exc),
-                    "category": getattr(exc, "status", "fetch_error"),
+                    "category": getattr(exc, "category", getattr(exc, "status", "fetch_error")),
                 }
                 failures.append(failure)
                 if include_failures_in_results:

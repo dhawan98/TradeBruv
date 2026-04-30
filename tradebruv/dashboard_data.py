@@ -91,28 +91,34 @@ def run_dashboard_scan(
     ai_explanations: bool = False,
     mock_ai_explanations: bool = False,
     progress: Callable[[dict[str, Any]], None] | None = None,
+    scanner_override: DeterministicScanner | None = None,
+    provider_override: MarketDataProvider | None = None,
 ) -> DashboardReport:
     as_of = analysis_date or date.today()
-    args = SimpleNamespace(
-        provider=provider_name,
-        data_dir=data_dir,
-        history_period=history_period,
-    )
-    provider = build_provider(args=args, analysis_date=as_of)
-    provider = ResilientMarketDataProvider(provider, provider_name=provider_name, history_period=history_period) if provider_name == "real" else provider
-    catalyst_repository = load_catalyst_repository(catalyst_file)
-    if catalyst_repository.items_by_ticker:
-        provider = CatalystOverlayProvider(provider, catalyst_repository)
-    alternative_repository = load_alternative_data_repository(alternative_data_file)
-    if alternative_repository.items_by_ticker:
-        provider = AlternativeDataOverlayProvider(provider, alternative_repository)
-    cacheable_provider = FileCacheMarketDataProvider(
-        provider,
-        provider_name=provider_name,
-        history_period=history_period,
-        cache_dir=DEFAULT_MARKET_CACHE_DIR,
-    )
-    scanner = DeterministicScanner(provider=cacheable_provider, analysis_date=as_of)
+    if scanner_override is not None:
+        scanner = scanner_override
+        cacheable_provider = provider_override or scanner.provider
+    else:
+        args = SimpleNamespace(
+            provider=provider_name,
+            data_dir=data_dir,
+            history_period=history_period,
+        )
+        provider = provider_override or build_provider(args=args, analysis_date=as_of)
+        provider = ResilientMarketDataProvider(provider, provider_name=provider_name, history_period=history_period) if provider_name == "real" and not isinstance(provider, ResilientMarketDataProvider) else provider
+        catalyst_repository = load_catalyst_repository(catalyst_file)
+        if catalyst_repository.items_by_ticker:
+            provider = CatalystOverlayProvider(provider, catalyst_repository)
+        alternative_repository = load_alternative_data_repository(alternative_data_file)
+        if alternative_repository.items_by_ticker:
+            provider = AlternativeDataOverlayProvider(provider, alternative_repository)
+        cacheable_provider = FileCacheMarketDataProvider(
+            provider,
+            provider_name=provider_name,
+            history_period=history_period,
+            cache_dir=DEFAULT_MARKET_CACHE_DIR,
+        )
+        scanner = DeterministicScanner(provider=cacheable_provider, analysis_date=as_of)
     diagnostics = scanner.scan_with_diagnostics(load_universe(universe_path), mode=mode, include_failures_in_results=False, progress=progress)
     results = diagnostics.results
     if ai_explanations:
@@ -128,7 +134,7 @@ def run_dashboard_scan(
         provider=provider_name,
         results=result_rows,
         source=f"live scan: {universe_path}",
-        market_regime=build_market_regime(provider=provider, results=result_rows),
+        market_regime=build_market_regime(provider=cacheable_provider, results=result_rows),
         scan_failures=diagnostics.failures,
         provider_health=diagnostics.provider_health,
         cache_stats=cacheable_provider.cache_stats(),

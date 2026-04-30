@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from .alternative_data import DEFAULT_ALTERNATIVE_DATA_PATH, AlternativeDataOverlayProvider, load_alternative_data_repository
+from .catalysts import CatalystOverlayProvider, load_catalyst_repository
 from .cli import build_provider, load_universe
 from .dashboard_data import (
     build_daily_summary,
@@ -18,6 +20,7 @@ from .market_cache import DEFAULT_MARKET_CACHE_DIR, FileCacheMarketDataProvider
 from .market_reliability import ResilientMarketDataProvider
 from .movers import run_movers_scan
 from .price_sanity import build_price_sanity_from_row
+from .providers import MarketDataProvider
 from .scanner import DeterministicScanner
 from .tracked import DEFAULT_TRACKED_TICKERS_PATH, list_tracked_tickers
 from .universe_registry import validate_universe_file
@@ -46,23 +49,70 @@ def run_daily_decision(
     as_of = analysis_date or date.today()
     validation_context = build_validation_context()
     portfolio_rows = load_dashboard_portfolio()
+    shared_provider, shared_scanner = _build_shared_scan_stack(
+        provider_name=provider_name,
+        analysis_date=as_of,
+        history_period=history_period,
+        data_dir=data_dir,
+        refresh_cache=refresh_cache,
+    )
+    requested_ticker_groups: dict[str, list[str]] = {
+        "Core Investing": load_universe(core_universe),
+        "Outlier": load_universe(outlier_universe),
+        "Velocity": load_universe(velocity_universe),
+    }
+    if broad_universe:
+        requested_ticker_groups["Broad"] = load_universe(broad_universe)
+    tracked_path = tracked or DEFAULT_TRACKED_TICKERS_PATH
+    tracked_tickers = list_tracked_tickers(tracked_path)
+    if tracked_tickers:
+        requested_ticker_groups["Tracked"] = tracked_tickers
+    portfolio_tickers = [str(row.get("ticker")).upper() for row in portfolio_rows if row.get("ticker")]
+    if portfolio_tickers:
+        requested_ticker_groups["Portfolio"] = portfolio_tickers
+    unique_requested_tickers = _unique_tickers(
+        ticker
+        for tickers in requested_ticker_groups.values()
+        for ticker in tickers
+    )
     scans = [
         {
             "lane": "Core Investing",
             "source_group": "Core Investing",
-            "scan": run_dashboard_scan(provider_name=provider_name, mode="investing", universe_path=core_universe, analysis_date=as_of),
+            "scan": run_dashboard_scan(
+                provider_name=provider_name,
+                mode="investing",
+                universe_path=core_universe,
+                analysis_date=as_of,
+                scanner_override=shared_scanner,
+                provider_override=shared_provider,
+            ),
             "universe": str(core_universe),
         },
         {
             "lane": "Outlier",
             "source_group": "Outlier",
-            "scan": run_dashboard_scan(provider_name=provider_name, mode="outliers", universe_path=outlier_universe, analysis_date=as_of),
+            "scan": run_dashboard_scan(
+                provider_name=provider_name,
+                mode="outliers",
+                universe_path=outlier_universe,
+                analysis_date=as_of,
+                scanner_override=shared_scanner,
+                provider_override=shared_provider,
+            ),
             "universe": str(outlier_universe),
         },
         {
             "lane": "Velocity",
             "source_group": "Velocity",
-            "scan": run_dashboard_scan(provider_name=provider_name, mode="velocity", universe_path=velocity_universe, analysis_date=as_of),
+            "scan": run_dashboard_scan(
+                provider_name=provider_name,
+                mode="velocity",
+                universe_path=velocity_universe,
+                analysis_date=as_of,
+                scanner_override=shared_scanner,
+                provider_override=shared_provider,
+            ),
             "universe": str(velocity_universe),
         },
     ]
@@ -81,6 +131,8 @@ def run_daily_decision(
                     data_dir=data_dir,
                     refresh_cache=refresh_cache,
                     mode="outliers",
+                    scanner_override=shared_scanner,
+                    provider_override=shared_provider,
                 ),
                 "universe": str(broad_universe),
             }
@@ -94,6 +146,8 @@ def run_daily_decision(
                 data_dir=data_dir,
                 top_n=top_n,
                 refresh_cache=refresh_cache,
+                scanner_override=shared_scanner,
+                provider_override=shared_provider,
             )
             movers_payload = movers_result.payload
             scans.append(
@@ -113,9 +167,6 @@ def run_daily_decision(
                     "universe": f"{broad_universe} movers",
                 }
             )
-
-    tracked_path = tracked or DEFAULT_TRACKED_TICKERS_PATH
-    tracked_tickers = list_tracked_tickers(tracked_path)
     if tracked_tickers:
         scans.append(
             {
@@ -129,12 +180,12 @@ def run_daily_decision(
                     data_dir=data_dir,
                     refresh_cache=refresh_cache,
                     mode="outliers",
+                    scanner_override=shared_scanner,
+                    provider_override=shared_provider,
                 ),
                 "universe": str(tracked_path),
             }
         )
-
-    portfolio_tickers = [str(row.get("ticker")).upper() for row in portfolio_rows if row.get("ticker")]
     if portfolio_tickers:
         scans.append(
             {
@@ -148,6 +199,8 @@ def run_daily_decision(
                     data_dir=data_dir,
                     refresh_cache=refresh_cache,
                     mode="outliers",
+                    scanner_override=shared_scanner,
+                    provider_override=shared_provider,
                 ),
                 "universe": "portfolio positions",
             }
@@ -258,6 +311,8 @@ def run_daily_decision(
         "scan_failures": unique_scan_failures,
         "tracked_tickers_count": len(tracked_tickers),
         "portfolio_tickers_count": len(portfolio_tickers),
+        "unique_candidate_tickers_requested": len(unique_requested_tickers),
+        "unique_market_data_tickers_fetched": len([ticker for ticker in getattr(shared_scanner, "_cache", {}).keys() if ticker not in {"SPY", "QQQ"}]),
         "last_broad_scan_time": next((item["generated_at"] for item in scan_summaries if item["source_group"] == "Broad"), "not run"),
         "provider": provider_name,
         "cache_age_ttl_minutes": cache_stats.get("ttl_minutes", "unavailable"),
@@ -481,18 +536,24 @@ def _run_custom_scan(
     data_dir: Path | None,
     refresh_cache: bool,
     mode: str,
+    scanner_override: DeterministicScanner | None = None,
+    provider_override: MarketDataProvider | None = None,
 ) -> SimpleNamespace:
-    args = SimpleNamespace(provider=provider_name, data_dir=data_dir, history_period=history_period)
-    provider = build_provider(args=args, analysis_date=analysis_date)
-    provider = ResilientMarketDataProvider(provider, provider_name=provider_name, history_period=history_period) if provider_name == "real" else provider
-    provider = FileCacheMarketDataProvider(
-        provider,
-        provider_name=provider_name,
-        history_period=history_period,
-        cache_dir=DEFAULT_MARKET_CACHE_DIR,
-        refresh_cache=refresh_cache,
-    )
-    scanner = DeterministicScanner(provider=provider, analysis_date=analysis_date)
+    if scanner_override is not None:
+        scanner = scanner_override
+        provider = provider_override or scanner.provider
+    else:
+        args = SimpleNamespace(provider=provider_name, data_dir=data_dir, history_period=history_period)
+        provider = provider_override or build_provider(args=args, analysis_date=analysis_date)
+        provider = ResilientMarketDataProvider(provider, provider_name=provider_name, history_period=history_period) if provider_name == "real" and not isinstance(provider, ResilientMarketDataProvider) else provider
+        provider = FileCacheMarketDataProvider(
+            provider,
+            provider_name=provider_name,
+            history_period=history_period,
+            cache_dir=DEFAULT_MARKET_CACHE_DIR,
+            refresh_cache=refresh_cache,
+        )
+        scanner = DeterministicScanner(provider=provider, analysis_date=analysis_date)
     diagnostics = scanner.scan_with_diagnostics(tickers, mode=mode, include_failures_in_results=False)
     return SimpleNamespace(
         generated_at=datetime.utcnow().isoformat() + "Z",
@@ -517,6 +578,43 @@ def _overall_provider_health(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if match:
             return match
     return rows[0]
+
+
+def _build_shared_scan_stack(
+    *,
+    provider_name: str,
+    analysis_date: date,
+    history_period: str,
+    data_dir: Path | None,
+    refresh_cache: bool,
+) -> tuple[MarketDataProvider, DeterministicScanner]:
+    args = SimpleNamespace(provider=provider_name, data_dir=data_dir, history_period=history_period)
+    provider: MarketDataProvider = build_provider(args=args, analysis_date=analysis_date)
+    if provider_name == "real" and not isinstance(provider, ResilientMarketDataProvider):
+        provider = ResilientMarketDataProvider(provider, provider_name=provider_name, history_period=history_period)
+    catalyst_repository = load_catalyst_repository(None)
+    if catalyst_repository.items_by_ticker:
+        provider = CatalystOverlayProvider(provider, catalyst_repository)
+    alternative_repository = load_alternative_data_repository(DEFAULT_ALTERNATIVE_DATA_PATH)
+    if alternative_repository.items_by_ticker:
+        provider = AlternativeDataOverlayProvider(provider, alternative_repository)
+    provider = FileCacheMarketDataProvider(
+        provider,
+        provider_name=provider_name,
+        history_period=history_period,
+        cache_dir=DEFAULT_MARKET_CACHE_DIR,
+        refresh_cache=refresh_cache,
+    )
+    return provider, DeterministicScanner(provider=provider, analysis_date=analysis_date)
+
+
+def _unique_tickers(tickers: Any) -> list[str]:
+    output: list[str] = []
+    for ticker in tickers:
+        clean = str(ticker or "").strip().upper()
+        if clean and clean not in output:
+            output.append(clean)
+    return output
 
 
 def _dedupe_scan_failures(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

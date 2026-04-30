@@ -26,6 +26,18 @@ RATE_LIMIT_PATTERNS = (
 )
 UNAUTHORIZED_PATTERNS = ("unauthorized", "forbidden", "401", "403", "invalid api key", "apikey invalid")
 TIMEOUT_PATTERNS = ("timed out", "timeout", "temporary failure", "name or service not known", "connection reset", "connection aborted")
+NO_DATA_PATTERNS = (
+    "no history returned",
+    "no data found",
+    "no candle data",
+    "no time series",
+    "no aggregate data",
+    "returned no historical prices",
+    "returned no daily series",
+    "returned no ohlcv",
+)
+DELISTED_PATTERNS = ("possibly delisted", "delisted", "not found", "invalid symbol", "unknown symbol")
+HEALTHY_STATUSES = {"healthy", "degraded", "rate_limited", "unauthorized", "unavailable"}
 
 
 class ProviderStopError(RuntimeError):
@@ -33,6 +45,7 @@ class ProviderStopError(RuntimeError):
         super().__init__(message)
         self.status = status
         self.provider = provider
+        self.category = status
 
 
 @dataclass
@@ -43,6 +56,11 @@ class ProviderHealthState:
     succeeded: int = 0
     failed: int = 0
     consecutive_failures: int = 0
+    ticker_failures_count: int = 0
+    provider_failures_count: int = 0
+    consecutive_provider_failures: int = 0
+    rate_limit_failures: int = 0
+    unauthorized_failures: int = 0
     rate_limit_detected: bool = False
     stop_scan: bool = False
     stop_reason: str = ""
@@ -50,27 +68,50 @@ class ProviderHealthState:
     fallback_providers_configured: list[str] = field(default_factory=list)
     fallback_providers_used: list[str] = field(default_factory=list)
     failure_samples: list[dict[str, str]] = field(default_factory=list)
+    failure_category_counts: dict[str, int] = field(default_factory=dict)
 
     def record_success(self) -> None:
         self.attempted += 1
         self.succeeded += 1
         self.consecutive_failures = 0
+        self.consecutive_provider_failures = 0
         if self.status not in {"rate_limited", "unauthorized", "unavailable"}:
             self.status = "healthy"
             self.message = "Provider responding normally."
 
-    def record_failure(self, *, ticker: str, provider: str, status: str, reason: str, stop_scan: bool) -> None:
+    def record_failure(
+        self,
+        *,
+        ticker: str,
+        provider: str,
+        status: str,
+        reason: str,
+        stop_scan: bool,
+        scope: str,
+        category: str,
+    ) -> None:
         self.attempted += 1
         self.failed += 1
         self.consecutive_failures += 1
-        self.status = status
-        self.message = reason
-        if status == "rate_limited":
+        self.failure_category_counts[category] = int(self.failure_category_counts.get(category, 0)) + 1
+        if scope == "provider":
+            self.provider_failures_count += 1
+            self.consecutive_provider_failures += 1
+        else:
+            self.ticker_failures_count += 1
+            self.consecutive_provider_failures = 0
+        if category == "rate_limited":
             self.rate_limit_detected = True
+            self.rate_limit_failures += 1
+        if category == "unauthorized":
+            self.unauthorized_failures += 1
+        if scope == "provider" or status in {"rate_limited", "unauthorized", "unavailable"}:
+            self.status = status
+            self.message = reason
         if stop_scan:
             self.stop_scan = True
             self.stop_reason = reason
-        sample = {"ticker": ticker, "provider": provider, "status": status, "reason": reason}
+        sample = {"ticker": ticker, "provider": provider, "status": status, "reason": reason, "category": category}
         if sample not in self.failure_samples:
             self.failure_samples.append(sample)
         self.failure_samples = self.failure_samples[:10]
@@ -83,13 +124,20 @@ class ProviderHealthState:
             "succeeded": self.succeeded,
             "failed": self.failed,
             "consecutive_failures": self.consecutive_failures,
+            "ticker_failures_count": self.ticker_failures_count,
+            "provider_failures_count": self.provider_failures_count,
+            "consecutive_provider_failures": self.consecutive_provider_failures,
             "rate_limit_detected": self.rate_limit_detected,
+            "rate_limit_failures": self.rate_limit_failures,
+            "unauthorized_failures": self.unauthorized_failures,
             "stop_scan": self.stop_scan,
             "stop_reason": self.stop_reason,
+            "stop_scan_reason": self.stop_reason,
             "message": self.message,
             "fallback_providers_configured": self.fallback_providers_configured,
             "fallback_providers_used": self.fallback_providers_used,
             "failure_samples": self.failure_samples,
+            "failure_category_counts": self.failure_category_counts,
         }
 
 
@@ -99,39 +147,63 @@ def classify_provider_error(exc: Exception) -> dict[str, Any]:
         return {
             "status": "rate_limited",
             "reason": "Provider rate-limited or crumb invalid.",
-            "stop_scan": True,
+            "stop_scan": False,
+            "scope": "provider",
+            "category": "rate_limited",
         }
     if any(pattern in text for pattern in UNAUTHORIZED_PATTERNS):
         return {
             "status": "unauthorized",
             "reason": "Provider rejected the request as unauthorized.",
-            "stop_scan": True,
+            "stop_scan": False,
+            "scope": "provider",
+            "category": "unauthorized",
         }
     if any(pattern in text for pattern in TIMEOUT_PATTERNS):
         return {
             "status": "degraded",
             "reason": "Provider timed out or network resolution failed.",
             "stop_scan": False,
+            "scope": "provider",
+            "category": "timeout",
+        }
+    if any(pattern in text for pattern in DELISTED_PATTERNS):
+        return {
+            "status": "healthy",
+            "reason": "Ticker appears delisted, invalid, or unavailable from the provider.",
+            "stop_scan": False,
+            "scope": "ticker",
+            "category": "delisted_or_invalid",
+        }
+    if any(pattern in text for pattern in NO_DATA_PATTERNS):
+        return {
+            "status": "healthy",
+            "reason": "Provider returned no usable market data for this ticker.",
+            "stop_scan": False,
+            "scope": "ticker",
+            "category": "no_data",
         }
     return {
         "status": "degraded",
         "reason": redact_secrets(exc),
         "stop_scan": False,
+        "scope": "provider",
+        "category": "provider_error",
     }
 
 
 def configured_fallback_provider_names() -> list[str]:
     configured: list[str] = []
-    if os.getenv("FINNHUB_API_KEY", "").strip():
-        configured.append("finnhub")
-    if os.getenv("ALPHA_VANTAGE_API_KEY", "").strip():
-        configured.append("alpha_vantage")
-    if os.getenv("TWELVE_DATA_API_KEY", "").strip():
-        configured.append("twelve_data")
     if os.getenv("POLYGON_API_KEY", "").strip():
         configured.append("polygon")
+    if os.getenv("FINNHUB_API_KEY", "").strip():
+        configured.append("finnhub")
     if os.getenv("FINANCIAL_MODELING_PREP_API_KEY", "").strip():
         configured.append("fmp")
+    if os.getenv("TWELVE_DATA_API_KEY", "").strip():
+        configured.append("twelve_data")
+    if os.getenv("ALPHA_VANTAGE_API_KEY", "").strip():
+        configured.append("alpha_vantage")
     return configured
 
 
@@ -142,10 +214,14 @@ class ResilientMarketDataProvider:
         *,
         provider_name: str,
         history_period: str,
+        max_provider_failures: int = 5,
+        max_rate_limit_failures: int = 3,
     ) -> None:
         self.primary = primary
         self.provider_name = provider_name
         self.history_period = history_period
+        self.max_provider_failures = max_provider_failures
+        self.max_rate_limit_failures = max_rate_limit_failures
         self.health = ProviderHealthState(provider=provider_name)
         self.fallbacks = _build_fallback_providers(history_period=history_period)
         self.health.fallback_providers_configured = [name for name, _provider in self.fallbacks]
@@ -156,43 +232,84 @@ class ResilientMarketDataProvider:
             raise ProviderStopError(self.health.stop_reason or "Provider scan halted.", status=self.health.status, provider=self.provider_name)
         providers: list[tuple[str, MarketDataProvider]] = [(self.provider_name, self.primary), *self.fallbacks]
         errors: list[str] = []
+        primary_failure_reason = ""
         for index, (name, provider) in enumerate(providers):
             try:
                 security = provider.get_security_data(display)
+                if index > 0 and primary_failure_reason:
+                    _annotate_security_with_fallback(
+                        security,
+                        primary_provider=self.provider_name,
+                        primary_failure_reason=primary_failure_reason,
+                        fallback_provider=name,
+                    )
                 self.health.record_success()
                 if index > 0 and name not in self.health.fallback_providers_used:
                     self.health.fallback_providers_used.append(name)
                 return security
             except Exception as exc:
                 classification = classify_provider_error(exc)
-                errors.append(f"{name}: {classification['reason']}")
+                detail_reason = redact_secrets(exc)
+                errors.append(f"{name}: {detail_reason or classification['reason']}")
+                if index == 0:
+                    primary_failure_reason = detail_reason or str(classification["reason"])
                 self.health.record_failure(
                     ticker=display,
                     provider=name,
                     status=str(classification["status"]),
-                    reason=str(classification["reason"]),
+                    reason=str(detail_reason or classification["reason"]),
                     stop_scan=bool(classification["stop_scan"]),
+                    scope=str(classification["scope"]),
+                    category=str(classification["category"]),
                 )
+                self._update_stop_state()
+                if str(classification["scope"]) == "ticker":
+                    raise _build_ticker_failure(display, detail_reason or str(classification["reason"]), str(classification["category"])) from exc
                 if name != self.provider_name:
                     continue
                 if self.health.stop_scan and not self.fallbacks:
-                    raise ProviderStopError(self.health.stop_reason or classification["reason"], status=self.health.status, provider=name) from exc
-                if classification["status"] in {"rate_limited", "unauthorized"} and self.fallbacks:
+                    raise ProviderStopError(self.health.stop_reason or str(classification["reason"]), status=self.health.status, provider=name) from exc
+                if self.fallbacks:
                     continue
-                if classification["status"] == "degraded" and self.health.consecutive_failures >= 5:
-                    self.health.stop_scan = True
-                    self.health.stop_reason = f"Provider degraded after {self.health.failed} failed requests."
-                    if not self.fallbacks:
-                        raise ProviderStopError(self.health.stop_reason, status="unavailable", provider=name) from exc
+                if self.health.stop_scan:
+                    raise ProviderStopError(self.health.stop_reason, status=self.health.status, provider=name) from exc
         if self.health.stop_scan:
             raise ProviderStopError(self.health.stop_reason or "; ".join(errors), status=self.health.status, provider=self.provider_name)
-        raise ProviderFetchError("; ".join(errors) or f"No provider could load {display}.")
+        failure = ProviderFetchError("; ".join(errors) or f"No provider could load {display}.")
+        failure.category = "provider_error"
+        failure.status = "degraded"
+        raise failure
+
+    def prefetch_many(self, tickers: list[str], *, batch_size: int = 25) -> None:
+        prefetch = getattr(self.primary, "prefetch_many", None)
+        if not callable(prefetch):
+            return
+        try:
+            prefetch(tickers, batch_size=batch_size)
+        except Exception:
+            return
 
     def health_report(self) -> dict[str, Any]:
         return self.health.to_dict()
 
     def should_stop_scan(self) -> bool:
         return self.health.stop_scan
+
+    def _update_stop_state(self) -> None:
+        if self.health.rate_limit_failures >= self.max_rate_limit_failures:
+            self.health.status = "rate_limited"
+            self.health.stop_scan = True
+            self.health.stop_reason = f"Provider rate-limited after {self.health.rate_limit_failures} provider failures."
+            return
+        if self.health.unauthorized_failures >= 1:
+            self.health.status = "unauthorized"
+            self.health.stop_scan = True
+            self.health.stop_reason = "Provider rejected authentication or authorization."
+            return
+        if self.health.consecutive_provider_failures >= self.max_provider_failures:
+            self.health.status = "degraded"
+            self.health.stop_scan = True
+            self.health.stop_reason = f"Provider degraded after {self.health.consecutive_provider_failures} consecutive provider failures."
 
 
 class FinnhubMarketDataProvider:
@@ -486,6 +603,82 @@ def build_market_health_report(provider_name: str, *, history_period: str = "6mo
         return report
 
 
+def build_provider_check_report(
+    ticker: str,
+    *,
+    provider_name: str,
+    history_period: str = "6mo",
+    include_fallbacks: bool = False,
+) -> dict[str, Any]:
+    if provider_name != "real":
+        raise ValueError("provider-check currently supports --provider real only.")
+    from .providers import YFinanceMarketDataProvider
+
+    primary = YFinanceMarketDataProvider(history_period=history_period)
+    report: dict[str, Any] = {
+        "ticker": display_ticker(ticker),
+        "provider": provider_name,
+        "primary_provider": "yfinance",
+        "fallbacks_requested": include_fallbacks,
+        "fallback_providers_configured": configured_fallback_provider_names(),
+        "checks": [],
+    }
+    security: SecurityData | None = None
+    primary_failed_reason = ""
+    try:
+        security = primary.get_security_data(ticker)
+        report["checks"].append(_provider_check_row("yfinance", True, security=security))
+    except Exception as exc:
+        primary_failed_reason = redact_secrets(exc)
+        report["checks"].append(_provider_check_row("yfinance", False, reason=primary_failed_reason))
+    if security is None and include_fallbacks:
+        for name, provider in _build_fallback_providers(history_period=history_period):
+            try:
+                security = provider.get_security_data(ticker)
+                _annotate_security_with_fallback(
+                    security,
+                    primary_provider="yfinance",
+                    primary_failure_reason=primary_failed_reason or "Primary provider failed.",
+                    fallback_provider=name,
+                )
+                report["checks"].append(_provider_check_row(name, True, security=security))
+                break
+            except Exception as exc:
+                report["checks"].append(_provider_check_row(name, False, reason=redact_secrets(exc)))
+    report["final_selected_source"] = security.provider_name if security is not None else "unavailable"
+    report["success"] = security is not None
+    report["latest_close"] = security.latest_available_close if security is not None else None
+    report["quote_price"] = security.quote_price_if_available if security is not None else None
+    report["bars_count"] = len(security.bars) if security is not None else 0
+    report["volume_available"] = bool(security and security.bars and security.bars[-1].volume is not None)
+    report["provider_health"] = build_market_health_report("real", history_period=history_period, sample_ticker=ticker)
+    if security is not None and getattr(security, "fallback_used", False):
+        report["fallback_used"] = True
+        report["primary_provider_failed_reason"] = getattr(security, "primary_provider_failed_reason", "")
+    else:
+        report["fallback_used"] = False
+        report["primary_provider_failed_reason"] = primary_failed_reason
+    return report
+
+
+def _provider_check_row(
+    provider: str,
+    success: bool,
+    *,
+    security: SecurityData | None = None,
+    reason: str = "",
+) -> dict[str, Any]:
+    return {
+        "provider": provider,
+        "success": success,
+        "reason": reason,
+        "latest_close": security.latest_available_close if security else None,
+        "quote_price": security.quote_price_if_available if security else None,
+        "bars_count": len(security.bars) if security else 0,
+        "volume_available": bool(security and security.bars and security.bars[-1].volume is not None),
+    }
+
+
 def _recommended_action(report: dict[str, Any]) -> str:
     configured = report.get("fallback_providers_configured") or []
     status = str(report.get("status") or "unavailable")
@@ -499,17 +692,40 @@ def _recommended_action(report: dict[str, Any]) -> str:
 def _build_fallback_providers(*, history_period: str) -> list[tuple[str, MarketDataProvider]]:
     fallbacks: list[tuple[str, MarketDataProvider]] = []
     for name, factory in (
-        ("finnhub", FinnhubMarketDataProvider),
-        ("alpha_vantage", AlphaVantageMarketDataProvider),
-        ("twelve_data", TwelveDataMarketDataProvider),
         ("polygon", PolygonMarketDataProvider),
+        ("finnhub", FinnhubMarketDataProvider),
         ("fmp", FMPMarketDataProvider),
+        ("twelve_data", TwelveDataMarketDataProvider),
+        ("alpha_vantage", AlphaVantageMarketDataProvider),
     ):
         try:
             fallbacks.append((name, factory(history_period=history_period)))
         except ProviderConfigurationError:
             continue
     return fallbacks
+
+
+def _build_ticker_failure(ticker: str, reason: str, category: str) -> ProviderFetchError:
+    error = ProviderFetchError(f"{ticker}: {reason}")
+    error.category = category
+    error.status = category
+    return error
+
+
+def _annotate_security_with_fallback(
+    security: SecurityData,
+    *,
+    primary_provider: str,
+    primary_failure_reason: str,
+    fallback_provider: str,
+) -> None:
+    fallback_note = f"Fallback provider {fallback_provider} used after {primary_provider} failed: {primary_failure_reason}"
+    if fallback_note not in security.data_notes:
+        security.data_notes.append(fallback_note)
+    security.fallback_used = True
+    security.primary_provider_failed_reason = primary_failure_reason
+    security.primary_provider_name = primary_provider
+    security.selected_source_provider = fallback_provider
 
 
 def _json_get(url: str, params: dict[str, Any]) -> dict[str, Any] | list[Any]:

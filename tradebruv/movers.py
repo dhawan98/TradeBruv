@@ -43,24 +43,38 @@ def run_movers_scan(
     output_dir: Path = DEFAULT_MOVERS_OUTPUT_DIR,
     refresh_cache: bool = False,
     progress: Callable[[str], None] | None = None,
+    continue_on_ticker_failure: bool = True,
+    batch_size: int = 25,
+    scanner_override: DeterministicScanner | None = None,
+    provider_override: Any | None = None,
 ) -> MoversResult:
-    args = SimpleNamespace(provider=provider_name, data_dir=data_dir, history_period=history_period)
-    provider = build_provider(args=args, analysis_date=analysis_date)
-    provider = ResilientMarketDataProvider(provider, provider_name=provider_name, history_period=history_period) if provider_name == "real" else provider
-    provider = FileCacheMarketDataProvider(
-        provider,
-        provider_name=provider_name,
-        history_period=history_period,
-        cache_dir=DEFAULT_MARKET_CACHE_DIR,
-        refresh_cache=refresh_cache,
-    )
-    scanner = DeterministicScanner(provider=provider, analysis_date=analysis_date)
+    if scanner_override is not None:
+        scanner = scanner_override
+        provider = provider_override or scanner.provider
+    else:
+        args = SimpleNamespace(provider=provider_name, data_dir=data_dir, history_period=history_period)
+        provider = provider_override or build_provider(args=args, analysis_date=analysis_date)
+        provider = ResilientMarketDataProvider(provider, provider_name=provider_name, history_period=history_period) if provider_name == "real" and not isinstance(provider, ResilientMarketDataProvider) else provider
+        provider = FileCacheMarketDataProvider(
+            provider,
+            provider_name=provider_name,
+            history_period=history_period,
+            cache_dir=DEFAULT_MARKET_CACHE_DIR,
+            refresh_cache=refresh_cache,
+        )
+        scanner = DeterministicScanner(provider=provider, analysis_date=analysis_date)
     results: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     tickers = _normalize_tickers(universe)
+    prefetch = getattr(provider, "prefetch_many", None)
+    if callable(prefetch):
+        try:
+            prefetch(tickers, batch_size=batch_size)
+        except Exception:
+            pass
     for index, ticker in enumerate(tickers, start=1):
         try:
-            security = provider.get_security_data(ticker)
+            security = scanner._get_data(ticker)
             row = scanner._scan_security(security).to_dict()
             mover = _build_mover_row(row, security=security, min_price=min_price, min_dollar_volume=min_dollar_volume, min_average_volume=min_average_volume, include_speculative=include_speculative)
             if mover is not None:
@@ -68,7 +82,9 @@ def run_movers_scan(
             if progress:
                 progress(f"Movers {index}/{len(tickers)}: {ticker}")
         except Exception as exc:
-            failures.append({"ticker": ticker, "reason": str(exc), "category": getattr(exc, "status", "fetch_error")})
+            failures.append({"ticker": ticker, "reason": str(exc), "category": getattr(exc, "category", getattr(exc, "status", "fetch_error"))})
+            if not continue_on_ticker_failure and not bool(getattr(provider, "should_stop_scan", lambda: False)()):
+                break
             if bool(getattr(provider, "should_stop_scan", lambda: False)()):
                 failures.extend(
                     {"ticker": remaining, "reason": getattr(provider, "health_report", lambda: {})().get("stop_reason") or "Provider stopped the scan.", "category": getattr(provider, "health_report", lambda: {})().get("status", "unavailable")}
@@ -98,6 +114,7 @@ def run_movers_scan(
         "provider": provider_name,
         "analysis_date": analysis_date.isoformat(),
         "universe_size": len(universe),
+        "skipped_tickers": max(len(tickers) - (len(results) + len(failures)), 0),
         "tickers_attempted": len(results) + len(failures),
         "tickers_successfully_scanned": len(results),
         "scan_failures": failures,
@@ -108,6 +125,7 @@ def run_movers_scan(
         "top_losers": _top(final_rows, key="percent_change", reverse=False, limit=top_n, predicate=lambda row: float(row.get("percent_change") or 0) < 0),
         "unusual_volume": _top(final_rows, key="relative_volume", reverse=True, limit=top_n, predicate=lambda row: float(row.get("relative_volume") or 0) >= 1.5),
         "relative_volume_leaders": _top(final_rows, key="relative_volume", reverse=True, limit=top_n),
+        "high_relative_volume": _top(final_rows, key="relative_volume", reverse=True, limit=top_n, predicate=lambda row: float(row.get("relative_volume") or 0) >= 2.0),
         "breakout_volume": _top(final_rows, key="relative_volume", reverse=True, limit=top_n, predicate=lambda row: str(row.get("signal")) == "Breakout with Volume"),
         "tracked_signals": [],
     }
@@ -237,10 +255,14 @@ def _build_movers_markdown(payload: dict[str, Any]) -> str:
         "",
         f"- Provider: {payload.get('provider')}",
         f"- Coverage: {payload.get('tickers_successfully_scanned')}/{payload.get('tickers_attempted')} scanned",
+        f"- Failed tickers: {len(payload.get('scan_failures', []))}",
+        f"- Skipped tickers: {payload.get('skipped_tickers', 0)}",
         f"- Provider health: {payload.get('provider_health', {}).get('status', 'unknown')}",
         "",
-        "## Top Gainers",
     ]
+    if payload.get("provider_health", {}).get("stop_scan"):
+        lines.extend(["## Scan Health", "", f"- Stopped after {payload.get('tickers_attempted')} symbols because {payload.get('provider_health', {}).get('stop_reason', 'the provider halted the scan.')}", ""])
+    lines.append("## Top Gainers")
     for section, title in (
         ("top_gainers", "Top Gainers"),
         ("top_losers", "Top Losers"),

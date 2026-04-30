@@ -232,6 +232,22 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, indent=2))
         return 0
 
+    if args.command == "provider-check":
+        try:
+            from .market_reliability import build_provider_check_report
+
+            payload = build_provider_check_report(
+                args.ticker,
+                provider_name=args.provider,
+                history_period=args.history_period,
+                include_fallbacks=args.fallbacks,
+            )
+        except (ProviderConfigurationError, ValueError) as exc:
+            print(f"Provider-check error: {exc}")
+            return 2
+        print(json.dumps(payload, indent=2))
+        return 0
+
     if args.command == "movers":
         try:
             from .movers import run_movers_scan
@@ -248,6 +264,8 @@ def main(argv: list[str] | None = None) -> int:
                 include_speculative=args.include_speculative,
                 output_dir=args.output_dir,
                 refresh_cache=args.refresh_cache,
+                continue_on_ticker_failure=args.continue_on_ticker_failure,
+                batch_size=args.batch_size,
                 progress=print,
             )
         except (ProviderConfigurationError, FileNotFoundError, ValueError) as exc:
@@ -664,6 +682,12 @@ def build_parser() -> argparse.ArgumentParser:
     market_health.add_argument("--history-period", default="6mo")
     market_health.add_argument("--ticker", default="SPY")
 
+    provider_check = subparsers.add_parser("provider-check", help="Check one ticker across the real provider and configured fallbacks.")
+    provider_check.add_argument("--ticker", required=True)
+    provider_check.add_argument("--provider", choices=("real",), default="real")
+    provider_check.add_argument("--history-period", default="6mo")
+    provider_check.add_argument("--fallbacks", action="store_true")
+
     movers = subparsers.add_parser("movers", help="Scan for top gainers, losers, and unusual-volume setups.")
     movers.add_argument("--universe", type=Path, required=True)
     movers.add_argument("--provider", choices=("sample", "local", "real"), default="real")
@@ -673,6 +697,8 @@ def build_parser() -> argparse.ArgumentParser:
     movers.add_argument("--min-price", type=float, default=5.0)
     movers.add_argument("--min-dollar-volume", type=float, default=20_000_000.0)
     movers.add_argument("--include-speculative", action="store_true")
+    movers.add_argument("--continue-on-ticker-failure", action=argparse.BooleanOptionalAction, default=True)
+    movers.add_argument("--batch-size", type=int, default=25)
     movers.add_argument("--output-dir", type=Path, default=Path("outputs/movers"))
     movers.add_argument("--refresh-cache", action="store_true")
     movers.add_argument("--as-of-date", type=_parse_date)

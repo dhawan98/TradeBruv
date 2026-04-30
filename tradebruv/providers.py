@@ -315,6 +315,55 @@ class YFinanceMarketDataProvider:
         self._cache[ticker] = security
         return security
 
+    def prefetch_many(self, tickers: list[str], *, batch_size: int = 25) -> None:
+        unique = []
+        seen: set[str] = set()
+        for raw in tickers:
+            clean = display_ticker(raw).upper()
+            if clean and clean not in seen and clean not in self._cache:
+                seen.add(clean)
+                unique.append(clean)
+        if not unique:
+            return
+        for start in range(0, len(unique), max(1, batch_size)):
+            batch = unique[start : start + max(1, batch_size)]
+            symbols = [provider_ticker(ticker) for ticker in batch]
+            try:
+                history = self._yf.download(
+                    tickers=" ".join(symbols),
+                    period=self.history_period,
+                    interval="1d",
+                    auto_adjust=True,
+                    progress=False,
+                    group_by="ticker",
+                    threads=True,
+                )
+            except Exception:
+                continue
+            if history is None or getattr(history, "empty", True):
+                continue
+            for ticker, provider_symbol in zip(batch, symbols):
+                if ticker in self._cache:
+                    continue
+                bars = self._batch_history_to_bars(history, provider_symbol, single_symbol=len(symbols) == 1)
+                if not bars:
+                    continue
+                self._cache[ticker] = SecurityData(
+                    ticker=ticker,
+                    company_name=ticker,
+                    sector=None,
+                    industry=None,
+                    bars=bars,
+                    provider_name="real",
+                    source_notes=[f"Source: yfinance batch OHLCV download ({provider_symbol})."],
+                    data_notes=["Batch-fetched OHLCV snapshot reused for broad market scanning."],
+                    quote_price_if_available=bars[-1].close,
+                    quote_timestamp=datetime.utcnow().isoformat() + "Z",
+                    latest_available_close=bars[-1].close,
+                    last_market_date=bars[-1].date,
+                    is_adjusted_price=True,
+                )
+
     @staticmethod
     def _history_to_bars(history: Any) -> list[PriceBar]:
         bars: list[PriceBar] = []
@@ -334,6 +383,17 @@ class YFinanceMarketDataProvider:
         if not bars:
             raise ProviderFetchError("History payload contained no valid OHLCV rows.")
         return bars
+
+    @classmethod
+    def _batch_history_to_bars(cls, history: Any, provider_symbol: str, *, single_symbol: bool) -> list[PriceBar]:
+        try:
+            frame = history if single_symbol else history[provider_symbol]
+        except Exception:
+            return []
+        try:
+            return cls._history_to_bars(frame)
+        except Exception:
+            return []
 
     @staticmethod
     def _safe_info(instrument: Any) -> dict[str, Any]:
