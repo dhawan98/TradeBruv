@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -231,6 +232,114 @@ def test_market_cache_falls_back_to_cached_security(monkeypatch, tmp_path: Path)
     assert reader.cache_stats()["fallback_hits"] == 1
 
 
+def test_invalid_nan_cached_bars_are_ignored_and_refetched(tmp_path: Path) -> None:
+    calls: dict[str, int] = {}
+
+    class Provider:
+        def get_security_data(self, ticker: str) -> SecurityData:
+            calls[ticker] = calls.get(ticker, 0) + 1
+            return _security(ticker, list(range(100, 360)))
+
+    cache_dir = tmp_path / "cache"
+    reader = FileCacheMarketDataProvider(Provider(), provider_name="real", cache_dir=cache_dir, ttl_minutes=60)
+    cache_path = reader._cache_path("MMC")
+    bad_payload = {
+        "cached_at": datetime.utcnow().isoformat() + "Z",
+        "ticker": "MMC",
+        "provider": "real",
+        "history_period": "3y",
+        "interval": "1d",
+        "security": {
+            "ticker": "MMC",
+            "company_name": "MMC",
+            "sector": "Financials",
+            "industry": "Insurance",
+            "bars": [
+                {
+                    "date": (date(2026, 4, 1) + timedelta(days=index)).isoformat(),
+                    "open": math.nan,
+                    "high": math.nan,
+                    "low": math.nan,
+                    "close": math.nan,
+                    "volume": math.nan,
+                }
+                for index in range(5)
+            ],
+            "provider_name": "real",
+            "source_notes": [],
+            "data_notes": [],
+            "quote_price_if_available": math.nan,
+            "quote_timestamp": None,
+            "latest_available_close": math.nan,
+            "last_market_date": None,
+            "is_adjusted_price": True,
+        },
+    }
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(bad_payload), encoding="utf-8")
+
+    security = reader.get_security_data("MMC")
+
+    assert calls["MMC"] == 1
+    assert len(security.bars) > 200
+    assert all(math.isfinite(bar.close) for bar in security.bars)
+
+
+def test_nan_cached_bars_do_not_surface_numerator_failures(monkeypatch, tmp_path: Path) -> None:
+    class Provider:
+        def get_security_data(self, ticker: str) -> SecurityData:
+            if ticker in {"SPY", "QQQ"}:
+                return _security(ticker, list(range(100, 360)))
+            return _security(ticker, [100.0 + index for index in range(260)])
+
+    cache_dir = tmp_path / "cache"
+    reader = FileCacheMarketDataProvider(Provider(), provider_name="sample", cache_dir=cache_dir, ttl_minutes=60)
+    cache_path = reader._cache_path("MMC")
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps({
+        "cached_at": datetime.utcnow().isoformat() + "Z",
+        "ticker": "MMC",
+        "provider": "sample",
+        "history_period": "3y",
+        "interval": "1d",
+        "security": {
+            "ticker": "MMC",
+            "company_name": "MMC",
+            "sector": "Financials",
+            "industry": "Insurance",
+            "bars": [{
+                "date": (date(2026, 4, 1) + timedelta(days=index)).isoformat(),
+                "open": math.nan,
+                "high": math.nan,
+                "low": math.nan,
+                "close": math.nan,
+                "volume": math.nan,
+            } for index in range(10)],
+            "provider_name": "sample",
+            "source_notes": [],
+            "data_notes": [],
+            "quote_price_if_available": math.nan,
+            "quote_timestamp": None,
+            "latest_available_close": math.nan,
+            "last_market_date": None,
+            "is_adjusted_price": False,
+        },
+    }), encoding="utf-8")
+
+    monkeypatch.setattr("tradebruv.movers.build_provider", lambda **_: Provider())
+    monkeypatch.setattr("tradebruv.movers.DEFAULT_MARKET_CACHE_DIR", cache_dir)
+
+    result = run_movers_scan(
+        universe=["MMC", "GOOD"],
+        provider_name="sample",
+        analysis_date=date(2026, 4, 29),
+        output_dir=tmp_path / "outputs" / "movers",
+    )
+
+    assert {row["ticker"] for row in result.payload["results"]} == {"MMC", "GOOD"}
+    assert all("numerator" not in str(row.get("reason", "")).lower() for row in result.payload["scan_failures"])
+
+
 def test_daily_decision_dedupes_failures_and_uses_movers_sections(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     config_dir = tmp_path / "config"
@@ -284,10 +393,31 @@ def test_daily_decision_dedupes_failures_and_uses_movers_sections(monkeypatch, t
         return SimpleNamespace(
             payload={
                 "generated_at": "2026-04-29T12:00:00Z",
-                "results": [],
+                "results": [{
+                    "ticker": "NVDA",
+                    "company_name": "NVIDIA",
+                    "company": "NVIDIA",
+                    "current_price": 210.0,
+                    "regular_investing_score": 88,
+                    "outlier_score": 88,
+                    "velocity_score": 35,
+                    "last_market_date": "2026-04-29",
+                    "relative_volume_20d": 2.4,
+                    "relative_volume": 2.4,
+                    "ema_stack": "Bullish Stack",
+                    "signal_summary": "Breakout with Volume",
+                    "signal": "Breakout with Volume",
+                    "price_change_1d_pct": 6.2,
+                    "percent_change": 6.2,
+                    "freshness": "2026-04-29",
+                    "dollar_volume": 50000000.0,
+                    "mover_type": "Top Gainers",
+                }],
                 "scan_failures": [{"ticker": "FAIL", "reason": "Too Many Requests", "category": "rate_limited"}],
                 "provider_health": {"provider": "real", "status": "rate_limited", "stop_scan": True, "stop_reason": "Provider rate-limited after 1 symbols"},
                 "cache": {"hits": 1, "misses": 1, "ttl_minutes": 60},
+                "tickers_attempted": 12,
+                "tickers_successfully_scanned": 11,
                 "top_gainers": [{
                     "ticker": "NVDA",
                     "company": "NVIDIA",
@@ -308,6 +438,17 @@ def test_daily_decision_dedupes_failures_and_uses_movers_sections(monkeypatch, t
                     "relative_volume": 2.4,
                     "dollar_volume": 50000000.0,
                     "mover_type": "Unusual Volume",
+                    "signal": "Breakout with Volume",
+                    "freshness": "2026-04-29",
+                }],
+                "breakout_volume": [{
+                    "ticker": "NVDA",
+                    "company": "NVIDIA",
+                    "price": 210.0,
+                    "percent_change": 6.2,
+                    "relative_volume": 2.4,
+                    "dollar_volume": 50000000.0,
+                    "mover_type": "Breakout with Volume",
                     "signal": "Breakout with Volume",
                     "freshness": "2026-04-29",
                 }],
@@ -376,9 +517,16 @@ def test_daily_decision_dedupes_failures_and_uses_movers_sections(monkeypatch, t
         "lanes": ["Outlier"],
     }]
     assert payload["data_coverage_status"]["tickers_failed"] == 1
+    assert payload["best_mover_setup"]["ticker"] == "NVDA"
     assert payload["top_gainers"][0]["ticker"] == "NVDA"
     assert payload["top_gainers"][0]["percent_change"] == 6.2
     assert payload["unusual_volume"][0]["relative_volume"] == 2.4
+    assert payload["breakout_volume"][0]["ticker"] == "NVDA"
+    assert "## Best Mover Setup" in (tmp_path / "outputs" / "daily" / "decision_today.md").read_text(encoding="utf-8")
+    assert "## Breakout with Volume" in (tmp_path / "outputs" / "daily" / "decision_today.md").read_text(encoding="utf-8")
+    review_text = (tmp_path / "outputs" / "daily" / "decision_quality_review.md").read_text(encoding="utf-8")
+    assert "Did movers scan complete?" in review_text
+    assert "What were the best mover setups?" in review_text
 
 
 def test_provider_check_uses_fallback_when_primary_fails(monkeypatch) -> None:

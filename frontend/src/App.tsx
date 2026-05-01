@@ -367,6 +367,7 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
                     gainers={latest.data?.top_gainers ?? []}
                     losers={latest.data?.top_losers ?? []}
                     unusualVolume={latest.data?.unusual_volume ?? []}
+                    breakoutVolume={latest.data?.breakout_volume ?? []}
                     onSelect={setSelectedTicker}
                   />
                 </>
@@ -637,18 +638,20 @@ function MarketLeadersPanel({
   gainers,
   losers,
   unusualVolume,
+  breakoutVolume,
   onSelect,
 }: {
   gainers: Record<string, unknown>[];
   losers: Record<string, unknown>[];
   unusualVolume: Record<string, unknown>[];
+  breakoutVolume: Record<string, unknown>[];
   onSelect: (ticker: string) => void;
 }) {
   const rows = [
     { label: 'Gainer', row: gainers[0] },
     { label: 'Loser', row: losers[0] },
     { label: 'Rel Vol', row: unusualVolume[0] },
-    { label: 'Breakout', row: gainers.find((item) => String(item.signal ?? '') === 'Breakout with Volume') ?? gainers[0] },
+    { label: 'Breakout', row: breakoutVolume[0] ?? gainers.find((item) => String(item.signal ?? '') === 'Breakout with Volume') ?? gainers[0] },
   ].filter((item) => item.row && item.row.ticker);
   if (!rows.length) return null;
   return (

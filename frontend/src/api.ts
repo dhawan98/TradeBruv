@@ -511,6 +511,8 @@ export type DecisionSnapshotPayload = ScanPayload & {
   top_gainers?: Record<string, unknown>[];
   top_losers?: Record<string, unknown>[];
   unusual_volume?: Record<string, unknown>[];
+  breakout_volume?: Record<string, unknown>[];
+  movers_scan_summary?: Record<string, unknown>;
   no_clean_candidate_reason?: string;
   data_coverage_status?: Record<string, unknown>;
   workspace?: WorkspacePayload;

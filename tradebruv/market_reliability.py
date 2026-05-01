@@ -35,6 +35,7 @@ NO_DATA_PATTERNS = (
     "returned no historical prices",
     "returned no daily series",
     "returned no ohlcv",
+    "no valid ohlcv rows",
 )
 DELISTED_PATTERNS = ("possibly delisted", "delisted", "not found", "invalid symbol", "unknown symbol")
 HEALTHY_STATUSES = {"healthy", "degraded", "rate_limited", "unauthorized", "unavailable"}

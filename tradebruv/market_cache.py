@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
@@ -107,10 +108,12 @@ class FileCacheMarketDataProvider:
         fresh = age <= timedelta(minutes=self.ttl_minutes)
         within_stale_window = max_age_hours is None or age <= timedelta(hours=max_age_hours)
         if fresh:
-            return _security_from_dict(cached["security"])
+            security = _security_from_dict(cached["security"])
+            return security if security.bars else None
         if allow_stale and within_stale_window:
             self.cache_stale_hits += 1
-            return _with_cache_note(_security_from_dict(cached["security"]), "cached stale")
+            security = _security_from_dict(cached["security"])
+            return _with_cache_note(security, "cached stale") if security.bars else None
         return None
 
     def load_cached_entry(self, ticker: str) -> dict[str, Any] | None:
@@ -225,15 +228,24 @@ def _security_to_dict(security: SecurityData) -> dict[str, Any]:
         "bars": [
             {
                 "date": bar.date.isoformat(),
-                "open": bar.open,
-                "high": bar.high,
-                "low": bar.low,
-                "close": bar.close,
-                "volume": bar.volume,
+                "open": _float_or_none(bar.open),
+                "high": _float_or_none(bar.high),
+                "low": _float_or_none(bar.low),
+                "close": _float_or_none(bar.close),
+                "volume": _float_or_none(bar.volume),
             }
             for bar in security.bars
+            if _valid_bar_payload(
+                {
+                    "open": bar.open,
+                    "high": bar.high,
+                    "low": bar.low,
+                    "close": bar.close,
+                    "volume": bar.volume,
+                }
+            )
         ],
-        "market_cap": security.market_cap,
+        "market_cap": _float_or_none(security.market_cap),
         "ipo_date": security.ipo_date.isoformat() if security.ipo_date else None,
         "fundamentals": asdict(security.fundamentals) if security.fundamentals else None,
         "catalyst": asdict(security.catalyst) if security.catalyst else None,
@@ -248,9 +260,9 @@ def _security_to_dict(security: SecurityData) -> dict[str, Any]:
         "provider_name": security.provider_name,
         "source_notes": security.source_notes,
         "data_notes": security.data_notes,
-        "quote_price_if_available": security.quote_price_if_available,
+        "quote_price_if_available": _float_or_none(security.quote_price_if_available),
         "quote_timestamp": security.quote_timestamp,
-        "latest_available_close": security.latest_available_close,
+        "latest_available_close": _float_or_none(security.latest_available_close),
         "last_market_date": security.last_market_date.isoformat() if security.last_market_date else None,
         "is_adjusted_price": security.is_adjusted_price,
     }
@@ -272,6 +284,7 @@ def _security_from_dict(payload: dict[str, Any]) -> SecurityData:
                 volume=float(bar["volume"]),
             )
             for bar in payload.get("bars", [])
+            if _valid_bar_payload(bar)
         ],
         market_cap=_float_or_none(payload.get("market_cap")),
         ipo_date=date.fromisoformat(payload["ipo_date"]) if payload.get("ipo_date") else None,
@@ -299,4 +312,18 @@ def _security_from_dict(payload: dict[str, Any]) -> SecurityData:
 def _float_or_none(value: Any) -> float | None:
     if value in (None, "", "unavailable"):
         return None
-    return float(value)
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _valid_bar_payload(bar: dict[str, Any]) -> bool:
+    fields = ("open", "high", "low", "close", "volume")
+    try:
+        return all(_float_or_none(bar.get(field)) is not None for field in fields)
+    except Exception:
+        return False

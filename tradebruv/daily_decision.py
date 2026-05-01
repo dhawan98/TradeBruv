@@ -369,6 +369,8 @@ def run_daily_decision(
         "top_gainers": _daily_mover_rows(movers_payload, merged_decisions, section="top_gainers", limit=10),
         "top_losers": _daily_mover_rows(movers_payload, merged_decisions, section="top_losers", limit=10),
         "unusual_volume": _daily_mover_rows(movers_payload, merged_decisions, section="unusual_volume", limit=10),
+        "breakout_volume": _daily_mover_rows(movers_payload, merged_decisions, section="breakout_volume", limit=10),
+        "movers_scan_summary": _movers_scan_summary(movers_payload),
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "decision_today.json"
@@ -400,6 +402,7 @@ def load_daily_decision(path: Path = DEFAULT_DAILY_DECISION_JSON_PATH) -> dict[s
             "overall_top_candidate": None,
             "best_tracked_setup": None,
             "best_broad_setup": None,
+            "best_mover_setup": None,
             "research_candidates": [],
             "watch_candidates": [],
             "avoid_candidates": [],
@@ -407,6 +410,7 @@ def load_daily_decision(path: Path = DEFAULT_DAILY_DECISION_JSON_PATH) -> dict[s
             "compact_board": [],
             "tracked_watchlist_table": [],
             "broad_scan_top_table": [],
+            "movers_table": [],
             "signal_table": [],
             "no_clean_candidate_reason": "No live daily decision has been built yet.",
             "data_coverage_status": {},
@@ -416,6 +420,11 @@ def load_daily_decision(path: Path = DEFAULT_DAILY_DECISION_JSON_PATH) -> dict[s
             "report_snapshot": False,
             "stale_data": False,
             "workspace": {},
+            "top_gainers": [],
+            "top_losers": [],
+            "unusual_volume": [],
+            "breakout_volume": [],
+            "movers_scan_summary": {},
         }
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -802,6 +811,8 @@ def _build_daily_decision_markdown(payload: dict[str, Any]) -> str:
     watch_candidates = payload.get("watch_candidates", [])
     avoid_candidates = payload.get("avoid_candidates", [])
     data_issues = payload.get("data_issues", [])
+    best_mover_setup = payload.get("best_mover_setup")
+    movers_summary = payload.get("movers_scan_summary") or {}
     lines = [
         "# TradeBruv Daily Pick",
         "",
@@ -810,6 +821,7 @@ def _build_daily_decision_markdown(payload: dict[str, Any]) -> str:
         f"- Provider: {payload.get('provider', 'unavailable')}",
         f"- Demo mode: {payload.get('demo_mode', False)}",
         f"- Scan health: {(payload.get('scan_health') or {}).get('status', 'healthy')}",
+        f"- Movers scan: {_movers_summary_line(movers_summary)}",
         "",
     ]
     if top_candidate:
@@ -863,6 +875,24 @@ def _build_daily_decision_markdown(payload: dict[str, Any]) -> str:
     else:
         for row in avoid_candidates[:5]:
             lines.append(f"- {row.get('ticker')}: {row.get('why_not') or row.get('reason')}")
+    lines.extend(["", "## Best Mover Setup"])
+    if best_mover_setup:
+        lines.append(
+            f"- {best_mover_setup.get('ticker')}: {best_mover_setup.get('actionability_label')} | {best_mover_setup.get('source_row', {}).get('signal_summary') or best_mover_setup.get('reason')}"
+        )
+        lines.append(
+            f"- Trigger: {best_mover_setup.get('action_trigger') or best_mover_setup.get('entry_zone') or 'Review setup details.'}"
+        )
+    else:
+        lines.append("- None.")
+    lines.extend(["", "## Top Gainers"])
+    _append_mover_list(lines, payload.get("top_gainers", []), limit=5)
+    lines.extend(["", "## Top Losers"])
+    _append_mover_list(lines, payload.get("top_losers", []), limit=5)
+    lines.extend(["", "## Unusual Volume"])
+    _append_mover_list(lines, payload.get("unusual_volume", []), limit=5)
+    lines.extend(["", "## Breakout with Volume"])
+    _append_mover_list(lines, payload.get("breakout_volume", []), limit=5)
     if data_issues:
         lines.extend(["", "## Data Issues"])
         for row in data_issues[:10]:
@@ -871,7 +901,7 @@ def _build_daily_decision_markdown(payload: dict[str, Any]) -> str:
     if failures:
         lines.extend(["", "## Scan Failures"])
         for row in failures[:10]:
-            lines.append(f"- {row.get('ticker')}: {row.get('reason')}")
+            lines.append(f"- {row.get('ticker')}: {_clean_failure_reason_for_display(row)}")
     return "\n".join(lines)
 
 
@@ -880,12 +910,30 @@ def _build_decision_quality_review(payload: dict[str, Any]) -> str:
     research_candidates = payload.get("research_candidates", [])
     watch_candidates = payload.get("watch_candidates", [])
     decisions = payload.get("decisions", [])
+    movers_summary = payload.get("movers_scan_summary") or {}
+    top_gainers = payload.get("top_gainers", [])
+    breakout_volume = payload.get("breakout_volume", [])
+    best_mover_setup = payload.get("best_mover_setup")
     excluded = [row for row in decisions if row.get("actionability_label") in {"Avoid / Do Not Chase", "Data Insufficient"}]
     tracked = {str(row.get("ticker")): row for row in decisions}
+    mover_rows = {
+        str(row.get("ticker"))
+        for row in [*top_gainers[:5], *breakout_volume[:5]]
+        if row.get("ticker")
+    }
     excluded_summary = ", ".join(
         f"{row.get('ticker')} ({row.get('actionability_label')})"
         for row in excluded[:10]
     ) or "None"
+    mover_promotion_summary = ", ".join(
+        f"{ticker} ({tracked.get(ticker, {}).get('actionability_label', 'not promoted')})"
+        for ticker in list(mover_rows)[:5]
+    ) or "None"
+    best_mover_summary = (
+        f"{best_mover_setup.get('ticker')} ({best_mover_setup.get('actionability_label')})"
+        if best_mover_setup
+        else "None"
+    )
     ticker_summary = "; ".join(
         f"{ticker}: {tracked.get(ticker, {}).get('actionability_label', 'missing')}"
         for ticker in ("NVDA", "PLTR", "MU")
@@ -902,6 +950,10 @@ def _build_decision_quality_review(payload: dict[str, Any]) -> str:
         f"- If not, why not? {payload.get('no_clean_candidate_reason') or 'A top candidate was available.'}",
         f"- What are the top 3 research candidates? {', '.join(str(row.get('ticker')) for row in research_candidates[:3]) or 'None'}",
         f"- What are the best watch names? {', '.join(str(row.get('ticker')) for row in watch_candidates[:5]) or 'None'}",
+        f"- Did movers scan complete? {_movers_summary_line(movers_summary)}",
+        f"- What were the best mover setups? {best_mover_summary}",
+        f"- Were top mover names promoted into daily decision? {mover_promotion_summary}",
+        f"- If not actionable, why not? {best_mover_setup.get('actionability_reason') if best_mover_setup else payload.get('no_clean_candidate_reason') or 'No mover setup qualified.'}",
         f"- Which names were excluded and why? {excluded_summary}",
         f"- Are NVDA/PLTR/MU classified clearly? {ticker_summary}",
         f"- Are 'Watch' names given triggers? {watch_trigger_summary}",
@@ -910,6 +962,60 @@ def _build_decision_quality_review(payload: dict[str, Any]) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+def _append_mover_list(lines: list[str], rows: list[dict[str, Any]], *, limit: int) -> None:
+    if not rows:
+        lines.append("- None.")
+        return
+    for row in rows[:limit]:
+        lines.append(
+            f"- {row.get('ticker')}: {row.get('percent_change')}% | RV {row.get('relative_volume')} | {row.get('signal')} | {row.get('actionability') or 'No decision'}"
+        )
+
+
+def _movers_scan_summary(movers_payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not movers_payload:
+        return {}
+    attempted = int(movers_payload.get("tickers_attempted") or 0)
+    scanned = int(movers_payload.get("tickers_successfully_scanned") or 0)
+    failed = len(movers_payload.get("scan_failures", []))
+    provider_health = movers_payload.get("provider_health") or {}
+    return {
+        "available": True,
+        "attempted": attempted,
+        "scanned": scanned,
+        "failed": failed,
+        "status": provider_health.get("status", "healthy"),
+        "stop_reason": provider_health.get("stop_reason") or provider_health.get("message") or "",
+        "completed": bool(attempted and (attempted >= scanned + failed) and not provider_health.get("stop_scan")),
+    }
+
+
+def _movers_summary_line(summary: dict[str, Any]) -> str:
+    if not summary:
+        return "Not run."
+    attempted = int(summary.get("attempted") or 0)
+    scanned = int(summary.get("scanned") or 0)
+    failed = int(summary.get("failed") or 0)
+    status = str(summary.get("status") or "unknown")
+    stop_reason = str(summary.get("stop_reason") or "").strip()
+    line = f"{scanned}/{attempted} scanned"
+    if failed:
+        line += f", {failed} failed"
+    line += f" ({status})"
+    if stop_reason and not (status == "healthy" and stop_reason == "Provider responding normally."):
+        line += f" - {stop_reason}"
+    return line
+
+
+def _clean_failure_reason_for_display(row: dict[str, Any]) -> str:
+    ticker = str(row.get("ticker") or "").strip().upper()
+    reason = str(row.get("reason") or "Provider failure.").strip()
+    prefix = f"{ticker}: "
+    if ticker and reason.upper().startswith(prefix):
+        return reason[len(prefix):]
+    return reason
 
 
 def _build_picker_view(decisions: list[dict[str, Any]], *, data_issues: list[dict[str, Any]]) -> dict[str, Any]:

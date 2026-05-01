@@ -370,18 +370,25 @@ class YFinanceMarketDataProvider:
         for index, row in history.iterrows():
             if any(column not in row for column in ("Open", "High", "Low", "Close", "Volume")):
                 continue
+            open_price = _coerce_float(row["Open"])
+            high_price = _coerce_float(row["High"])
+            low_price = _coerce_float(row["Low"])
+            close_price = _coerce_float(row["Close"])
+            volume = _coerce_float(row["Volume"])
+            if None in (open_price, high_price, low_price, close_price, volume):
+                continue
             bars.append(
                 PriceBar(
                     date=index.date() if hasattr(index, "date") else date.fromisoformat(str(index)[:10]),
-                    open=float(row["Open"]),
-                    high=float(row["High"]),
-                    low=float(row["Low"]),
-                    close=float(row["Close"]),
-                    volume=float(row["Volume"]),
+                    open=open_price,
+                    high=high_price,
+                    low=low_price,
+                    close=close_price,
+                    volume=volume,
                 )
             )
         if not bars:
-            raise ProviderFetchError("History payload contained no valid OHLCV rows.")
+            raise ProviderFetchError("No valid OHLCV rows were returned for this ticker.")
         return bars
 
     @classmethod
@@ -641,9 +648,12 @@ def _coerce_float(value: Any) -> float | None:
     if value in (None, "", "None"):
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(number):
+        return None
+    return number
 
 
 def _coerce_ipo_date(info: dict[str, Any], bars: list[PriceBar]) -> date | None:
