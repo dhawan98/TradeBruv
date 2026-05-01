@@ -97,7 +97,10 @@ class ProviderHealthState:
         self.failure_category_counts[category] = int(self.failure_category_counts.get(category, 0)) + 1
         if scope == "provider":
             self.provider_failures_count += 1
-            self.consecutive_provider_failures += 1
+            if category == "rate_limited" or (self.status in {"rate_limited", "unauthorized"} and provider != self.provider):
+                self.consecutive_provider_failures = 0
+            else:
+                self.consecutive_provider_failures += 1
         else:
             self.ticker_failures_count += 1
             self.consecutive_provider_failures = 0
@@ -143,6 +146,14 @@ class ProviderHealthState:
 
 
 def classify_provider_error(exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, json.JSONDecodeError):
+        return {
+            "status": "healthy",
+            "reason": "Provider or cache returned malformed market data for this ticker.",
+            "stop_scan": False,
+            "scope": "ticker",
+            "category": "malformed_response",
+        }
     text = redact_secrets(exc).lower()
     if any(pattern in text for pattern in RATE_LIMIT_PATTERNS):
         return {

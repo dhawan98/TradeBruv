@@ -112,7 +112,14 @@ class FileCacheMarketDataProvider:
         cache_path = self._cache_path(ticker.upper())
         if not cache_path.exists():
             return None
-        return json.loads(cache_path.read_text(encoding="utf-8"))
+        try:
+            return json.loads(cache_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            try:
+                cache_path.unlink()
+            except OSError:
+                pass
+            return None
 
     def is_cached_stale(self, ticker: str) -> bool:
         cached = self.load_cached_entry(ticker)

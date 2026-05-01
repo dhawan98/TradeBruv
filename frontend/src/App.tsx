@@ -114,6 +114,9 @@ type ScanState = {
   decisions?: UnifiedDecision[];
   data_issues?: UnifiedDecision[];
   validation_context?: ValidationContext;
+  scan_failures?: { ticker?: string; reason?: string; category?: string }[];
+  provider_health?: Record<string, unknown>;
+  scan_health?: Record<string, unknown>;
 };
 
 export function App() {
@@ -158,7 +161,7 @@ export function App() {
           onRetryHealth={health.retry}
         />
         <section className="workspace">
-          {page === 'Decision Cockpit' && <HomePage setPage={setPage} />}
+          {page === 'Decision Cockpit' && <HomePage setPage={setPage} latest={latest} />}
           {page === 'Stock Picker' && <StockPicker />}
           {page === 'Core Investing' && <CoreInvesting />}
           {page === 'Velocity Scanner' && <VelocityScanner />}
@@ -190,10 +193,11 @@ function TopBar({
 }) {
   const coverage = latest?.workspace?.coverage_status ?? latest?.data_coverage_status ?? {};
   const statusBar = latest?.workspace?.status_bar ?? {};
-  const coverageHealth = coverage.provider_health as Record<string, unknown> | undefined;
+  const dailyHealth = String((latest?.scan_health as Record<string, unknown> | undefined)?.status ?? 'healthy');
   const warnings = [
-    String(statusBar.provider_health ?? coverageHealth?.status ?? '') === 'rate_limited' ? 'Rate-limited' : '',
-    String(statusBar.provider_health ?? coverageHealth?.status ?? '') === 'degraded' ? 'Degraded' : '',
+    dailyHealth === 'rate_limited' ? 'Rate-limited' : '',
+    dailyHealth === 'degraded' ? 'Degraded' : '',
+    dailyHealth === 'unauthorized' ? 'Unauthorized' : '',
     latest?.report_snapshot ? 'Snapshot' : '',
     latest?.stale_data ? 'Stale' : '',
     healthError ? 'Backend' : '',
@@ -206,11 +210,11 @@ function TopBar({
       </div>
       <div className="topbar-stream">
         <span><label>Provider</label><strong>{String(statusBar.provider ?? latest?.provider ?? 'unavailable')}</strong></span>
-        <span><label>Last scan</label><strong>{compactDate(String(statusBar.last_scan ?? latest?.generated_at ?? 'unavailable'))}</strong></span>
-        <span><label>Coverage</label><strong>{String(statusBar.coverage_summary ?? `${coverage.tickers_successfully_scanned ?? 0}/${coverage.tickers_attempted ?? 0} scanned`)}</strong></span>
+        <span><label>Last daily scan</label><strong>{compactDate(String(latest?.generated_at ?? 'unavailable'))}</strong></span>
+        <span><label>Daily coverage</label><strong>{String(statusBar.coverage_summary ?? `${coverage.tickers_successfully_scanned ?? 0}/${coverage.tickers_attempted ?? 0} scanned`)}</strong></span>
         <span><label>Universe</label><strong>{String(statusBar.universe_label ?? coverage.universe_label ?? 'Active')}</strong></span>
         <span><label>Tracked</label><strong>{String(statusBar.tracked_count ?? coverage.tracked_tickers_count ?? 0)}</strong></span>
-        <span><label>Health</label><strong>{String(statusBar.provider_health ?? coverageHealth?.status ?? 'healthy')}</strong></span>
+        <span><label>Daily health</label><strong>{dailyHealth}</strong></span>
       </div>
       {warnings.length ? (
         <div className="topbar-warnings">
@@ -226,8 +230,13 @@ function TopBar({
 
 type CockpitView = 'Top' | 'Movers' | 'Tracked' | 'Broad' | 'Watch' | 'Avoid' | 'All';
 
-function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
-  const latest = useAsync(api.dailyDecisionLatest, []);
+function HomePage({
+  setPage,
+  latest,
+}: {
+  setPage: (page: PageKey) => void;
+  latest: { data: DecisionSnapshotPayload | null; error: Error | null; retry: () => void };
+}) {
   const tracked = useAsync(api.tracked, []);
   const [selectedTicker, setSelectedTicker] = useState('');
   const [timeframe, setTimeframe] = useState<'3M' | '6M' | '1Y' | '2Y'>('1Y');
@@ -389,7 +398,9 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
               <summary>Diagnostics / Raw Data</summary>
               <div className="cockpit-diagnostics-grid">
                 <div className="cockpit-diagnostics-copy">
-                  <p><strong>Coverage</strong> {String(workspace?.coverage_status?.universe_label ?? 'Active')} · {String(workspace?.coverage_status?.tickers_successfully_scanned ?? 0)}/{String(workspace?.coverage_status?.tickers_attempted ?? 0)} scanned · Unique {String(workspace?.coverage_status?.unique_candidate_tickers_requested ?? 0)}</p>
+                  <p><strong>Daily coverage</strong> {String(workspace?.coverage_status?.universe_label ?? 'Active')} · {String(workspace?.coverage_status?.tickers_successfully_scanned ?? 0)}/{String(workspace?.coverage_status?.tickers_attempted ?? 0)} scanned · Unique {String(workspace?.coverage_status?.unique_candidate_tickers_requested ?? 0)}</p>
+                  <p><strong>Daily scan</strong> {compactDate(latest.data?.generated_at)} · Health {String((latest.data?.scan_health as Record<string, unknown> | undefined)?.status ?? 'healthy')}</p>
+                  <p><strong>Movers scan</strong> {moversSummaryText(latest.data?.movers_scan_summary as Record<string, unknown> | undefined)}</p>
                   <p><strong>Selection</strong> {String(workspace?.selected_ticker_consistency_reason ?? 'No diagnostics loaded.')}</p>
                   {workspace?.coverage_status?.universe_warning ? <p><strong>Universe note</strong> {String(workspace.coverage_status.universe_warning)}</p> : null}
                 </div>
@@ -830,6 +841,11 @@ function StockPicker() {
       <Notice tone="neutral">{universes.data?.warning ?? DEFAULT_UNIVERSE_WARNING}</Notice>
       {scan?.demo_mode && <Notice tone="warn">DEMO MODE. Demo sample data — not real prices.</Notice>}
       {scan?.report_snapshot && <Notice tone="warn">Report Snapshot. Historical rows are not actionable.</Notice>}
+      {scan ? (
+        <Notice tone="neutral">
+          Last stock-picker scan: {compactDate(scan.generated_at)} · Coverage {stockPickerCoverage(scan)} · Health {stockPickerHealth(scan, scanJob)}
+        </Notice>
+      ) : null}
       {error && <ApiErrorPanel error={error} onRetry={() => setError(null)} />}
       {loading && (
         <Notice tone="neutral">
@@ -2619,6 +2635,31 @@ function shortCompanyName(value: string) {
 function compactDate(value?: string) {
   if (!value || value === 'unavailable') return 'Unavailable';
   return value.replace('T', ' ').replace('Z', '').slice(0, 16);
+}
+
+function moversSummaryText(summary?: Record<string, unknown>) {
+  if (!summary) return 'Not run.';
+  const scanned = Number(summary.scanned ?? 0);
+  const attempted = Number(summary.attempted ?? 0);
+  const failed = Number(summary.failed ?? 0);
+  const status = String(summary.status ?? 'unknown');
+  let text = `${scanned}/${attempted} scanned`;
+  if (failed > 0) text += `, ${failed} failed`;
+  return `${text} (${status})`;
+}
+
+function stockPickerCoverage(scan: ScanState) {
+  const scanHealth = scan.scan_health ?? {};
+  const scanned = Number(scanHealth.scanned ?? scan.results?.length ?? 0);
+  const attempted = Number(scanHealth.attempted ?? (scan.results?.length ?? 0) + (scan.scan_failures?.length ?? 0));
+  const failed = Number(scanHealth.failed ?? scan.scan_failures?.length ?? 0);
+  let text = `${scanned}/${attempted} scanned`;
+  if (failed > 0) text += `, ${failed} failed`;
+  return text;
+}
+
+function stockPickerHealth(scan: ScanState, scanJob: ScanJobStatus | null) {
+  return String(scan.provider_health?.status ?? scan.scan_health?.status ?? scanJob?.provider_health?.status ?? 'healthy');
 }
 
 function shortAction(value: unknown) {

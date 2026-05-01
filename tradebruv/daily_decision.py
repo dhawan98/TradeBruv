@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 from datetime import date, datetime
 from pathlib import Path
@@ -7,7 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from .actionability import actionability_priority, is_fast_actionable_label, label_bucket
-from .ai_rerank import AIRerankProvider, apply_ai_rerank
+from .ai_rerank import AIRerankProvider, apply_ai_rerank, build_ai_rerank_provider
 from .alternative_data import DEFAULT_ALTERNATIVE_DATA_PATH, AlternativeDataOverlayProvider, load_alternative_data_repository
 from .catalysts import CatalystOverlayProvider, load_catalyst_repository
 from .cli import build_provider, load_universe
@@ -289,12 +290,21 @@ def run_daily_decision(
     merged = merge_canonical_rows(combined_rows, combined_decisions)
     merged_rows = merged["canonical_rows"]
     merged_decisions = merged["canonical_decisions"]
+    ai_rerank_summary = _build_ai_rerank_summary([], merged_decisions, mode="off", provider_name="off")
     if ai_rerank != "off":
+        original_decisions = [deepcopy(decision) for decision in merged_decisions]
+        chosen_ai_rerank_provider = ai_rerank_provider or build_ai_rerank_provider(ai_rerank)
         merged_decisions = apply_ai_rerank(
             merged_decisions,
             mode=ai_rerank,
-            provider=ai_rerank_provider,
+            provider=chosen_ai_rerank_provider,
             limit=min(top_n, 3),
+        )
+        ai_rerank_summary = _build_ai_rerank_summary(
+            original_decisions,
+            merged_decisions,
+            mode=ai_rerank,
+            provider_name=getattr(chosen_ai_rerank_provider, "name", ai_rerank),
         )
     unique_scan_failures = _dedupe_scan_failures(scan_failures)
     data_issues = [decision for decision in merged_decisions if decision.get("price_validation_status") != "PASS"]
@@ -354,6 +364,7 @@ def run_daily_decision(
         "analysis_date": as_of.isoformat(),
         "provider": provider_name,
         "ai_rerank": ai_rerank,
+        "ai_rerank_summary": ai_rerank_summary,
         "mode": "daily-decision",
         "data_mode": "live_daily_decision",
         "results": merged_rows,
@@ -419,6 +430,7 @@ def load_daily_decision(path: Path = DEFAULT_DAILY_DECISION_JSON_PATH) -> dict[s
             "provider": "unavailable",
             "mode": "daily-decision",
             "data_mode": "live_daily_decision",
+            "ai_rerank_summary": {},
             "results": [],
             "summary": {},
             "decisions": [],
@@ -854,6 +866,11 @@ def _build_daily_decision_markdown(payload: dict[str, Any]) -> str:
         f"- Analysis date: {payload.get('analysis_date', 'unavailable')}",
         f"- Provider: {payload.get('provider', 'unavailable')}",
         f"- AI rerank: {payload.get('ai_rerank', 'off')}",
+        f"- AI rerank provider: {(payload.get('ai_rerank_summary') or {}).get('provider', 'off')}",
+        f"- AI rerank reviewed: {(payload.get('ai_rerank_summary') or {}).get('names_reviewed', 0)}",
+        f"- AI rerank downgraded: {(payload.get('ai_rerank_summary') or {}).get('downgraded', 0)}",
+        f"- AI unsupported claims detected: {(payload.get('ai_rerank_summary') or {}).get('unsupported_claims_detected', 0)}",
+        f"- AI top label changed: {'yes' if (payload.get('ai_rerank_summary') or {}).get('top_label_changed') else 'no'}",
         f"- Demo mode: {payload.get('demo_mode', False)}",
         f"- Scan health: {(payload.get('scan_health') or {}).get('status', 'healthy')}",
         f"- Benchmark health: {(payload.get('benchmark_health') or {}).get('benchmark_health', 'healthy')}",
@@ -1047,11 +1064,67 @@ def _movers_summary_line(summary: dict[str, Any]) -> str:
 
 def _clean_failure_reason_for_display(row: dict[str, Any]) -> str:
     ticker = str(row.get("ticker") or "").strip().upper()
+    category = str(row.get("category") or "").strip().lower()
+    if category == "malformed_response":
+        return "Provider or cache returned malformed market data for this ticker."
+    if category == "unauthorized":
+        return "Provider rejected the request as unauthorized."
+    if category == "rate_limited":
+        return "Provider rate-limited the request."
+    if category == "timeout":
+        return "Provider timed out or network resolution failed."
     reason = str(row.get("reason") or "Provider failure.").strip()
+    reason_lower = reason.lower()
+    if any(pattern in reason_lower for pattern in ("extra data", "expecting value", "unterminated string", "jsondecodeerror")):
+        return "Provider or cache returned malformed market data for this ticker."
     prefix = f"{ticker}: "
     if ticker and reason.upper().startswith(prefix):
         return reason[len(prefix):]
     return reason
+
+
+def _build_ai_rerank_summary(
+    original_decisions: list[dict[str, Any]],
+    reviewed_decisions: list[dict[str, Any]],
+    *,
+    mode: str,
+    provider_name: str,
+) -> dict[str, Any]:
+    enabled = mode != "off"
+    original_by_ticker = {str(row.get("ticker")): row for row in original_decisions if row.get("ticker")}
+    reviewed_rows = [row for row in reviewed_decisions if row.get("ai_review")]
+    available_reviews = sum(bool((row.get("ai_review") or {}).get("available")) for row in reviewed_rows)
+    downgraded = sum(
+        1
+        for row in reviewed_rows
+        if _decision_label(row) != str((original_by_ticker.get(str(row.get("ticker"))) or {}).get("actionability_label") or _decision_label(row))
+    )
+    unsupported_claims = sum(
+        1
+        for row in reviewed_rows
+        if bool((row.get("ai_review") or {}).get("unsupported_claims_detected"))
+    )
+    top_label_changed = downgraded > 0
+    status = "off"
+    if enabled:
+        if not reviewed_rows:
+            status = "no_eligible_names"
+        elif available_reviews:
+            status = "applied"
+        else:
+            status = "unavailable"
+    return {
+        "enabled": enabled,
+        "mode": mode,
+        "status": status,
+        "provider": provider_name,
+        "names_reviewed": len(reviewed_rows),
+        "reviews_available": available_reviews,
+        "reviews_unavailable": max(len(reviewed_rows) - available_reviews, 0),
+        "downgraded": downgraded,
+        "unsupported_claims_detected": unsupported_claims,
+        "top_label_changed": top_label_changed,
+    }
 
 
 def _build_picker_view(decisions: list[dict[str, Any]], *, data_issues: list[dict[str, Any]]) -> dict[str, Any]:

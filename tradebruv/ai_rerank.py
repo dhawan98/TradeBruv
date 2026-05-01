@@ -88,7 +88,7 @@ class OpenAICompatibleAIRerankProvider:
             content = payload.get("choices", [{}])[0].get("message", {}).get("content", "{}")
             generated = json.loads(content)
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError) as exc:
-            return unavailable_ai_rerank(f"AI rerank unavailable: {redact_secrets(exc)}", provider=self.name)
+            return unavailable_ai_rerank(_ai_rerank_error_reason(exc, prefix="AI rerank unavailable"), provider=self.name)
         return sanitize_ai_rerank(generated, prompt_payload, provider=self.name)
 
 
@@ -154,7 +154,7 @@ class GeminiAIRerankProvider:
             text = payload.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "{}")
             generated = json.loads(_strip_json_fences(text))
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError) as exc:
-            return unavailable_ai_rerank(f"Gemini rerank unavailable: {redact_secrets(exc)}", provider=self.name)
+            return unavailable_ai_rerank(_ai_rerank_error_reason(exc, prefix="Gemini rerank unavailable"), provider=self.name)
         return sanitize_ai_rerank(generated, prompt_payload, provider=self.name)
 
 
@@ -276,6 +276,18 @@ def unavailable_ai_rerank(reason: str, *, provider: str = "unavailable") -> dict
         "disagreement_reason": reason,
         "missing_data": [reason],
     }
+
+
+def _ai_rerank_error_reason(exc: Exception, *, prefix: str) -> str:
+    if isinstance(exc, json.JSONDecodeError):
+        return f"{prefix}: malformed_response"
+    if isinstance(exc, TimeoutError):
+        return f"{prefix}: timeout"
+    if isinstance(exc, urllib.error.URLError):
+        return f"{prefix}: network_error"
+    if isinstance(exc, (KeyError, IndexError)):
+        return f"{prefix}: malformed_response"
+    return f"{prefix}: {redact_secrets(exc)}"
 
 
 def _grounded_decision_payload(decision: dict[str, Any]) -> dict[str, Any]:

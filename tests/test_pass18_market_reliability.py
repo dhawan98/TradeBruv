@@ -286,6 +286,35 @@ def test_invalid_nan_cached_bars_are_ignored_and_refetched(tmp_path: Path) -> No
     assert all(math.isfinite(bar.close) for bar in security.bars)
 
 
+def test_invalid_json_cached_file_is_ignored_and_refetched(tmp_path: Path) -> None:
+    calls: dict[str, int] = {}
+
+    class Provider:
+        def get_security_data(self, ticker: str) -> SecurityData:
+            calls[ticker] = calls.get(ticker, 0) + 1
+            return _security(ticker, list(range(100, 360)))
+
+    cache_dir = tmp_path / "cache"
+    reader = FileCacheMarketDataProvider(Provider(), provider_name="real", cache_dir=cache_dir, ttl_minutes=60)
+    cache_path = reader._cache_path("FDX")
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text('{"cached_at":"2026-04-24T00:00:00Z"}{"broken":true}', encoding="utf-8")
+
+    security = reader.get_security_data("FDX")
+
+    assert calls["FDX"] == 1
+    assert security.ticker == "FDX"
+    assert not cache_path.exists() or json.loads(cache_path.read_text(encoding="utf-8"))["ticker"] == "FDX"
+
+
+def test_json_decode_errors_are_sanitized_as_malformed_responses() -> None:
+    classification = classify_provider_error(json.JSONDecodeError("Extra data", "{}", 1))
+
+    assert classification["category"] == "malformed_response"
+    assert classification["scope"] == "ticker"
+    assert classification["reason"] == "Provider or cache returned malformed market data for this ticker."
+
+
 def test_nan_cached_bars_do_not_surface_numerator_failures(monkeypatch, tmp_path: Path) -> None:
     class Provider:
         def get_security_data(self, ticker: str) -> SecurityData:

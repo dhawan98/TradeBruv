@@ -6,6 +6,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
+from .actionability import label_bucket
 from .ai_explanations import apply_ai_explanations, build_explanation_provider
 from .app_status import build_app_status_report
 from .alternative_data import DEFAULT_ALTERNATIVE_DATA_PATH, AlternativeDataOverlayProvider, load_alternative_data_repository
@@ -75,9 +76,41 @@ from .signal_quality import run_case_study, run_signal_audit
 from .ticker_symbols import display_ticker
 from .validation_lab import DEFAULT_PREDICTIONS_PATH, load_predictions, save_predictions, update_prediction_outcomes, validation_metrics
 
+load_local_env()
+
+
+def _daily_decision_count(payload: dict[str, object], bucket: str) -> int:
+    decisions = payload.get("decisions", [])
+    if not isinstance(decisions, list):
+        return 0
+    count = 0
+    for row in decisions:
+        if not isinstance(row, dict):
+            continue
+        label = str(row.get("ai_adjusted_actionability_label") or row.get("actionability_label") or "Data Insufficient")
+        if label_bucket(label) == bucket:
+            count += 1
+    return count
+
+
+def _format_ai_rerank_status(payload: dict[str, object]) -> str:
+    summary = payload.get("ai_rerank_summary")
+    if not isinstance(summary, dict) or not summary:
+        return str(payload.get("ai_rerank") or "off")
+    if not summary.get("enabled"):
+        return "off"
+    provider = str(summary.get("provider") or payload.get("ai_rerank") or "unknown")
+    status = str(summary.get("status") or "unknown")
+    return (
+        f"{status} via {provider}"
+        f" | reviewed {int(summary.get('names_reviewed') or 0)}"
+        f" | downgraded {int(summary.get('downgraded') or 0)}"
+        f" | unsupported claims {int(summary.get('unsupported_claims_detected') or 0)}"
+        f" | top label changed {'yes' if summary.get('top_label_changed') else 'no'}"
+    )
+
 
 def main(argv: list[str] | None = None) -> int:
-    load_local_env()
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -153,7 +186,23 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(f"Daily decision JSON: {payload['json_path']}")
         print(f"Daily decision MD:   {payload['markdown_path']}")
-        print(f"Validated actionable rows: {sum(1 for row in payload.get('decisions', []) if row.get('price_validation_status') == 'PASS')}")
+        print(f"Validated rows: {sum(1 for row in payload.get('decisions', []) if row.get('price_validation_status') == 'PASS')}")
+        print(f"Fast actionable setups: {len(payload.get('fast_actionable_setups', []))}")
+        print(f"Long-term research candidates: {len(payload.get('long_term_research_candidates', payload.get('research_candidates', [])))}")
+        print(f"Watch candidates: {_daily_decision_count(payload, 'watch')}")
+        print(f"Avoid candidates: {_daily_decision_count(payload, 'avoid')}")
+        movers_summary = payload.get("movers_scan_summary") or {}
+        movers_scanned = f"{int(movers_summary.get('scanned') or 0)}/{int(movers_summary.get('attempted') or 0)} scanned"
+        if movers_summary:
+            failed = int(movers_summary.get("failed") or 0)
+            status = str(movers_summary.get("status") or "unknown")
+            if failed:
+                movers_scanned += f", {failed} failed"
+            movers_scanned += f" ({status})"
+        else:
+            movers_scanned = "Not run"
+        print(f"Movers scanned: {movers_scanned}")
+        print(f"AI rerank status: {_format_ai_rerank_status(payload)}")
         for warning in payload.get("benchmark_warnings", [])[:1]:
             print(f"Warning: {warning}")
         return 0

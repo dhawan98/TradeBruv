@@ -35,6 +35,8 @@ vi.stubGlobal(
         demo_mode: false,
         report_snapshot: false,
         stale_data: false,
+        scan_health: { status: 'healthy' },
+        movers_scan_summary: { attempted: 398, scanned: 384, failed: 14, status: 'healthy' },
         market_regime: { regime: 'Risk On', provider: 'real' },
         summary: {},
         validation_context: { messages: ['Fresh live prices validated.'] },
@@ -542,6 +544,8 @@ vi.stubGlobal(
         demo_mode: false,
         report_snapshot: false,
         stale_data: false,
+        provider_health: { status: 'unauthorized' },
+        scan_health: { attempted: 1, scanned: 1, failed: 0, status: 'unauthorized' },
         data_issues: [],
         results: [
           {
@@ -757,7 +761,7 @@ vi.stubGlobal(
       return Promise.resolve(new Response(JSON.stringify({ job_id: 'job-1', status: 'queued' }), { status: 200 }));
     }
     if (pathname === '/api/scan/status/job-1') {
-      return Promise.resolve(new Response(JSON.stringify({ job_id: 'job-1', status: 'completed', attempted: 1, scanned: 1, failed: 0, provider_health: { status: 'healthy' }, preview_rows: [{ ticker: 'NVDA', current_price: 100, price_change_1d_pct: 2.4, relative_volume_20d: 1.8, signal_summary: 'Breakout with Volume', outlier_score: 82 }] }), { status: 200 }));
+      return Promise.resolve(new Response(JSON.stringify({ job_id: 'job-1', status: 'completed', attempted: 1, scanned: 1, failed: 0, provider_health: { status: 'unauthorized' }, preview_rows: [{ ticker: 'NVDA', current_price: 100, price_change_1d_pct: 2.4, relative_volume_20d: 1.8, signal_summary: 'Breakout with Volume', outlier_score: 82 }] }), { status: 200 }));
     }
     if (pathname === '/api/scan/result/job-1') {
       return Promise.resolve(new Response(JSON.stringify(payloads['/api/scan']), { status: 200 }));
@@ -775,6 +779,8 @@ describe('App', () => {
     expect((await screen.findAllByText('TradeBruv')).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: /Stock Picker/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Data Sources/i })).toBeInTheDocument();
+    expect(screen.getByText('Last daily scan')).toBeInTheDocument();
+    expect(screen.getByText('Daily health')).toBeInTheDocument();
   });
 
   it('renders the chart-first decision cockpit workspace on the home screen', async () => {
@@ -808,6 +814,9 @@ describe('App', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Stock Picker/i }));
     fireEvent.click(await screen.findByRole('button', { name: /Run Scan/i }));
     expect(await screen.findByRole('columnheader', { name: /Company/i })).toBeInTheDocument();
+    expect(screen.getByText(/Last stock-picker scan:/i)).toBeInTheDocument();
+    expect(screen.getByText(/Health unauthorized/i)).toBeInTheDocument();
+    expect(screen.getByText(/Daily health/i).nextSibling?.textContent ?? '').toContain('healthy');
     fireEvent.click((await screen.findAllByText('NVDA'))[0]);
     expect(await screen.findByRole('button', { name: /^Track$/i })).toBeInTheDocument();
     expect(screen.queryByText('Start Paper Tracking')).not.toBeInTheDocument();

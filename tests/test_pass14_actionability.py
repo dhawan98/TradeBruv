@@ -216,8 +216,18 @@ def test_daily_decision_markdown_stays_short_and_bucketed() -> None:
         "generated_at": "2026-04-24T12:00:00Z",
         "analysis_date": "2026-04-24",
         "provider": "real",
-        "ai_rerank": "off",
+        "ai_rerank": "openai",
+        "ai_rerank_summary": {
+            "provider": "openai-compatible",
+            "names_reviewed": 3,
+            "downgraded": 1,
+            "unsupported_claims_detected": 1,
+            "top_label_changed": True,
+        },
         "demo_mode": False,
+        "scan_health": {"status": "healthy"},
+        "benchmark_health": {"benchmark_health": "healthy"},
+        "movers_scan_summary": {"attempted": 10, "scanned": 8, "failed": 2, "status": "healthy"},
         "top_candidate": decision("TOP", "Breakout Actionable Today"),
         "fast_actionable_setups": [decision("TOP", "Breakout Actionable Today")],
         "long_term_research_candidates": [decision(f"R{i}", "Long-Term Research Candidate") for i in range(5)],
@@ -232,6 +242,11 @@ def test_daily_decision_markdown_stays_short_and_bucketed() -> None:
     markdown = _build_daily_decision_markdown(payload)
 
     assert "# TradeBruv Daily Pick" in markdown
+    assert "- AI rerank provider: openai-compatible" in markdown
+    assert "- AI rerank reviewed: 3" in markdown
+    assert "- AI rerank downgraded: 1" in markdown
+    assert "- AI unsupported claims detected: 1" in markdown
+    assert "- AI top label changed: yes" in markdown
     assert "## Fast Actionable Setups" in markdown
     assert "## Long-Term Research Candidates" in markdown
     assert "## High-Volume Movers" in markdown
@@ -243,3 +258,34 @@ def test_daily_decision_markdown_stays_short_and_bucketed() -> None:
     assert "W0" in markdown and "W4" in markdown and "W5" not in markdown
     assert "A0" in markdown and "A4" in markdown and "A5" not in markdown
     assert "D0" in markdown and "D9" in markdown and "D10" not in markdown
+
+
+def test_daily_decision_markdown_hides_raw_json_parser_errors() -> None:
+    markdown = _build_daily_decision_markdown(
+        {
+            "generated_at": "2026-04-24T12:00:00Z",
+            "analysis_date": "2026-04-24",
+            "provider": "real",
+            "ai_rerank": "off",
+            "demo_mode": False,
+            "scan_health": {"status": "healthy"},
+            "benchmark_health": {"benchmark_health": "healthy"},
+            "movers_scan_summary": {"attempted": 1, "scanned": 1, "failed": 0, "status": "healthy"},
+            "fast_actionable_setups": [],
+            "long_term_research_candidates": [],
+            "high_volume_mover_watch": [],
+            "tracked_watchlist_setups": [],
+            "watch_candidates": [],
+            "avoid_candidates": [],
+            "scan_failures": [
+                {
+                    "ticker": "FDX",
+                    "reason": "FDX: Extra data: line 1 column 118355 (char 118354)",
+                    "category": "malformed_response",
+                }
+            ],
+        }
+    )
+
+    assert "FDX: Provider or cache returned malformed market data for this ticker." in markdown
+    assert "Extra data:" not in markdown
