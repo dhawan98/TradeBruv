@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .discovery import import_tickers_from_csv
 from .tracked import DEFAULT_TRACKED_TICKERS
 from .ticker_symbols import display_ticker
 
@@ -211,11 +212,7 @@ def clean_ticker_lines(lines: list[str]) -> list[str]:
 
 
 def import_universe_csv(input_path: Path, *, ticker_column: str, output_path: Path) -> dict[str, Any]:
-    with input_path.open(newline="", encoding="utf-8-sig") as handle:
-        reader = csv.DictReader(handle)
-        if ticker_column not in (reader.fieldnames or []):
-            raise KeyError(f"Ticker column '{ticker_column}' not found in CSV.")
-        rows = clean_ticker_lines([str(row.get(ticker_column) or "") for row in reader])
+    rows = import_tickers_from_csv(input_path, ticker_column=ticker_column)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(rows) + ("\n" if rows else ""), encoding="utf-8")
     return {
@@ -226,15 +223,51 @@ def import_universe_csv(input_path: Path, *, ticker_column: str, output_path: Pa
     }
 
 
-def clean_universe_file(input_path: Path, output_path: Path) -> dict[str, Any]:
+def clean_universe_file(
+    input_path: Path,
+    output_path: Path,
+    *,
+    min_price: float | None = None,
+    min_dollar_volume: float | None = None,
+) -> dict[str, Any]:
     rows = clean_ticker_lines(input_path.read_text(encoding="utf-8").splitlines())
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(rows) + ("\n" if rows else ""), encoding="utf-8")
+    filters_requested = min_price is not None or min_dollar_volume is not None
     return {
         "input": str(input_path),
         "output": str(output_path),
         "row_count": len(rows),
         "sample_tickers": rows[:10],
+        "requested_filters": {
+            "min_price": min_price,
+            "min_dollar_volume": min_dollar_volume,
+        },
+        "liquidity_filters_applied": False,
+        "liquidity_filter_note": (
+            "Ticker-file cleaning deduped and normalized symbols only. "
+            "Price and dollar-volume thresholds were requested but not applied because the input file contains symbols, not market-data columns."
+            if filters_requested
+            else "No price or dollar-volume filter was requested."
+        ),
+    }
+
+
+def merge_universe_files(*input_paths: Path, output_path: Path) -> dict[str, Any]:
+    merged: list[str] = []
+    sources: list[dict[str, Any]] = []
+    for path in input_paths:
+        rows = clean_ticker_lines(path.read_text(encoding="utf-8").splitlines())
+        merged.extend(rows)
+        sources.append({"source": str(path), "row_count": len(rows)})
+    deduped = clean_ticker_lines(merged)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(deduped) + ("\n" if deduped else ""), encoding="utf-8")
+    return {
+        "output": str(output_path),
+        "actual_size": len(deduped),
+        "sources": sources,
+        "sample_tickers": deduped[:10],
     }
 
 
@@ -304,7 +337,8 @@ def expand_universe(
             "import_instructions": (
                 "For fuller real-world coverage, import an official or broker/exported liquid-universe CSV with "
                 "`python3 -m tradebruv universe import-csv --input YOUR_LIST.csv --ticker-column SYMBOL --output config/your_list.txt` "
-                "and then rerun `python3 -m tradebruv universe expand --output config/universe_us_liquid_expanded.txt --target-size 1000 --extra-file config/your_list.txt`."
+                "and then rerun `python3 -m tradebruv universe expand --output config/universe_us_liquid_expanded.txt --target-size 3000 --extra-file config/your_list.txt`. "
+                "Good inputs: NasdaqTrader, NASDAQ/NYSE exports, broker exports, Kaggle symbol lists, Polygon, FMP, or IEX-style symbol universes."
             ),
         }
     )

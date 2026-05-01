@@ -173,6 +173,10 @@ def main(argv: list[str] | None = None) -> int:
                 broad_universe=args.broad_universe,
                 tracked=args.tracked,
                 include_movers=args.include_movers,
+                include_highs=args.include_highs,
+                include_earnings_movers=args.include_earnings_movers,
+                include_themes=args.include_themes,
+                theme_etfs=args.theme_etfs,
                 top_n=args.top_n,
                 history_period=args.history_period,
                 data_dir=args.data_dir,
@@ -207,8 +211,47 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Warning: {warning}")
         return 0
 
+    if args.command == "coverage-audit":
+        try:
+            from .discovery import build_coverage_audit
+
+            payload = build_coverage_audit(
+                universe_path=args.universe,
+                tracked_path=args.tracked,
+                output_dir=args.output_dir,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"Coverage-audit error: {exc}")
+            return 2
+        print(f"Coverage audit JSON: {payload.json_path}")
+        print(f"Coverage audit MD:   {payload.markdown_path}")
+        print(f"Coverage label: {payload.payload['coverage_label']}")
+        return 0
+
+    if args.command == "why-missed":
+        try:
+            from .discovery import build_why_missed_report
+
+            payload = build_why_missed_report(
+                symbol=args.symbol,
+                provider_name=args.provider,
+                universe_path=args.universe,
+                tracked_path=args.tracked,
+                latest_daily_path=args.latest_daily,
+                latest_movers_path=args.latest_movers,
+                analysis_date=args.as_of_date or date.today(),
+                output_dir=args.output_dir,
+            )
+        except (ProviderConfigurationError, FileNotFoundError, ValueError) as exc:
+            print(f"Why-missed error: {exc}")
+            return 2
+        print(f"Why-missed JSON: {payload.json_path}")
+        print(f"Why-missed MD:   {payload.markdown_path}")
+        print(f"Exact reason: {payload.payload['exact_reason']}")
+        return 0
+
     if args.command == "universe":
-        from .universe_registry import clean_universe_file, expand_universe, import_universe_csv, list_universe_definitions, universe_text, validate_universe_file
+        from .universe_registry import clean_universe_file, expand_universe, import_universe_csv, list_universe_definitions, merge_universe_files, universe_text, validate_universe_file
 
         if args.universe_command == "list":
             for definition in list_universe_definitions():
@@ -227,7 +270,20 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(import_universe_csv(args.input, ticker_column=args.ticker_column, output_path=args.output), indent=2))
             return 0
         if args.universe_command == "clean":
-            print(json.dumps(clean_universe_file(args.input, args.output), indent=2))
+            print(
+                json.dumps(
+                    clean_universe_file(
+                        args.input,
+                        args.output,
+                        min_price=args.min_price,
+                        min_dollar_volume=args.min_dollar_volume,
+                    ),
+                    indent=2,
+                )
+            )
+            return 0
+        if args.universe_command == "merge":
+            print(json.dumps(merge_universe_files(*args.inputs, output_path=args.output), indent=2))
             return 0
         if args.universe_command == "expand":
             csv_inputs = []
@@ -369,6 +425,97 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Movers JSON: {payload.json_path}")
         print(f"Movers CSV:  {payload.csv_path}")
         print(f"Movers MD:   {payload.markdown_path}")
+        return 0
+
+    if args.command == "highs":
+        try:
+            from .discovery import run_highs_scan
+
+            payload = run_highs_scan(
+                universe=load_universe(args.universe),
+                provider_name=args.provider,
+                analysis_date=args.as_of_date or date.today(),
+                history_period=args.history_period,
+                data_dir=args.data_dir,
+                top_n=args.top_n,
+                min_price=args.min_price,
+                min_dollar_volume=args.min_dollar_volume,
+                output_dir=args.output_dir,
+                refresh_cache=args.refresh_cache,
+            )
+        except (ProviderConfigurationError, FileNotFoundError, ValueError) as exc:
+            print(f"Highs error: {exc}")
+            return 2
+        print(f"Highs JSON: {payload.json_path}")
+        print(f"Highs MD:   {payload.markdown_path}")
+        return 0
+
+    if args.command == "earnings-movers":
+        try:
+            from .discovery import run_earnings_movers_scan
+
+            payload = run_earnings_movers_scan(
+                universe=load_universe(args.universe),
+                provider_name=args.provider,
+                analysis_date=args.as_of_date or date.today(),
+                history_period=args.history_period,
+                data_dir=args.data_dir,
+                top_n=args.top_n,
+                min_price=args.min_price,
+                min_dollar_volume=args.min_dollar_volume,
+                output_dir=args.output_dir,
+                refresh_cache=args.refresh_cache,
+            )
+        except (ProviderConfigurationError, FileNotFoundError, ValueError) as exc:
+            print(f"Earnings-movers error: {exc}")
+            return 2
+        print(f"Earnings movers JSON: {payload.json_path}")
+        print(f"Earnings movers MD:   {payload.markdown_path}")
+        return 0
+
+    if args.command == "theme-scan":
+        try:
+            from .discovery import run_theme_scan
+
+            payload = run_theme_scan(
+                themes=load_universe(args.themes),
+                provider_name=args.provider,
+                analysis_date=args.as_of_date or date.today(),
+                history_period=args.history_period,
+                data_dir=args.data_dir,
+                top_n=args.top_n,
+                output_dir=args.output_dir,
+                refresh_cache=args.refresh_cache,
+            )
+        except (ProviderConfigurationError, FileNotFoundError, ValueError) as exc:
+            print(f"Theme-scan error: {exc}")
+            return 2
+        print(f"Theme scan JSON: {payload.json_path}")
+        print(f"Theme scan MD:   {payload.markdown_path}")
+        return 0
+
+    if args.command == "theme-constituents":
+        try:
+            from .discovery import run_theme_constituents_scan
+
+            payload = run_theme_constituents_scan(
+                theme=args.theme,
+                constituents_path=args.constituents,
+                provider_name=args.provider,
+                analysis_date=args.as_of_date or date.today(),
+                history_period=args.history_period,
+                data_dir=args.data_dir,
+                top_n=args.top_n,
+                output_dir=args.output_dir,
+                refresh_cache=args.refresh_cache,
+            )
+        except (ProviderConfigurationError, FileNotFoundError, ValueError, KeyError) as exc:
+            print(f"Theme-constituents error: {exc}")
+            return 2
+        print(f"Theme constituents JSON: {payload.json_path}")
+        print(f"Theme constituents MD:   {payload.markdown_path}")
+        if not payload.payload.get("available", True):
+            print(payload.payload.get("message"))
         return 0
 
     if args.command == "review":
@@ -725,6 +872,10 @@ def build_parser() -> argparse.ArgumentParser:
     decision_today.add_argument("--broad-universe", type=Path)
     decision_today.add_argument("--tracked", type=Path, default=Path("config/tracked_tickers.txt"))
     decision_today.add_argument("--include-movers", action="store_true")
+    decision_today.add_argument("--include-highs", action="store_true")
+    decision_today.add_argument("--include-earnings-movers", action="store_true")
+    decision_today.add_argument("--include-themes", action="store_true")
+    decision_today.add_argument("--theme-etfs", type=Path, default=Path("config/theme_etfs.txt"))
     decision_today.add_argument("--top-n", type=int, default=25)
     decision_today.add_argument("--data-dir", type=Path)
     decision_today.add_argument("--history-period", default="3y")
@@ -748,9 +899,14 @@ def build_parser() -> argparse.ArgumentParser:
     universe_clean = universe_subparsers.add_parser("clean", help="Clean, normalize, and dedupe a universe file.")
     universe_clean.add_argument("--input", type=Path, required=True)
     universe_clean.add_argument("--output", type=Path, required=True)
+    universe_clean.add_argument("--min-price", type=float, default=None)
+    universe_clean.add_argument("--min-dollar-volume", type=float, default=None)
+    universe_merge = universe_subparsers.add_parser("merge", help="Merge multiple newline universe files into one deduped file.")
+    universe_merge.add_argument("--output", type=Path, required=True)
+    universe_merge.add_argument("inputs", nargs="+", type=Path)
     universe_expand = universe_subparsers.add_parser("expand", help="Build a broader liquid U.S. universe by combining starter files and optional imports.")
     universe_expand.add_argument("--output", type=Path, default=Path("config/universe_us_liquid_expanded.txt"))
-    universe_expand.add_argument("--target-size", type=int, default=1000)
+    universe_expand.add_argument("--target-size", type=int, default=3000)
     universe_expand.add_argument("--csv-input", action="append", default=[], help="Optional CSV import in PATH or PATH:COLUMN form. May be repeated.")
     universe_expand.add_argument("--default-ticker-column", default="ticker")
     universe_expand.add_argument("--extra-file", type=Path, action="append", default=[], help="Optional newline universe file to merge in. May be repeated.")
@@ -810,6 +966,66 @@ def build_parser() -> argparse.ArgumentParser:
     movers.add_argument("--output-dir", type=Path, default=Path("outputs/movers"))
     movers.add_argument("--refresh-cache", action="store_true")
     movers.add_argument("--as-of-date", type=_parse_date)
+
+    highs = subparsers.add_parser("highs", help="Scan for new 52-week highs and relative-strength leaders.")
+    highs.add_argument("--universe", type=Path, required=True)
+    highs.add_argument("--provider", choices=("sample", "local", "real"), default="real")
+    highs.add_argument("--data-dir", type=Path)
+    highs.add_argument("--history-period", default="3y")
+    highs.add_argument("--top-n", type=int, default=50)
+    highs.add_argument("--min-price", type=float, default=5.0)
+    highs.add_argument("--min-dollar-volume", type=float, default=10_000_000.0)
+    highs.add_argument("--output-dir", type=Path, default=Path("outputs/highs"))
+    highs.add_argument("--refresh-cache", action="store_true")
+    highs.add_argument("--as-of-date", type=_parse_date)
+
+    earnings_movers = subparsers.add_parser("earnings-movers", help="Scan for earnings/news movers and earnings-like gaps.")
+    earnings_movers.add_argument("--universe", type=Path, required=True)
+    earnings_movers.add_argument("--provider", choices=("sample", "local", "real"), default="real")
+    earnings_movers.add_argument("--data-dir", type=Path)
+    earnings_movers.add_argument("--history-period", default="3y")
+    earnings_movers.add_argument("--top-n", type=int, default=50)
+    earnings_movers.add_argument("--min-price", type=float, default=5.0)
+    earnings_movers.add_argument("--min-dollar-volume", type=float, default=10_000_000.0)
+    earnings_movers.add_argument("--output-dir", type=Path, default=Path("outputs/earnings"))
+    earnings_movers.add_argument("--refresh-cache", action="store_true")
+    earnings_movers.add_argument("--as-of-date", type=_parse_date)
+
+    theme_scan = subparsers.add_parser("theme-scan", help="Rank theme and sector ETFs by relative strength.")
+    theme_scan.add_argument("--themes", type=Path, required=True)
+    theme_scan.add_argument("--provider", choices=("sample", "local", "real"), default="real")
+    theme_scan.add_argument("--data-dir", type=Path)
+    theme_scan.add_argument("--history-period", default="3y")
+    theme_scan.add_argument("--top-n", type=int, default=25)
+    theme_scan.add_argument("--output-dir", type=Path, default=Path("outputs/themes"))
+    theme_scan.add_argument("--refresh-cache", action="store_true")
+    theme_scan.add_argument("--as-of-date", type=_parse_date)
+
+    theme_constituents = subparsers.add_parser("theme-constituents", help="Scan manual theme ETF constituents.")
+    theme_constituents.add_argument("--theme", required=True)
+    theme_constituents.add_argument("--constituents", type=Path, required=True)
+    theme_constituents.add_argument("--provider", choices=("sample", "local", "real"), default="real")
+    theme_constituents.add_argument("--data-dir", type=Path)
+    theme_constituents.add_argument("--history-period", default="3y")
+    theme_constituents.add_argument("--top-n", type=int, default=25)
+    theme_constituents.add_argument("--output-dir", type=Path, default=Path("outputs/themes"))
+    theme_constituents.add_argument("--refresh-cache", action="store_true")
+    theme_constituents.add_argument("--as-of-date", type=_parse_date)
+
+    coverage_audit = subparsers.add_parser("coverage-audit", help="Audit configured market coverage and tracked inclusion honestly.")
+    coverage_audit.add_argument("--universe", type=Path, required=True)
+    coverage_audit.add_argument("--tracked", type=Path, required=True)
+    coverage_audit.add_argument("--output-dir", type=Path, default=Path("outputs/coverage"))
+
+    why_missed = subparsers.add_parser("why-missed", help="Explain why a symbol was outside or absent from the latest scans.")
+    why_missed.add_argument("symbol")
+    why_missed.add_argument("--provider", choices=("sample", "local", "real"), default="real")
+    why_missed.add_argument("--universe", type=Path, required=True)
+    why_missed.add_argument("--tracked", type=Path, required=True)
+    why_missed.add_argument("--latest-daily", type=Path, default=Path("outputs/daily/decision_today.json"))
+    why_missed.add_argument("--latest-movers", type=Path, default=Path("outputs/movers/movers.json"))
+    why_missed.add_argument("--output-dir", type=Path, default=Path("outputs/coverage"))
+    why_missed.add_argument("--as-of-date", type=_parse_date)
 
     review = subparsers.add_parser("review", help="Review a saved scan report against later OHLCV data.")
     _add_review_provider_args(review)

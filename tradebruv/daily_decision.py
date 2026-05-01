@@ -19,6 +19,7 @@ from .dashboard_data import (
 )
 from .decision_merge import merge_canonical_rows
 from .decision_engine import build_unified_decisions, build_validation_context
+from .discovery import run_earnings_movers_scan, run_highs_scan, run_theme_constituents_scan, run_theme_scan
 from .market_cache import DEFAULT_MARKET_CACHE_DIR, FileCacheMarketDataProvider
 from .market_reliability import ResilientMarketDataProvider
 from .movers import run_movers_scan
@@ -42,6 +43,10 @@ def run_daily_decision(
     broad_universe: Path | None = None,
     tracked: Path | None = None,
     include_movers: bool = False,
+    include_highs: bool = False,
+    include_earnings_movers: bool = False,
+    include_themes: bool = False,
+    theme_etfs: Path = Path("config/theme_etfs.txt"),
     top_n: int = 25,
     history_period: str = "3y",
     data_dir: Path | None = None,
@@ -122,14 +127,19 @@ def run_daily_decision(
         },
     ]
     movers_payload: dict[str, Any] | None = None
+    highs_payload: dict[str, Any] | None = None
+    earnings_payload: dict[str, Any] | None = None
+    themes_payload: dict[str, Any] | None = None
+    theme_constituent_payloads: list[dict[str, Any]] = []
 
     if broad_universe:
+        broad_tickers = load_universe(broad_universe)
         scans.append(
             {
                 "lane": "Outlier",
                 "source_group": "Broad",
                 "scan": _run_custom_scan(
-                    tickers=load_universe(broad_universe),
+                    tickers=broad_tickers,
                     provider_name=provider_name,
                     analysis_date=as_of,
                     history_period=history_period,
@@ -144,7 +154,7 @@ def run_daily_decision(
         )
         if include_movers:
             movers_result = run_movers_scan(
-                universe=load_universe(broad_universe),
+                universe=broad_tickers,
                 provider_name=provider_name,
                 analysis_date=as_of,
                 history_period=history_period,
@@ -164,13 +174,91 @@ def run_daily_decision(
                         provider=provider_name,
                         source="movers scan",
                         market_regime={},
-                        results=movers_result.payload["results"],
+                        results=[
+                            (
+                                dict(row.get("source_row") or {})
+                                if row.get("source_row")
+                                else {
+                                    "ticker": row.get("ticker"),
+                                    "company_name": row.get("company") or row.get("company_name") or row.get("ticker"),
+                                    "current_price": row.get("current_price") or row.get("price"),
+                                    "regular_investing_score": row.get("regular_investing_score", 0),
+                                    "outlier_score": row.get("outlier_score", 0),
+                                    "velocity_score": row.get("velocity_score", 0),
+                                    "last_market_date": row.get("freshness"),
+                                    "relative_volume_20d": row.get("relative_volume"),
+                                    "ema_stack": row.get("ema_stack"),
+                                    "signal_summary": row.get("signal") or row.get("signal_summary"),
+                                    "price_change_1d_pct": row.get("percent_change"),
+                                }
+                            )
+                            | {"scan_source_group": "Movers"}
+                            for row in movers_result.payload.get("results", [])
+                        ],
                         scan_failures=movers_result.payload.get("scan_failures", []),
                         provider_health=movers_result.payload.get("provider_health", {}),
                         cache_stats=movers_result.payload.get("cache", {}),
                     ),
                     "universe": f"{broad_universe} movers",
                 }
+            )
+        if include_highs:
+            highs_payload = run_highs_scan(
+                universe=broad_tickers,
+                provider_name=provider_name,
+                analysis_date=as_of,
+                history_period=history_period,
+                data_dir=data_dir,
+                top_n=top_n,
+                refresh_cache=refresh_cache,
+                scanner_override=shared_scanner,
+                provider_override=shared_provider,
+            ).payload
+        if include_earnings_movers:
+            earnings_payload = run_earnings_movers_scan(
+                universe=broad_tickers,
+                provider_name=provider_name,
+                analysis_date=as_of,
+                history_period=history_period,
+                data_dir=data_dir,
+                top_n=top_n,
+                refresh_cache=refresh_cache,
+                scanner_override=shared_scanner,
+                provider_override=shared_provider,
+            ).payload
+    if include_themes and theme_etfs.exists():
+        themes_payload = run_theme_scan(
+            themes=load_universe(theme_etfs),
+            provider_name=provider_name,
+            analysis_date=as_of,
+            history_period=history_period,
+            data_dir=data_dir,
+            top_n=top_n,
+            refresh_cache=refresh_cache,
+            scanner_override=shared_scanner,
+            provider_override=shared_provider,
+        ).payload
+        constituent_dir = Path("config/theme_constituents")
+        for row in (themes_payload.get("strongest_themes", []) if themes_payload else [])[:3]:
+            theme = str(row.get("ticker") or "").upper()
+            if not theme:
+                continue
+            constituent_file = constituent_dir / f"{theme}.csv"
+            if not constituent_file.exists():
+                continue
+            theme_constituent_payloads.append(
+                run_theme_constituents_scan(
+                    theme=theme,
+                    constituents_path=constituent_file,
+                    provider_name=provider_name,
+                    analysis_date=as_of,
+                    history_period=history_period,
+                    data_dir=data_dir,
+                    top_n=top_n,
+                    refresh_cache=refresh_cache,
+                    scanner_override=shared_scanner,
+                    provider_override=shared_provider,
+                ).payload
             )
     if tracked_tickers:
         scans.append(
@@ -318,6 +406,11 @@ def run_daily_decision(
         "is_partial_universe": False,
         "universe_warning": "",
     }
+    coverage_limitation = (
+        f"Coverage limitation: this scan can miss symbols outside {broad_universe}."
+        if broad_universe
+        else "Coverage limitation: this scan only evaluates configured active universes."
+    )
     coverage_status = {
         "universe_scanned": [item["source_group"] for item in scans],
         "scan_groups": [
@@ -348,6 +441,7 @@ def run_daily_decision(
         "provider_health_rows": provider_health_rows,
         "provider_health": _overall_provider_health(provider_health_rows),
         "benchmark_health_rows": benchmark_health_rows,
+        "coverage_limitation": coverage_limitation,
         **broad_universe_status,
     }
     benchmark_health = getattr(shared_scanner, "_benchmark_manager", None).as_dict() if getattr(shared_scanner, "_benchmark_manager", None) else {}
@@ -357,6 +451,12 @@ def run_daily_decision(
         coverage_status=coverage_status,
         data_issues=data_issues,
         top_n=top_n,
+    )
+    theme_constituent_candidates = _merge_theme_constituent_candidates(theme_constituent_payloads, limit=top_n)
+    coverage_missed_risk = _coverage_missed_risk_summary(
+        coverage_status=coverage_status,
+        broad_universe=broad_universe,
+        theme_etfs=theme_etfs,
     )
     payload = {
         "available": True,
@@ -384,6 +484,13 @@ def run_daily_decision(
         "watch_candidates": picker_view["watch_candidates"],
         "avoid_candidates": picker_view["avoid_candidates"],
         "portfolio_actions": picker_view["portfolio_actions"],
+        "earnings_news_movers": (earnings_payload or {}).get("earnings_movers", [])[:top_n],
+        "new_52_week_highs": (highs_payload or {}).get("new_52_week_highs", [])[:top_n],
+        "high_volume_movers": (movers_payload or {}).get("unusual_volume", [])[:top_n],
+        "strong_themes": (themes_payload or {}).get("strongest_themes", [])[:top_n],
+        "theme_constituent_candidates": theme_constituent_candidates,
+        "coverage_missed_risk": coverage_missed_risk,
+        "coverage_limitation": coverage_limitation,
         "compact_board": picker_view["compact_board"],
         "tracked_watchlist_table": _compact_signal_table(merged_decisions, source_group="Tracked", limit=10),
         "broad_scan_top_table": _compact_signal_table(merged_decisions, source_group="Broad", limit=top_n),
@@ -407,6 +514,10 @@ def run_daily_decision(
         "unusual_volume": _daily_mover_rows(movers_payload, merged_decisions, section="unusual_volume", limit=10),
         "breakout_volume": _daily_mover_rows(movers_payload, merged_decisions, section="breakout_volume", limit=10),
         "movers_scan_summary": _movers_scan_summary(movers_payload),
+        "highs_scan_summary": _generic_scan_summary(highs_payload),
+        "earnings_scan_summary": _generic_scan_summary(earnings_payload),
+        "theme_scan_summary": _generic_scan_summary(themes_payload),
+        "theme_constituent_scan_summaries": [_generic_scan_summary(item) for item in theme_constituent_payloads],
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "decision_today.json"
@@ -441,6 +552,14 @@ def load_daily_decision(path: Path = DEFAULT_DAILY_DECISION_JSON_PATH) -> dict[s
             "best_broad_setup": None,
             "best_mover_setup": None,
             "research_candidates": [],
+            "long_term_research_candidates": [],
+            "high_volume_movers": [],
+            "earnings_news_movers": [],
+            "new_52_week_highs": [],
+            "strong_themes": [],
+            "theme_constituent_candidates": [],
+            "coverage_missed_risk": [],
+            "coverage_limitation": "",
             "watch_candidates": [],
             "avoid_candidates": [],
             "portfolio_actions": [],
@@ -464,6 +583,10 @@ def load_daily_decision(path: Path = DEFAULT_DAILY_DECISION_JSON_PATH) -> dict[s
             "unusual_volume": [],
             "breakout_volume": [],
             "movers_scan_summary": {},
+            "highs_scan_summary": {},
+            "earnings_scan_summary": {},
+            "theme_scan_summary": {},
+            "theme_constituent_scan_summaries": [],
         }
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -857,8 +980,10 @@ def _build_daily_decision_markdown(payload: dict[str, Any]) -> str:
     watch_candidates = payload.get("watch_candidates", [])
     avoid_candidates = payload.get("avoid_candidates", [])
     data_issues = payload.get("data_issues", [])
-    best_mover_setup = payload.get("best_mover_setup")
     movers_summary = payload.get("movers_scan_summary") or {}
+    highs_summary = payload.get("highs_scan_summary") or {}
+    earnings_summary = payload.get("earnings_scan_summary") or {}
+    theme_summary = payload.get("theme_scan_summary") or {}
     lines = [
         "# TradeBruv Daily Pick",
         "",
@@ -875,10 +1000,15 @@ def _build_daily_decision_markdown(payload: dict[str, Any]) -> str:
         f"- Scan health: {(payload.get('scan_health') or {}).get('status', 'healthy')}",
         f"- Benchmark health: {(payload.get('benchmark_health') or {}).get('benchmark_health', 'healthy')}",
         f"- Movers scan: {_movers_summary_line(movers_summary)}",
+        f"- Highs scan: {_movers_summary_line(highs_summary)}",
+        f"- Earnings scan: {_movers_summary_line(earnings_summary)}",
+        f"- Theme scan: {_movers_summary_line(theme_summary)}",
         "",
     ]
     for warning in payload.get("benchmark_warnings", [])[:1]:
         lines.extend([f"- Warning: {warning}", ""])
+    if payload.get("coverage_limitation"):
+        lines.extend([f"- {payload.get('coverage_limitation')}", ""])
     lines.extend(["## Fast Actionable Setups"])
     if not fast_actionable:
         lines.append(f"- None. {payload.get('no_clean_candidate_reason') or 'No near-term setup cleared the actionability gate.'}")
@@ -897,14 +1027,26 @@ def _build_daily_decision_markdown(payload: dict[str, Any]) -> str:
             lines.append(
                 f"- {row.get('ticker')}: {_decision_label(row)} ({_decision_score(row)}) | {row.get('reason')} | {row.get('entry_label')}: {row.get('entry_zone')}"
             )
+    lines.extend(["", "## Earnings / News Movers"])
+    _append_discovery_section(lines, payload.get("earnings_news_movers", []), limit=8)
+    lines.extend(["", "## New 52-Week Highs"])
+    _append_discovery_section(lines, payload.get("new_52_week_highs", []), limit=8)
     lines.extend(["", "## High-Volume Movers"])
-    if not mover_watch:
-        lines.append("- None.")
+    high_volume_rows = payload.get("high_volume_movers") or mover_watch
+    if high_volume_rows is mover_watch:
+        if not mover_watch:
+            lines.append("- None.")
+        else:
+            for row in mover_watch[:5]:
+                lines.append(
+                    f"- {row.get('ticker')}: {_decision_label(row)} | RV {row.get('source_row', {}).get('relative_volume_20d', 'n/a')} | {row.get('source_row', {}).get('signal_summary') or row.get('action_trigger')}"
+                )
     else:
-        for row in mover_watch[:5]:
-            lines.append(
-                f"- {row.get('ticker')}: {_decision_label(row)} | RV {row.get('source_row', {}).get('relative_volume_20d', 'n/a')} | {row.get('source_row', {}).get('signal_summary') or row.get('action_trigger')}"
-            )
+        _append_discovery_section(lines, high_volume_rows, limit=8)
+    lines.extend(["", "## Strong Themes"])
+    _append_discovery_section(lines, payload.get("strong_themes", []), limit=8)
+    lines.extend(["", "## Theme Constituent Candidates"])
+    _append_discovery_section(lines, payload.get("theme_constituent_candidates", []), limit=8)
     lines.extend(["", "## Tracked Watchlist Setups"])
     if not tracked_watchlist:
         lines.append("- None.")
@@ -926,6 +1068,7 @@ def _build_daily_decision_markdown(payload: dict[str, Any]) -> str:
         for row in avoid_candidates[:5]:
             lines.append(f"- {row.get('ticker')}: {row.get('why_not') or row.get('reason')}")
     lines.extend(["", "## Best Mover Setup"])
+    best_mover_setup = payload.get("best_mover_setup")
     if best_mover_setup:
         lines.append(
             f"- {best_mover_setup.get('ticker')}: {best_mover_setup.get('actionability_label')} | {best_mover_setup.get('source_row', {}).get('signal_summary') or best_mover_setup.get('reason')}"
@@ -935,14 +1078,11 @@ def _build_daily_decision_markdown(payload: dict[str, Any]) -> str:
         )
     else:
         lines.append("- None.")
-    lines.extend(["", "## Top Gainers"])
-    _append_mover_list(lines, payload.get("top_gainers", []), limit=5)
-    lines.extend(["", "## Top Losers"])
-    _append_mover_list(lines, payload.get("top_losers", []), limit=5)
-    lines.extend(["", "## Unusual Volume"])
-    _append_mover_list(lines, payload.get("unusual_volume", []), limit=5)
     lines.extend(["", "## Breakout with Volume"])
     _append_mover_list(lines, payload.get("breakout_volume", []), limit=5)
+    lines.extend(["", "## Coverage / Missed Risk"])
+    for item in payload.get("coverage_missed_risk", [])[:5]:
+        lines.append(f"- {item}")
     if data_issues:
         lines.extend(["", "## Data Issues"])
         for row in data_issues[:10]:
@@ -1027,6 +1167,19 @@ def _append_mover_list(lines: list[str], rows: list[dict[str, Any]], *, limit: i
         )
 
 
+def _append_discovery_section(lines: list[str], rows: list[dict[str, Any]], *, limit: int) -> None:
+    if not rows:
+        lines.append("- None.")
+        return
+    for row in rows[:limit]:
+        ticker = row.get("ticker")
+        label = row.get("actionability_label") or row.get("actionability") or "No decision"
+        entry = row.get("entry_or_trigger") or row.get("entry_zone") or row.get("action_trigger") or "unavailable"
+        why = row.get("why_it_is_interesting") or row.get("reason") or row.get("signal")
+        risk = row.get("why_it_may_fail") or row.get("why_not") or row.get("risk")
+        lines.append(f"- {ticker}: {label} | {why} | entry/trigger {entry} | risk {risk}")
+
+
 def _movers_scan_summary(movers_payload: dict[str, Any] | None) -> dict[str, Any]:
     if not movers_payload:
         return {}
@@ -1043,6 +1196,73 @@ def _movers_scan_summary(movers_payload: dict[str, Any] | None) -> dict[str, Any
         "stop_reason": provider_health.get("stop_reason") or provider_health.get("message") or "",
         "completed": bool(attempted and (attempted >= scanned + failed) and not provider_health.get("stop_scan")),
     }
+
+
+def _generic_scan_summary(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not payload:
+        return {}
+    attempted = int(payload.get("universe_size") or payload.get("themes_scanned") or payload.get("tickers_attempted") or 0)
+    scanned = int(payload.get("tickers_successfully_scanned") or 0)
+    failed = len(payload.get("scan_failures", []))
+    provider_health = payload.get("provider_health") or {}
+    return {
+        "available": bool(payload.get("available", True)),
+        "attempted": attempted,
+        "scanned": scanned,
+        "failed": failed,
+        "status": provider_health.get("status", "healthy"),
+        "message": payload.get("message") or provider_health.get("message") or "",
+    }
+
+
+def _merge_theme_constituent_candidates(payloads: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for payload in payloads:
+        if not payload.get("available", False):
+            continue
+        rows.extend(payload.get("theme_constituent_candidates", []))
+    rows.sort(
+        key=lambda row: (
+            0 if str(row.get("actionability_label")) in {"Momentum Actionable Today", "Breakout Actionable Today", "Pullback Actionable Today"} else 1,
+            -float(row.get("rs_3m") or 0),
+            -float(row.get("relative_volume") or 0),
+            str(row.get("ticker") or ""),
+        )
+    )
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        ticker = str(row.get("ticker") or "").upper()
+        if ticker and ticker not in seen:
+            seen.add(ticker)
+            deduped.append(row)
+    return deduped[:limit]
+
+
+def _coverage_missed_risk_summary(
+    *,
+    coverage_status: dict[str, Any],
+    broad_universe: Path | None,
+    theme_etfs: Path,
+) -> list[str]:
+    warnings = [
+        str(coverage_status.get("coverage_limitation") or "Coverage limitation: configured universe only."),
+    ]
+    universe_warning = str(coverage_status.get("universe_warning") or "").strip()
+    if universe_warning:
+        warnings.append(universe_warning)
+    if broad_universe:
+        warnings.append(f"Configured universe file: {broad_universe}")
+    if theme_etfs and not theme_etfs.exists():
+        warnings.append(f"Theme ETF file missing: {theme_etfs}")
+    if int(coverage_status.get("tickers_failed") or 0) > 0:
+        warnings.append(f"{coverage_status.get('tickers_failed')} ticker(s) failed during scanning and may have reduced discovery coverage.")
+    deduped: list[str] = []
+    for warning in warnings:
+        clean = warning.strip()
+        if clean and clean not in deduped:
+            deduped.append(clean)
+    return deduped
 
 
 def _movers_summary_line(summary: dict[str, Any]) -> str:
