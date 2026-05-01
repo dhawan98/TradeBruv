@@ -24,7 +24,7 @@ def _decision(
         "ticker": ticker,
         "source_group": source_group,
         "primary_action": "Research / Buy Candidate" if status == "PASS" else "Data Insufficient",
-        "actionability_label": "Actionable Today" if status == "PASS" else "Data Insufficient",
+        "actionability_label": "Breakout Actionable Today" if status == "PASS" else "Data Insufficient",
         "actionability_score": actionability_score,
         "price_validation_status": status,
         "price_sanity": {
@@ -109,7 +109,7 @@ def test_workspace_payload_uses_canonical_selected_ticker() -> None:
         setup_quality=58,
         current_price=105.2,
     )
-    watch["actionability_label"] = "Research First"
+    watch["actionability_label"] = "Long-Term Research Candidate"
 
     workspace = _build_workspace_payload(
         [nvda, watch],

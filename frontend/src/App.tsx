@@ -339,7 +339,7 @@ function HomePage({ setPage }: { setPage: (page: PageKey) => void }) {
                       <span className={pctTone(row.source_row?.price_change_1d_pct)}>{pct(row.source_row?.price_change_1d_pct)}</span>
                       <span>RV {cell(row.source_row?.relative_volume_20d ?? 'n/a')}</span>
                       <span>{row.source_row?.signal_summary ?? 'No Clean Signal'}</span>
-                      <span>{shortAction(row.actionability_label ?? row.primary_action)}</span>
+                      <span>{shortAction(decisionLabel(row))}</span>
                     </div>
                   </button>
                 )) : <p className="muted">No rows in this view right now.</p>}
@@ -457,7 +457,7 @@ function MarketChartPanel({
   const latestPoint = series[series.length - 1];
   const signalSummary = String(chart?.signals?.signal_summary ?? decision?.source_row?.signal_summary ?? 'No Clean Signal');
   const signalExplanation = String(chart?.signals?.signal_explanation ?? decision?.source_row?.signal_explanation ?? 'No signal explanation loaded.');
-  const actionability = decision?.actionability_label ?? decision?.primary_action ?? chart?.price_source ?? 'No decision loaded';
+  const actionability = decisionLabel(decision) || chart?.price_source || 'No decision loaded';
   const sourceGroups = (decision?.source_groups ?? [decision?.source_group]).filter(Boolean).join(' + ');
   return (
     <div className="market-chart-panel">
@@ -565,7 +565,7 @@ function SelectedDecisionPanel({
       <div className="decision-heading">
         <div>
           <h3>{row.ticker}</h3>
-          <p>{row.actionability_label ?? row.primary_action ?? 'Decision unavailable'} · Score {Math.round(Number(row.actionability_score ?? row.score ?? 0))}</p>
+          <p>{decisionLabel(row)} · Score {decisionScore(row)}</p>
         </div>
         <div className="decision-score-block">
           <span>{money(Number(row.source_row?.current_price ?? 0))}</span>
@@ -626,6 +626,13 @@ function SelectedDecisionPanel({
         <summary>Risk</summary>
         <p>{row.why_not ?? 'No major counter-thesis beyond routine review discipline.'}</p>
       </details>
+      {row.ai_review ? (
+        <details className="decision-disclosure">
+          <summary>AI Second Pass</summary>
+          <p>{String((row.ai_review as Record<string, unknown>).disagreement_reason ?? row.ai_disagreement_reason ?? 'No AI disagreement note.')}</p>
+          <p>Suggested label: {String((row.ai_review as Record<string, unknown>).suggested_label ?? decisionLabel(row))} • Caution {String((row.ai_review as Record<string, unknown>).final_ai_caution ?? row.ai_caution ?? 'medium')}</p>
+        </details>
+      ) : null}
       <details className="decision-disclosure">
         <summary>Sources</summary>
         <p>{(row.source_groups ?? [row.source_group]).filter(Boolean).join(' + ') || 'No source tags loaded.'}</p>
@@ -919,7 +926,7 @@ function StockPickerScreenerTable({
 }) {
   const [sortBy, setSortBy] = useState<'score' | 'actionability' | 'relative_volume_20d' | 'price_change_1d_pct' | 'signal' | 'source'>('score');
   const sortedRows = [...rows].sort((left, right) => {
-    if (sortBy === 'actionability') return labelWeight(right.actionability_label) - labelWeight(left.actionability_label);
+    if (sortBy === 'actionability') return labelWeight(decisionLabel(right)) - labelWeight(decisionLabel(left));
     if (sortBy === 'score') return Number(right.actionability_score ?? right.score ?? 0) - Number(left.actionability_score ?? left.score ?? 0);
     if (sortBy === 'relative_volume_20d') return Number(right.source_row?.relative_volume_20d ?? 0) - Number(left.source_row?.relative_volume_20d ?? 0);
     if (sortBy === 'price_change_1d_pct') return Number(right.source_row?.price_change_1d_pct ?? 0) - Number(left.source_row?.price_change_1d_pct ?? 0);
@@ -968,8 +975,8 @@ function StockPickerScreenerTable({
                 <td><strong>{row.ticker}</strong></td>
                 <td>{cell(row.company)}</td>
                 <td>{cell(row.primary_action)}</td>
-                <td>{cell(row.actionability_label)}</td>
-                <td>{Math.round(Number(row.actionability_score ?? row.score ?? 0))}</td>
+                <td>{cell(decisionLabel(row))}</td>
+                <td>{decisionScore(row)}</td>
                 <td>{cell(row.source_row?.current_price ?? 'n/a')}</td>
                 <td className={pctTone(row.source_row?.price_change_1d_pct)}>{pct(row.source_row?.price_change_1d_pct)}</td>
                 <td>{cell(row.source_row?.relative_volume_20d ?? 'n/a')}</td>
@@ -1938,10 +1945,10 @@ function filterDecisionRows(
 ) {
   if (tab === 'All' || tab === 'All Decisions') return rows;
   if (tab === 'Best Ideas') {
-    return rows.filter((row) => row.actionability_label === 'Actionable Today' || row.actionability_label === 'Research First');
+    return rows.filter((row) => fastIdeaLabels().includes(decisionLabel(row)));
   }
   if (tab === 'Research' || tab === 'Buy / Research') {
-    return rows.filter((row) => row.primary_action === 'Research / Buy Candidate' && row.actionability_label === 'Research First');
+    return rows.filter((row) => row.primary_action === 'Research / Buy Candidate' && decisionLabel(row) === 'Long-Term Research Candidate');
   }
   if (tab === 'Watch') return rows.filter((row) => ['Watch', 'Watch Closely', 'Hold'].includes(String(row.primary_action)) && !!row.trigger_needed);
   if (tab === 'Hold / Add') return rows.filter((row) => ['Hold', 'Add'].includes(String(row.primary_action)));
@@ -1992,15 +1999,16 @@ function DecisionList({ rows, empty }: { rows: UnifiedDecision[]; empty: string 
               <span>{row.company ?? row.action_lane ?? 'Decision'}{row.action_lane ? ` • ${row.action_lane}` : ''}</span>
             </div>
             <div className="score-stack compact">
-              <strong>{Math.round(Number(row.actionability_score ?? row.score ?? 0))}</strong>
+              <strong>{decisionScore(row)}</strong>
               <span>Actionability</span>
             </div>
           </div>
           <div className="pill-row">
-            <StatusPill status={row.actionability_label ?? row.primary_action} />
-            {row.primary_action && row.actionability_label !== row.primary_action ? <Chip tone="neutral">{row.primary_action}</Chip> : null}
+            <StatusPill status={decisionLabel(row)} />
+            {row.primary_action && decisionLabel(row) !== row.primary_action ? <Chip tone="neutral">{row.primary_action}</Chip> : null}
             <Chip tone={String(row.risk_level).includes('High') ? 'warn' : 'neutral'}>{row.risk_level ?? 'Risk n/a'}</Chip>
             <Chip tone="neutral">Evidence: {row.evidence_pill ?? 'Not enough evidence'}</Chip>
+            {row.ai_adjusted_actionability_label ? <Chip tone="neutral">AI caution: {row.ai_caution ?? 'medium'}</Chip> : null}
           </div>
           <p>{row.actionability_reason ?? row.reason ?? 'No decision reason returned.'}</p>
           <p className="muted">{row.price_source ?? 'Price source unavailable'} • {compactDate(row.latest_market_date)} • {row.data_freshness ?? 'Freshness n/a'}</p>
@@ -2168,7 +2176,7 @@ function DualLineChart({ data }: { data: Record<string, unknown>[] }) {
 }
 
 function LevelPreview({ row }: { row: UnifiedDecision }) {
-  if (row.level_status === 'Hidden' || row.actionability_label === 'Data Insufficient') {
+  if (row.level_status === 'Hidden' || decisionLabel(row) === 'Data Insufficient') {
     return <Notice tone="warn">{row.levels_explanation ?? 'Levels hidden.'}</Notice>;
   }
 
@@ -2218,7 +2226,7 @@ function ResearchView({ payload }: { payload: ResearchPayload }) {
           <div>
             <span className="eyebrow">Final decision</span>
             <h3>{String(unifiedDecision?.ticker ?? payload.ticker ?? 'Unknown')}</h3>
-            <p>{String(unifiedDecision?.actionability_label ?? unifiedDecision?.primary_action ?? decision?.research_recommendation ?? scanner?.status_label ?? 'Data Insufficient')}</p>
+            <p>{decisionLabel(unifiedDecision) || String(decision?.research_recommendation ?? scanner?.status_label ?? 'Data Insufficient')}</p>
           </div>
           <div className="score-stack compact">
             <strong>{Math.round(Number(unifiedDecision?.actionability_score ?? unifiedDecision?.score ?? 0))}</strong>
@@ -2226,7 +2234,7 @@ function ResearchView({ payload }: { payload: ResearchPayload }) {
           </div>
         </div>
         <div className="pill-row">
-          <StatusPill status={unifiedDecision?.actionability_label ?? unifiedDecision?.primary_action} />
+          <StatusPill status={decisionLabel(unifiedDecision)} />
           <Chip tone={String(unifiedDecision?.risk_level).includes('High') ? 'warn' : 'neutral'}>{unifiedDecision?.risk_level ?? 'Risk n/a'}</Chip>
           <Chip tone="neutral">State: {unifiedDecision?.current_setup_state ?? 'Unknown'}</Chip>
           <Chip tone="neutral">Evidence: {unifiedDecision?.evidence_pill ?? 'Not enough evidence'}</Chip>
@@ -2563,20 +2571,20 @@ function missingEnvVars(rows: DataSourceRow[]) {
 }
 
 function filterCockpitRows(rows: UnifiedDecision[], view: CockpitView) {
-  const actionable = rows.filter((row) => row.actionability_label === 'Actionable Today' || row.actionability_label === 'Research First');
+  const actionable = rows.filter((row) => fastIdeaLabels().includes(decisionLabel(row)));
   if (view === 'Top') return actionable.slice(0, 24);
   if (view === 'Movers') return rows.filter((row) => (row.source_groups ?? [row.source_group]).includes('Movers'));
   if (view === 'Tracked') return rows.filter((row) => (row.source_groups ?? [row.source_group]).includes('Tracked'));
   if (view === 'Broad') return rows.filter((row) => (row.source_groups ?? [row.source_group]).includes('Broad') && !(row.source_groups ?? [row.source_group]).includes('Tracked'));
-  if (view === 'Watch') return rows.filter((row) => row.actionability_label === 'Wait for Better Entry' || row.actionability_label === 'Watch for Trigger');
-  if (view === 'Avoid') return rows.filter((row) => row.actionability_label === 'Avoid / Do Not Chase');
+  if (view === 'Watch') return rows.filter((row) => watchLabels().includes(decisionLabel(row)));
+  if (view === 'Avoid') return rows.filter((row) => decisionLabel(row) === 'Avoid / Do Not Chase');
   return rows;
 }
 
 function filterSignalRows(rows: SignalTableRow[], view: CockpitView) {
   if (view === 'All') return rows;
-  if (view === 'Top') return rows.filter((row) => ['Actionable Today', 'Research First'].includes(String(row.actionability)));
-  if (view === 'Watch') return rows.filter((row) => ['Wait for Better Entry', 'Watch for Trigger'].includes(String(row.actionability)));
+  if (view === 'Top') return rows.filter((row) => fastIdeaLabels().includes(String(row.actionability)));
+  if (view === 'Watch') return rows.filter((row) => watchLabels().includes(String(row.actionability)));
   if (view === 'Avoid') return rows.filter((row) => String(row.actionability) === 'Avoid / Do Not Chase');
   if (view === 'Movers') return rows.filter((row) => String(row.source).includes('Movers'));
   if (view === 'Tracked') return rows.filter((row) => String(row.source).includes('Tracked'));
@@ -2642,13 +2650,33 @@ function pctTone(value: unknown) {
 
 function labelWeight(value: unknown) {
   return {
-    'Actionable Today': 5,
-    'Research First': 4,
-    'Wait for Better Entry': 3,
-    'Watch for Trigger': 2,
+    'Breakout Actionable Today': 8,
+    'Momentum Actionable Today': 7,
+    'Pullback Actionable Today': 6,
+    'Long-Term Research Candidate': 5,
+    'High-Volume Mover Watch': 4,
+    'Slow Compounder Watch': 3,
+    'Watch for Better Entry': 2,
     'Avoid / Do Not Chase': 1,
     'Data Insufficient': 0,
   }[String(value ?? '')] ?? 0;
+}
+
+function decisionLabel(row?: Partial<UnifiedDecision> | null) {
+  if (!row) return 'Data Insufficient';
+  return String(row.ai_adjusted_actionability_label ?? row.actionability_label ?? row.primary_action ?? 'Data Insufficient');
+}
+
+function decisionScore(row?: Partial<UnifiedDecision> | null) {
+  return Math.round(Number(row?.ai_rerank_score ?? row?.actionability_score ?? row?.score ?? 0));
+}
+
+function fastIdeaLabels() {
+  return ['Breakout Actionable Today', 'Momentum Actionable Today', 'Pullback Actionable Today', 'Long-Term Research Candidate'];
+}
+
+function watchLabels() {
+  return ['Watch for Better Entry', 'Slow Compounder Watch', 'High-Volume Mover Watch'];
 }
 
 function labelize(value: string) {

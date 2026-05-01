@@ -40,7 +40,7 @@ def _security_from_closes(closes: list[float], *, volumes: list[float] | None = 
     )
 
 
-def _decision_row(ticker: str, source_group: str, score: int, *, label: str = "Actionable Today", action: str = "Research / Buy Candidate") -> dict[str, object]:
+def _decision_row(ticker: str, source_group: str, score: int, *, label: str = "Breakout Actionable Today", action: str = "Research / Buy Candidate") -> dict[str, object]:
     return {
         "ticker": ticker,
         "company_name": ticker,
@@ -56,7 +56,7 @@ def _decision_row(ticker: str, source_group: str, score: int, *, label: str = "A
         "primary_action": action,
         "reason": f"{ticker} reason.",
         "why_not": f"{ticker} why not.",
-        "level_status": "Actionable" if label == "Actionable Today" else "Conditional",
+        "level_status": "Actionable" if "Actionable Today" in label else "Conditional",
         "entry_label": "Entry",
         "entry_zone": "99 - 101",
         "stop_loss": 94.0,
@@ -66,7 +66,7 @@ def _decision_row(ticker: str, source_group: str, score: int, *, label: str = "A
         "risk_level": "Low",
         "latest_market_date": "2026-04-24",
         "action_trigger": f"Wait for {ticker}",
-        "trigger_needed": label != "Actionable Today",
+        "trigger_needed": "Actionable Today" not in label,
         "source_group": source_group,
         "source_row": {
             "ticker": ticker,
@@ -238,7 +238,7 @@ def test_decision_today_can_select_broad_candidate_over_tracked_watch(monkeypatc
         for row in rows:
             ticker = str(row["ticker"])
             if ticker == "TRACK":
-                decisions.append(_decision_row("TRACK", "Tracked", 70, label="Watch for Trigger", action="Watch"))
+                decisions.append(_decision_row("TRACK", "Tracked", 70, label="Watch for Better Entry", action="Watch"))
             else:
                 decisions.append(_decision_row("BROAD", "Broad", 92))
         return decisions

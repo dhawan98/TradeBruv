@@ -277,6 +277,11 @@ export type UnifiedDecision = {
   score?: number;
   actionability_score?: number;
   actionability_label?: string;
+  ai_adjusted_actionability_label?: string;
+  ai_rerank_score?: number;
+  ai_caution?: string;
+  ai_disagreement_reason?: string;
+  ai_review?: Record<string, unknown>;
   actionability_reason?: string;
   actionability_blockers?: string[];
   action_trigger?: string;

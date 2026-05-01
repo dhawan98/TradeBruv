@@ -4,7 +4,13 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
-from .actionability import build_actionability_profile, evidence_pill
+from .actionability import (
+    actionability_priority,
+    build_actionability_profile,
+    evidence_pill,
+    is_fast_actionable_label,
+    label_primary_action,
+)
 from .analysis import build_portfolio_recommendation
 from .portfolio import _as_position
 from .price_sanity import build_price_sanity_from_row
@@ -34,7 +40,7 @@ def build_unified_decisions(
     return sorted(
         decisions,
         key=lambda row: (
-            _actionability_priority(str(row.get("actionability_label") or "Data Insufficient")),
+            actionability_priority(str(row.get("actionability_label") or "Data Insufficient")),
             -_to_float(row.get("actionability_score"), default=0),
             _priority(row["primary_action"]),
             -_to_float(row.get("score"), default=0),
@@ -108,11 +114,12 @@ def build_unified_decision(
         "latest_market_date": price_sanity.get("last_market_date"),
         "price_validation_status": price_sanity.get("price_validation_status"),
         "price_validation_reason": price_sanity.get("price_validation_reason"),
-        "is_actionable": actionability["actionability_label"] == "Actionable Today",
+        "is_actionable": is_fast_actionable_label(str(actionability["actionability_label"])),
         "is_conditional": actionability["level_status"] == "Conditional",
         "is_preliminary": actionability["level_status"] == "Preliminary",
         "actionability_score": actionability["actionability_score"],
         "actionability_label": actionability["actionability_label"],
+        "best_actionability_lane": actionability.get("best_actionability_lane"),
         "actionability_reason": actionability["actionability_reason"],
         "actionability_blockers": actionability["actionability_blockers"],
         "action_trigger": actionability["action_trigger"],
@@ -121,6 +128,12 @@ def build_unified_decision(
         "level_status": actionability["level_status"],
         "entry_label": actionability["entry_label"],
         "levels_explanation": actionability["levels_explanation"],
+        "momentum_actionability_score": actionability.get("momentum_actionability_score"),
+        "breakout_actionability_score": actionability.get("breakout_actionability_score"),
+        "pullback_actionability_score": actionability.get("pullback_actionability_score"),
+        "long_term_research_score": actionability.get("long_term_research_score"),
+        "mover_score": actionability.get("mover_score"),
+        "slow_compounder_score": actionability.get("slow_compounder_score"),
         "evidence_pill": evidence_pill(validation_context),
         "price_sanity": price_sanity,
         "decision_notices": decision_notices,
@@ -200,10 +213,8 @@ def _primary_action(
         return "Data Insufficient"
     if label == "Avoid / Do Not Chase" or str(row.get("status_label")) == "Avoid":
         return "Avoid"
-    if label in {"Actionable Today", "Research First"}:
-        return "Research / Buy Candidate"
-    if label in {"Wait for Better Entry", "Watch for Trigger"}:
-        return "Watch" if not owned else "Hold"
+    if label_primary_action(label, owned=owned) in {"Research / Buy Candidate", "Watch", "Hold"}:
+        return label_primary_action(label, owned=owned)
     if str(row.get("investing_action_label")) == "Hold":
         return "Hold" if owned else "Watch"
     if _to_float(row.get("velocity_score"), default=0) >= 45:
@@ -262,14 +273,12 @@ def _reason(
             if value and "not confirmed" not in value.lower() and "no " not in value.lower():
                 return value
     label = str(actionability.get("actionability_label") or "")
-    if label == "Actionable Today":
-        return str(row.get("investing_reason") or row.get("outlier_reason") or "Validated price and current setup make this actionable today.")
-    if label == "Research First":
-        return str(actionability.get("actionability_reason") or "Worth researching first, but not clean enough for an immediate entry.")
-    if label == "Wait for Better Entry":
+    if label in {"Momentum Actionable Today", "Breakout Actionable Today", "Pullback Actionable Today"}:
+        return str(row.get("investing_reason") or row.get("outlier_reason") or actionability.get("actionability_reason") or "Validated price and current setup make this actionable today.")
+    if label == "Long-Term Research Candidate":
+        return str(actionability.get("actionability_reason") or "Strong long-term quality, but not a same-day fast setup.")
+    if label in {"Watch for Better Entry", "Slow Compounder Watch", "High-Volume Mover Watch"}:
         return str(actionability.get("actionability_reason") or "Valid price, but the setup is extended and needs a better entry.")
-    if label == "Watch for Trigger":
-        return str(actionability.get("actionability_reason") or "Interesting setup, but it needs a trigger before it becomes actionable.")
     if primary_action == "Avoid":
         return str(row.get("investing_bear_case") or row.get("outlier_reason") or "Risk/reward is not clean enough.")
     if primary_action == "Research / Buy Candidate":
@@ -370,18 +379,6 @@ def _priority(action: str) -> int:
         "Data Insufficient": 8,
     }
     return order.get(action, 9)
-
-
-def _actionability_priority(label: str) -> int:
-    order = {
-        "Actionable Today": 0,
-        "Research First": 1,
-        "Wait for Better Entry": 2,
-        "Watch for Trigger": 3,
-        "Avoid / Do Not Chase": 4,
-        "Data Insufficient": 5,
-    }
-    return order.get(label, 6)
 
 
 def _to_float(value: Any, default: float | None = None) -> float | None:

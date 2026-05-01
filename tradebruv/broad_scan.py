@@ -68,6 +68,7 @@ def run_broad_scan(
     rows: list[dict[str, Any]] = []
     failed_rows: list[dict[str, Any]] = []
     provider_health: dict[str, Any] = {"provider": provider_name, "status": "healthy"}
+    benchmark_health: dict[str, Any] = {}
     attempted = 0
     aborted_tickers: list[str] = []
     for start in range(0, len(tickers), batch_size):
@@ -77,6 +78,7 @@ def run_broad_scan(
         diagnostics = scanner.scan_with_diagnostics(batch, mode="outliers", include_failures_in_results=False)
         attempted += diagnostics.attempted
         provider_health = diagnostics.provider_health
+        benchmark_health = diagnostics.benchmark_health
         aborted_tickers.extend(diagnostics.aborted_tickers)
         rows.extend(result.to_dict() | {"scan_source_group": "Broad"} for result in diagnostics.results)
         failed_rows.extend(diagnostics.failures)
@@ -161,6 +163,8 @@ def run_broad_scan(
         "failed_tickers": failed_rows,
         "scan_failures": failed_rows,
         "provider_health": provider_health,
+        "benchmark_health": benchmark_health,
+        "benchmark_warnings": [benchmark_health["benchmark_warning"]] if benchmark_health.get("benchmark_warning") else [],
         "scan_incomplete": bool(provider_health.get("stop_scan")),
         "scan_health_message": provider_health.get("stop_reason") or provider_health.get("message") or "",
         "aborted_tickers": aborted_tickers,

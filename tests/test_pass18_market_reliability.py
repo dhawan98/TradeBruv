@@ -132,6 +132,7 @@ def test_broad_scan_keeps_failures_out_of_ranked_rows(monkeypatch, tmp_path: Pat
             attempted=2,
             aborted_tickers=["AAPL"],
             provider_health={"provider": "real", "status": "rate_limited", "stop_scan": True, "stop_reason": "Provider rate-limited after 1 symbols"},
+            benchmark_health={},
         )
 
     monkeypatch.setattr("tradebruv.broad_scan.DeterministicScanner.scan_with_diagnostics", fake_scan)
@@ -470,7 +471,7 @@ def test_daily_decision_dedupes_failures_and_uses_movers_sections(monkeypatch, t
                     "score": 88,
                     "regular_investing_score": 88,
                     "actionability_score": 91,
-                    "actionability_label": "Actionable Today",
+                    "actionability_label": "Breakout Actionable Today",
                     "actionability_reason": "Breakout with volume.",
                     "reason": "Breakout with volume.",
                     "why_not": "Needs trend to hold.",
@@ -584,7 +585,7 @@ def test_daily_decision_reuses_unique_fetches_once_per_run(monkeypatch, tmp_path
                 "score": 80,
                 "regular_investing_score": 80,
                 "actionability_score": 80,
-                "actionability_label": "Actionable Today",
+                "actionability_label": "Breakout Actionable Today",
                 "actionability_reason": "Shared cache test.",
                 "reason": "Shared cache test.",
                 "why_not": "Watch risk.",

@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from .actionability import actionability_priority, is_fast_actionable_label, label_bucket
+from .ai_rerank import AIRerankProvider, apply_ai_rerank
 from .alternative_data import DEFAULT_ALTERNATIVE_DATA_PATH, AlternativeDataOverlayProvider, load_alternative_data_repository
 from .catalysts import CatalystOverlayProvider, load_catalyst_repository
 from .cli import build_provider, load_universe
@@ -45,6 +47,8 @@ def run_daily_decision(
     refresh_cache: bool = False,
     analysis_date: date | None = None,
     output_dir: Path = DEFAULT_DAILY_DECISION_OUTPUT_DIR,
+    ai_rerank: str = "off",
+    ai_rerank_provider: AIRerankProvider | None = None,
 ) -> dict[str, Any]:
     as_of = analysis_date or date.today()
     validation_context = build_validation_context()
@@ -215,6 +219,7 @@ def run_daily_decision(
     coverage_failed = 0
     cache_stats: dict[str, Any] = {"hits": 0, "misses": 0, "ttl_minutes": "unavailable"}
     provider_health_rows: list[dict[str, Any]] = []
+    benchmark_health_rows: list[dict[str, Any]] = []
     for item in scans:
         lane = item["lane"]
         source_group = item["source_group"]
@@ -256,6 +261,8 @@ def run_daily_decision(
         scan_failures.extend(item_failures)
         if getattr(scan, "provider_health", None):
             provider_health_rows.append(scan.provider_health)
+            if scan.provider_health.get("benchmark_health_details"):
+                benchmark_health_rows.append(scan.provider_health.get("benchmark_health_details"))
         if getattr(scan, "cache_stats", None):
             cache_stats["hits"] = int(cache_stats.get("hits", 0)) + int(scan.cache_stats.get("hits", 0))
             cache_stats["misses"] = int(cache_stats.get("misses", 0)) + int(scan.cache_stats.get("misses", 0))
@@ -275,12 +282,20 @@ def run_daily_decision(
                 "market_regime": scan.market_regime,
                 "scan_failures": item_failures,
                 "provider_health": getattr(scan, "provider_health", {}),
+                "benchmark_health": getattr(scan, "provider_health", {}).get("benchmark_health_details", {}),
             }
         )
 
     merged = merge_canonical_rows(combined_rows, combined_decisions)
     merged_rows = merged["canonical_rows"]
     merged_decisions = merged["canonical_decisions"]
+    if ai_rerank != "off":
+        merged_decisions = apply_ai_rerank(
+            merged_decisions,
+            mode=ai_rerank,
+            provider=ai_rerank_provider,
+            limit=min(top_n, 3),
+        )
     unique_scan_failures = _dedupe_scan_failures(scan_failures)
     data_issues = [decision for decision in merged_decisions if decision.get("price_validation_status") != "PASS"]
     picker_view = _build_picker_view(merged_decisions, data_issues=data_issues)
@@ -322,8 +337,11 @@ def run_daily_decision(
         "cache_fallback_hits": cache_stats.get("fallback_hits", 0),
         "provider_health_rows": provider_health_rows,
         "provider_health": _overall_provider_health(provider_health_rows),
+        "benchmark_health_rows": benchmark_health_rows,
         **broad_universe_status,
     }
+    benchmark_health = getattr(shared_scanner, "_benchmark_manager", None).as_dict() if getattr(shared_scanner, "_benchmark_manager", None) else {}
+    coverage_status |= benchmark_health
     workspace = _build_workspace_payload(
         merged_decisions,
         coverage_status=coverage_status,
@@ -335,6 +353,7 @@ def run_daily_decision(
         "generated_at": datetime.utcnow().isoformat() + "Z",
         "analysis_date": as_of.isoformat(),
         "provider": provider_name,
+        "ai_rerank": ai_rerank,
         "mode": "daily-decision",
         "data_mode": "live_daily_decision",
         "results": merged_rows,
@@ -343,10 +362,14 @@ def run_daily_decision(
         "data_issues": data_issues,
         "overall_top_candidate": picker_view["top_candidate"],
         "top_candidate": picker_view["top_candidate"],
+        "fast_actionable_setups": picker_view["fast_actionable_setups"],
         "best_tracked_setup": _best_from_source(merged_decisions, "Tracked"),
         "best_broad_setup": _best_from_source(merged_decisions, "Broad"),
         "best_mover_setup": _best_from_source(merged_decisions, "Movers"),
         "research_candidates": picker_view["research_candidates"],
+        "long_term_research_candidates": picker_view["long_term_research_candidates"],
+        "high_volume_mover_watch": picker_view["high_volume_mover_watch"],
+        "tracked_watchlist_setups": picker_view["tracked_watchlist_setups"],
         "watch_candidates": picker_view["watch_candidates"],
         "avoid_candidates": picker_view["avoid_candidates"],
         "portfolio_actions": picker_view["portfolio_actions"],
@@ -358,6 +381,8 @@ def run_daily_decision(
         "no_clean_candidate_reason": picker_view["no_clean_candidate_reason"],
         "data_coverage_status": coverage_status,
         "scan_health": coverage_status.get("provider_health", {}),
+        "benchmark_health": benchmark_health,
+        "benchmark_warnings": [benchmark_health["benchmark_warning"]] if benchmark_health.get("benchmark_warning") else [],
         "scan_failures": unique_scan_failures,
         "validation_context": validation_context,
         "market_regime": _pick_market_regime(scan_summaries),
@@ -414,6 +439,8 @@ def load_daily_decision(path: Path = DEFAULT_DAILY_DECISION_JSON_PATH) -> dict[s
             "signal_table": [],
             "no_clean_candidate_reason": "No live daily decision has been built yet.",
             "data_coverage_status": {},
+            "benchmark_health": {},
+            "benchmark_warnings": [],
             "validation_context": build_validation_context(),
             "market_regime": {},
             "demo_mode": False,
@@ -732,11 +759,11 @@ def _build_workspace_payload(
     top_n: int,
 ) -> dict[str, Any]:
     picker_view = _build_picker_view(decisions, data_issues=data_issues)
-    top_candidates = [row for row in decisions if row.get("actionability_label") in {"Actionable Today", "Research First"}][:8]
+    top_candidates = list(picker_view.get("fast_actionable_setups") or [])[:8]
     tracked_rows = [row for row in decisions if _has_source_group(row, "Tracked")]
     broad_rows = [row for row in decisions if _has_source_group(row, "Broad")]
     mover_rows = [row for row in decisions if _has_source_group(row, "Movers")]
-    watch_rows = [row for row in decisions if row.get("actionability_label") in {"Wait for Better Entry", "Watch for Trigger"}][:5]
+    watch_rows = list(picker_view.get("watch_candidates") or [])[:5]
     avoid_rows = [row for row in decisions if row.get("actionability_label") == "Avoid / Do Not Chase"][:5]
     selected_ticker = (
         (picker_view.get("top_candidate") or {}).get("ticker")
@@ -759,6 +786,10 @@ def _build_workspace_payload(
         "selected_ticker": selected_ticker,
         "canonical_rows": decisions,
         "top_candidates": top_candidates,
+        "fast_actionable_setups": picker_view.get("fast_actionable_setups", []),
+        "long_term_research_candidates": picker_view.get("long_term_research_candidates", []),
+        "high_volume_mover_watch": picker_view.get("high_volume_mover_watch", []),
+        "tracked_watchlist_setups": picker_view.get("tracked_watchlist_setups", []),
         "tracked_rows": tracked_rows[:10],
         "broad_rows": broad_rows[:top_n],
         "mover_rows": mover_rows[:top_n],
@@ -771,11 +802,11 @@ def _build_workspace_payload(
         "data_issues": data_issues,
         "view_counts": {
             "all": len(decisions),
-            "top": len([row for row in decisions if row.get("actionability_label") in {"Actionable Today", "Research First"}]),
+            "top": len([row for row in decisions if is_fast_actionable_label(_decision_label(row))]),
             "tracked": len(tracked_rows),
             "broad": len(broad_rows),
             "movers": len(mover_rows),
-            "watch": len([row for row in decisions if row.get("actionability_label") in {"Wait for Better Entry", "Watch for Trigger"}]),
+            "watch": len([row for row in decisions if label_bucket(_decision_label(row)) == "watch"]),
             "avoid": len([row for row in decisions if row.get("actionability_label") == "Avoid / Do Not Chase"]),
             "data_issues": len(data_issues),
         },
@@ -807,7 +838,10 @@ def _has_source_group(row: dict[str, Any], source_group: str) -> bool:
 
 def _build_daily_decision_markdown(payload: dict[str, Any]) -> str:
     top_candidate = payload.get("top_candidate")
-    research_candidates = payload.get("research_candidates", [])
+    fast_actionable = payload.get("fast_actionable_setups", [])
+    research_candidates = payload.get("long_term_research_candidates", payload.get("research_candidates", []))
+    mover_watch = payload.get("high_volume_mover_watch", [])
+    tracked_watchlist = payload.get("tracked_watchlist_setups", [])
     watch_candidates = payload.get("watch_candidates", [])
     avoid_candidates = payload.get("avoid_candidates", [])
     data_issues = payload.get("data_issues", [])
@@ -819,56 +853,55 @@ def _build_daily_decision_markdown(payload: dict[str, Any]) -> str:
         f"- Generated: {payload.get('generated_at', 'unavailable')}",
         f"- Analysis date: {payload.get('analysis_date', 'unavailable')}",
         f"- Provider: {payload.get('provider', 'unavailable')}",
+        f"- AI rerank: {payload.get('ai_rerank', 'off')}",
         f"- Demo mode: {payload.get('demo_mode', False)}",
         f"- Scan health: {(payload.get('scan_health') or {}).get('status', 'healthy')}",
+        f"- Benchmark health: {(payload.get('benchmark_health') or {}).get('benchmark_health', 'healthy')}",
         f"- Movers scan: {_movers_summary_line(movers_summary)}",
         "",
     ]
-    if top_candidate:
-        lines.extend(
-            [
-                "## Top Candidate",
-                f"Ticker: {top_candidate.get('ticker')}",
-                f"Action: {top_candidate.get('primary_action')}",
-                f"Actionability: {top_candidate.get('actionability_label')} ({top_candidate.get('actionability_score')})",
-                f"Why now: {top_candidate.get('actionability_reason') or top_candidate.get('reason')}",
-                f"Why not: {top_candidate.get('why_not')}",
-                f"{top_candidate.get('entry_label', 'Entry')}: {top_candidate.get('entry_zone')}",
-                f"Stop: {top_candidate.get('stop_loss')}",
-                f"TP1: {top_candidate.get('tp1')}",
-                f"TP2: {top_candidate.get('tp2')}",
-                f"Data freshness: {top_candidate.get('data_freshness')}",
-                "",
-            ]
-        )
+    for warning in payload.get("benchmark_warnings", [])[:1]:
+        lines.extend([f"- Warning: {warning}", ""])
+    lines.extend(["## Fast Actionable Setups"])
+    if not fast_actionable:
+        lines.append(f"- None. {payload.get('no_clean_candidate_reason') or 'No near-term setup cleared the actionability gate.'}")
     else:
-        lines.extend(
-            [
-                "# No Clean Candidate Today",
-                f"Reason: {payload.get('no_clean_candidate_reason') or 'No validated setup passed the actionability gate.'}",
-                "",
-                "Best Watch Names:",
-            ]
-        )
-        if watch_candidates:
-            for row in watch_candidates[:5]:
-                lines.append(f"- {row.get('ticker')}: {row.get('action_trigger')}")
-        else:
-            lines.append("- None.")
-    lines.extend(["", "## Next 3 Research Candidates"])
+        for row in fast_actionable[:5]:
+            lines.append(
+                f"- {row.get('ticker')}: {_decision_label(row)} ({_decision_score(row)}) | {row.get('actionability_reason') or row.get('reason')} | {row.get('entry_label')}: {row.get('entry_zone')}"
+            )
+            if row == top_candidate:
+                lines.append(f"  Stop {row.get('stop_loss')} | TP1 {row.get('tp1')} | TP2 {row.get('tp2')}")
+    lines.extend(["", "## Long-Term Research Candidates"])
     if not research_candidates:
         lines.append("- None.")
     else:
-        for row in research_candidates[:3]:
+        for row in research_candidates[:5]:
             lines.append(
-                f"- {row.get('ticker')}: {row.get('actionability_label')} | {row.get('reason')} | {row.get('entry_label')}: {row.get('entry_zone')}"
+                f"- {row.get('ticker')}: {_decision_label(row)} ({_decision_score(row)}) | {row.get('reason')} | {row.get('entry_label')}: {row.get('entry_zone')}"
             )
-    lines.extend(["", "## Watch / Wait"])
+    lines.extend(["", "## High-Volume Movers"])
+    if not mover_watch:
+        lines.append("- None.")
+    else:
+        for row in mover_watch[:5]:
+            lines.append(
+                f"- {row.get('ticker')}: {_decision_label(row)} | RV {row.get('source_row', {}).get('relative_volume_20d', 'n/a')} | {row.get('source_row', {}).get('signal_summary') or row.get('action_trigger')}"
+            )
+    lines.extend(["", "## Tracked Watchlist Setups"])
+    if not tracked_watchlist:
+        lines.append("- None.")
+    else:
+        for row in tracked_watchlist[:5]:
+            lines.append(
+                f"- {row.get('ticker')}: {_decision_label(row)} | {row.get('actionability_reason') or row.get('reason')}"
+            )
+    lines.extend(["", "## Watch for Better Entry"])
     if not watch_candidates:
         lines.append("- None.")
     else:
         for row in watch_candidates[:5]:
-            lines.append(f"- {row.get('ticker')}: {row.get('actionability_label')} | trigger {row.get('action_trigger')}")
+            lines.append(f"- {row.get('ticker')}: {_decision_label(row)} | trigger {row.get('action_trigger')}")
     lines.extend(["", "## Avoid / Do Not Chase"])
     if not avoid_candidates:
         lines.append("- None.")
@@ -907,14 +940,16 @@ def _build_daily_decision_markdown(payload: dict[str, Any]) -> str:
 
 def _build_decision_quality_review(payload: dict[str, Any]) -> str:
     top_candidate = payload.get("top_candidate")
-    research_candidates = payload.get("research_candidates", [])
+    research_candidates = payload.get("long_term_research_candidates", payload.get("research_candidates", []))
     watch_candidates = payload.get("watch_candidates", [])
+    fast_actionable = payload.get("fast_actionable_setups", [])
+    mover_watch = payload.get("high_volume_mover_watch", [])
     decisions = payload.get("decisions", [])
     movers_summary = payload.get("movers_scan_summary") or {}
     top_gainers = payload.get("top_gainers", [])
     breakout_volume = payload.get("breakout_volume", [])
     best_mover_setup = payload.get("best_mover_setup")
-    excluded = [row for row in decisions if row.get("actionability_label") in {"Avoid / Do Not Chase", "Data Insufficient"}]
+    excluded = [row for row in decisions if _decision_label(row) in {"Avoid / Do Not Chase", "Data Insufficient"}]
     tracked = {str(row.get("ticker")): row for row in decisions}
     mover_rows = {
         str(row.get("ticker"))
@@ -922,20 +957,20 @@ def _build_decision_quality_review(payload: dict[str, Any]) -> str:
         if row.get("ticker")
     }
     excluded_summary = ", ".join(
-        f"{row.get('ticker')} ({row.get('actionability_label')})"
+        f"{row.get('ticker')} ({_decision_label(row)})"
         for row in excluded[:10]
     ) or "None"
     mover_promotion_summary = ", ".join(
-        f"{ticker} ({tracked.get(ticker, {}).get('actionability_label', 'not promoted')})"
+        f"{ticker} ({_decision_label(tracked.get(ticker, {})) if tracked.get(ticker) else 'not promoted'})"
         for ticker in list(mover_rows)[:5]
     ) or "None"
     best_mover_summary = (
-        f"{best_mover_setup.get('ticker')} ({best_mover_setup.get('actionability_label')})"
+        f"{best_mover_setup.get('ticker')} ({_decision_label(best_mover_setup)})"
         if best_mover_setup
         else "None"
     )
     ticker_summary = "; ".join(
-        f"{ticker}: {tracked.get(ticker, {}).get('actionability_label', 'missing')}"
+        f"{ticker}: {_decision_label(tracked.get(ticker, {})) if tracked.get(ticker) else 'missing'}"
         for ticker in ("NVDA", "PLTR", "MU")
     )
     watch_trigger_summary = (
@@ -946,12 +981,13 @@ def _build_decision_quality_review(payload: dict[str, Any]) -> str:
     lines = [
         "# Decision Quality Review",
         "",
-        f"- Did the system produce a top candidate? {'Yes' if top_candidate else 'No'}",
+        f"- Did the system produce a fast actionable candidate? {'Yes' if top_candidate else 'No'}",
         f"- If not, why not? {payload.get('no_clean_candidate_reason') or 'A top candidate was available.'}",
-        f"- What are the top 3 research candidates? {', '.join(str(row.get('ticker')) for row in research_candidates[:3]) or 'None'}",
+        f"- What are the fast actionable setups? {', '.join(str(row.get('ticker')) for row in fast_actionable[:5]) or 'None'}",
+        f"- What are the long-term research candidates? {', '.join(str(row.get('ticker')) for row in research_candidates[:5]) or 'None'}",
         f"- What are the best watch names? {', '.join(str(row.get('ticker')) for row in watch_candidates[:5]) or 'None'}",
         f"- Did movers scan complete? {_movers_summary_line(movers_summary)}",
-        f"- What were the best mover setups? {best_mover_summary}",
+        f"- What were the best mover setups? {best_mover_summary} | extra mover watch names: {', '.join(str(row.get('ticker')) for row in mover_watch[:5]) or 'None'}",
         f"- Were top mover names promoted into daily decision? {mover_promotion_summary}",
         f"- If not actionable, why not? {best_mover_setup.get('actionability_reason') if best_mover_setup else payload.get('no_clean_candidate_reason') or 'No mover setup qualified.'}",
         f"- Which names were excluded and why? {excluded_summary}",
@@ -1019,13 +1055,18 @@ def _clean_failure_reason_for_display(row: dict[str, Any]) -> str:
 
 
 def _build_picker_view(decisions: list[dict[str, Any]], *, data_issues: list[dict[str, Any]]) -> dict[str, Any]:
-    actionable = [row for row in decisions if row.get("actionability_label") == "Actionable Today" and row.get("primary_action") == "Research / Buy Candidate"]
-    research = [row for row in decisions if row.get("actionability_label") == "Research First" and row.get("primary_action") == "Research / Buy Candidate"]
-    watch = [row for row in decisions if row.get("actionability_label") in {"Wait for Better Entry", "Watch for Trigger"}]
-    avoid = [row for row in decisions if row.get("actionability_label") == "Avoid / Do Not Chase"]
+    actionable = [row for row in decisions if is_fast_actionable_label(_decision_label(row)) and row.get("primary_action") == "Research / Buy Candidate"]
+    research = [row for row in decisions if _decision_label(row) == "Long-Term Research Candidate" and row.get("primary_action") == "Research / Buy Candidate"]
+    movers = [row for row in decisions if _decision_label(row) == "High-Volume Mover Watch"]
+    watch = [row for row in decisions if _decision_label(row) in {"Watch for Better Entry", "Slow Compounder Watch"}]
+    avoid = [row for row in decisions if _decision_label(row) == "Avoid / Do Not Chase"]
     portfolio_actions = [row for row in decisions if row.get("action_lane") == "Portfolio" and row.get("primary_action") not in {"Data Insufficient", "Avoid"}][:5]
     top_candidate = actionable[0] if actionable else None
-    research_candidates = [row for row in actionable[1:]] + research
+    tracked_watchlist = [
+        row
+        for row in decisions
+        if _has_source_group(row, "Tracked") and _decision_label(row) not in {"Avoid / Do Not Chase", "Data Insufficient"}
+    ][:5]
     compact_board = [
         row
         for row in decisions
@@ -1038,15 +1079,31 @@ def _build_picker_view(decisions: list[dict[str, Any]], *, data_issues: list[dic
         elif watch:
             no_clean_candidate_reason = "The best names are valid, but they still need a trigger or a better entry."
         elif research:
-            no_clean_candidate_reason = "There are research names, but none are clean enough to call actionable today."
+            no_clean_candidate_reason = "There are solid research names, but none have true near-term confirmation."
         else:
             no_clean_candidate_reason = "No validated setup passed the actionability threshold."
     return {
         "top_candidate": top_candidate,
-        "research_candidates": research_candidates[:3],
+        "fast_actionable_setups": actionable[:5],
+        "research_candidates": research[:5],
+        "long_term_research_candidates": research[:5],
+        "high_volume_mover_watch": movers[:5],
+        "tracked_watchlist_setups": tracked_watchlist,
         "watch_candidates": watch[:5],
         "avoid_candidates": avoid[:5],
         "portfolio_actions": portfolio_actions,
         "compact_board": compact_board,
         "no_clean_candidate_reason": no_clean_candidate_reason,
     }
+
+
+def _decision_label(row: dict[str, Any]) -> str:
+    return str(row.get("ai_adjusted_actionability_label") or row.get("actionability_label") or "Data Insufficient")
+
+
+def _decision_score(row: dict[str, Any]) -> int:
+    score = row.get("ai_rerank_score") if row.get("ai_adjusted_actionability_label") else row.get("actionability_score")
+    try:
+        return int(round(float(score or 0)))
+    except (TypeError, ValueError):
+        return 0

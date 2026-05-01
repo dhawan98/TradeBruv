@@ -146,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
                 refresh_cache=args.refresh_cache,
                 analysis_date=args.as_of_date or date.today(),
                 output_dir=args.output_dir,
+                ai_rerank=args.ai_rerank,
             )
         except (ProviderConfigurationError, FileNotFoundError, ValueError) as exc:
             print(f"Decision-today error: {exc}")
@@ -153,10 +154,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Daily decision JSON: {payload['json_path']}")
         print(f"Daily decision MD:   {payload['markdown_path']}")
         print(f"Validated actionable rows: {sum(1 for row in payload.get('decisions', []) if row.get('price_validation_status') == 'PASS')}")
+        for warning in payload.get("benchmark_warnings", [])[:1]:
+            print(f"Warning: {warning}")
         return 0
 
     if args.command == "universe":
-        from .universe_registry import clean_universe_file, import_universe_csv, list_universe_definitions, universe_text, validate_universe_file
+        from .universe_registry import clean_universe_file, expand_universe, import_universe_csv, list_universe_definitions, universe_text, validate_universe_file
 
         if args.universe_command == "list":
             for definition in list_universe_definitions():
@@ -176,6 +179,23 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.universe_command == "clean":
             print(json.dumps(clean_universe_file(args.input, args.output), indent=2))
+            return 0
+        if args.universe_command == "expand":
+            csv_inputs = []
+            for item in args.csv_input or []:
+                path_text, _, column = item.partition(":")
+                csv_inputs.append((Path(path_text), column or args.default_ticker_column))
+            print(
+                json.dumps(
+                    expand_universe(
+                        output_path=args.output,
+                        target_size=args.target_size,
+                        csv_inputs=csv_inputs,
+                        extra_files=args.extra_file or [],
+                    ),
+                    indent=2,
+                )
+            )
             return 0
 
     if args.command == "tracked":
@@ -219,6 +239,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Broad scan JSON: {payload.json_path}")
         print(f"Broad scan CSV:  {payload.csv_path}")
         print(f"Broad scan MD:   {payload.markdown_path}")
+        for warning in payload.payload.get("benchmark_warnings", [])[:1]:
+            print(f"Warning: {warning}")
         return 0
 
     if args.command == "market-health":
@@ -228,6 +250,30 @@ def main(argv: list[str] | None = None) -> int:
             payload = build_market_health_report(args.provider, history_period=args.history_period, sample_ticker=args.ticker)
         except (ProviderConfigurationError, ValueError) as exc:
             print(f"Market-health error: {exc}")
+            return 2
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    if args.command == "benchmark-health":
+        try:
+            from .benchmarking import build_benchmark_health_report
+            from .market_cache import DEFAULT_MARKET_CACHE_DIR, FileCacheMarketDataProvider
+
+            provider = build_provider(args=args, analysis_date=date.today())
+            provider = FileCacheMarketDataProvider(
+                provider,
+                provider_name=args.provider,
+                history_period=args.history_period,
+                cache_dir=DEFAULT_MARKET_CACHE_DIR,
+                refresh_cache=args.refresh_cache,
+            )
+            payload = build_benchmark_health_report(provider)
+            payload.update({
+                "provider": args.provider,
+                "history_period": args.history_period,
+            })
+        except (ProviderConfigurationError, ValueError) as exc:
+            print(f"Benchmark-health error: {exc}")
             return 2
         print(json.dumps(payload, indent=2))
         return 0
@@ -636,6 +682,7 @@ def build_parser() -> argparse.ArgumentParser:
     decision_today.add_argument("--refresh-cache", action="store_true")
     decision_today.add_argument("--output-dir", type=Path, default=Path("outputs/daily"))
     decision_today.add_argument("--as-of-date", type=_parse_date)
+    decision_today.add_argument("--ai-rerank", choices=("off", "openai", "gemini"), default="off")
 
     universe = subparsers.add_parser("universe", help="List or write curated starter universe files.")
     universe_subparsers = universe.add_subparsers(dest="universe_command", required=True)
@@ -652,6 +699,12 @@ def build_parser() -> argparse.ArgumentParser:
     universe_clean = universe_subparsers.add_parser("clean", help="Clean, normalize, and dedupe a universe file.")
     universe_clean.add_argument("--input", type=Path, required=True)
     universe_clean.add_argument("--output", type=Path, required=True)
+    universe_expand = universe_subparsers.add_parser("expand", help="Build a broader liquid U.S. universe by combining starter files and optional imports.")
+    universe_expand.add_argument("--output", type=Path, default=Path("config/universe_us_liquid_expanded.txt"))
+    universe_expand.add_argument("--target-size", type=int, default=1000)
+    universe_expand.add_argument("--csv-input", action="append", default=[], help="Optional CSV import in PATH or PATH:COLUMN form. May be repeated.")
+    universe_expand.add_argument("--default-ticker-column", default="ticker")
+    universe_expand.add_argument("--extra-file", type=Path, action="append", default=[], help="Optional newline universe file to merge in. May be repeated.")
 
     tracked = subparsers.add_parser("tracked", help="Manage the tracked-tickers watchlist file.")
     tracked_subparsers = tracked.add_subparsers(dest="tracked_command", required=True)
@@ -681,6 +734,12 @@ def build_parser() -> argparse.ArgumentParser:
     market_health.add_argument("--provider", choices=("sample", "local", "real"), default="real")
     market_health.add_argument("--history-period", default="6mo")
     market_health.add_argument("--ticker", default="SPY")
+
+    benchmark_health = subparsers.add_parser("benchmark-health", help="Check cache/live health for SPY, QQQ, and major sector benchmark ETFs.")
+    benchmark_health.add_argument("--provider", choices=("sample", "local", "real"), default="real")
+    benchmark_health.add_argument("--history-period", default="6mo")
+    benchmark_health.add_argument("--data-dir", type=Path)
+    benchmark_health.add_argument("--refresh-cache", action="store_true")
 
     provider_check = subparsers.add_parser("provider-check", help="Check one ticker across the real provider and configured fallbacks.")
     provider_check.add_argument("--ticker", required=True)

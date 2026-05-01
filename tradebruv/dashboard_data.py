@@ -134,9 +134,13 @@ def run_dashboard_scan(
         provider=provider_name,
         results=result_rows,
         source=f"live scan: {universe_path}",
-        market_regime=build_market_regime(provider=cacheable_provider, results=result_rows),
+        market_regime=build_market_regime(
+            provider=cacheable_provider,
+            results=result_rows,
+            benchmark_manager=getattr(scanner, "_benchmark_manager", None),
+        ),
         scan_failures=diagnostics.failures,
-        provider_health=diagnostics.provider_health,
+        provider_health=diagnostics.provider_health | {"benchmark_health_details": diagnostics.benchmark_health},
         cache_stats=cacheable_provider.cache_stats(),
     )
 
@@ -573,10 +577,11 @@ def build_market_regime(
     *,
     provider: MarketDataProvider | None,
     results: Iterable[dict[str, Any]],
+    benchmark_manager: Any | None = None,
 ) -> dict[str, Any]:
     rows = [_normalize_result(row) for row in results]
-    spy = _benchmark_summary(provider, "SPY") if provider else _unavailable_benchmark("SPY")
-    qqq = _benchmark_summary(provider, "QQQ") if provider else _unavailable_benchmark("QQQ")
+    spy = _benchmark_summary(provider, "SPY", benchmark_manager=benchmark_manager) if provider else _unavailable_benchmark("SPY")
+    qqq = _benchmark_summary(provider, "QQQ", benchmark_manager=benchmark_manager) if provider else _unavailable_benchmark("QQQ")
     bullish_count = sum(1 for item in (spy, qqq) if item["trend_state"] in {"Strong Uptrend", "Uptrend"})
     risk_off_count = sum(1 for item in (spy, qqq) if item["trend_state"] in {"Downtrend", "Below 200-DMA"})
 
@@ -685,14 +690,20 @@ def unique_theme_tags(results: Iterable[dict[str, Any]]) -> list[str]:
     return sorted(tags)
 
 
-def _benchmark_summary(provider: MarketDataProvider | None, ticker: str) -> dict[str, Any]:
+def _benchmark_summary(provider: MarketDataProvider | None, ticker: str, *, benchmark_manager: Any | None = None) -> dict[str, Any]:
     if provider is None:
         return _unavailable_benchmark(ticker)
     try:
-        security = provider.get_security_data(ticker)
+        security = benchmark_manager.get(ticker) if benchmark_manager is not None else provider.get_security_data(ticker)
     except Exception as exc:
         summary = _unavailable_benchmark(ticker)
         summary["warning"] = f"{ticker} benchmark unavailable: {exc}"
+        return summary
+    if security is None:
+        summary = _unavailable_benchmark(ticker)
+        if benchmark_manager is not None:
+            benchmark_reason = str(getattr(benchmark_manager, "reason_for", lambda _ticker: "")(ticker) or "").strip()
+            summary["warning"] = benchmark_reason or f"{ticker} benchmark unavailable."
         return summary
     closes = [bar.close for bar in security.bars]
     latest = closes[-1] if closes else None

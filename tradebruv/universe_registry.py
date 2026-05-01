@@ -172,6 +172,9 @@ def validate_universe_file(path: Path) -> dict[str, Any]:
     elif "us_broad_1000" in file_name:
         expected_universe_size = 1000
         universe_label = "US Broad 1000 Target"
+    elif "liquid_expanded" in file_name:
+        expected_universe_size = 1000
+        universe_label = "US Liquid Expanded"
     elif "top1000" in file_name or "russell1000" in file_name:
         expected_universe_size = 1000
         universe_label = "Top 1000 Style Starter"
@@ -233,3 +236,82 @@ def clean_universe_file(input_path: Path, output_path: Path) -> dict[str, Any]:
         "row_count": len(rows),
         "sample_tickers": rows[:10],
     }
+
+
+def expand_universe(
+    *,
+    output_path: Path,
+    target_size: int = 1000,
+    csv_inputs: list[tuple[Path, str]] | None = None,
+    extra_files: list[Path] | None = None,
+) -> dict[str, Any]:
+    target = max(1, target_size)
+    combined: list[str] = []
+    sources_used: list[dict[str, Any]] = []
+
+    built_in_sources = [
+        ("config/universe_us_broad_1000.txt", "existing broad universe"),
+        ("config/universe_sp500.txt", "large-cap starter"),
+        ("config/universe_nasdaq100.txt", "nasdaq 100 starter"),
+        ("config/universe_liquid_growth.txt", "liquid growth starter"),
+        ("config/universe_russell1000_or_top1000.txt", "top-1000 style starter"),
+        ("config/tracked_tickers.txt", "tracked watchlist"),
+    ]
+    optional_recent = [
+        ("config/universe_recent_movers.txt", "recent movers import"),
+        ("config/recent_movers.txt", "recent movers import"),
+    ]
+
+    for raw_path, label in [*built_in_sources, *optional_recent]:
+        path = Path(raw_path)
+        if path.exists():
+            rows = clean_ticker_lines(path.read_text(encoding="utf-8").splitlines())
+            combined.extend(rows)
+            sources_used.append({"source": str(path), "label": label, "row_count": len(rows)})
+
+    for path in extra_files or []:
+        if path.exists():
+            rows = clean_ticker_lines(path.read_text(encoding="utf-8").splitlines())
+            combined.extend(rows)
+            sources_used.append({"source": str(path), "label": "extra file", "row_count": len(rows)})
+
+    for input_path, ticker_column in csv_inputs or []:
+        with input_path.open(newline="", encoding="utf-8-sig") as handle:
+            reader = csv.DictReader(handle)
+            if ticker_column not in (reader.fieldnames or []):
+                raise KeyError(f"Ticker column '{ticker_column}' not found in CSV.")
+            rows = clean_ticker_lines([str(row.get(ticker_column) or "") for row in reader])
+        combined.extend(rows)
+        sources_used.append({"source": str(input_path), "label": f"csv:{ticker_column}", "row_count": len(rows)})
+
+    combined.extend(list(US_BROAD_1000_TARGET))
+    deduped = clean_ticker_lines(combined)
+    if len(deduped) > target:
+        deduped = deduped[:target]
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(deduped) + ("\n" if deduped else ""), encoding="utf-8")
+    payload = validate_universe_file(output_path)
+    shortfall = max(0, target - len(deduped))
+    payload.update(
+        {
+            "output": str(output_path),
+            "target_size": target,
+            "actual_size": len(deduped),
+            "target_met": shortfall == 0,
+            "shortfall": shortfall,
+            "sources_used": sources_used,
+            "import_instructions": (
+                "For fuller real-world coverage, import an official or broker/exported liquid-universe CSV with "
+                "`python3 -m tradebruv universe import-csv --input YOUR_LIST.csv --ticker-column SYMBOL --output config/your_list.txt` "
+                "and then rerun `python3 -m tradebruv universe expand --output config/universe_us_liquid_expanded.txt --target-size 1000 --extra-file config/your_list.txt`."
+            ),
+        }
+    )
+    if shortfall:
+        payload["universe_warning"] = (
+            f"{payload.get('universe_warning', '').strip()} "
+            f"Local starter data reached {len(deduped)} names, short of the {target} target. "
+            "Use the import path to supply an official or broker/exported liquid universe."
+        ).strip()
+    return payload

@@ -5,6 +5,7 @@ from datetime import date
 from typing import Any, Callable, Iterable
 
 from .alternative_data import build_alternative_data_signal
+from .benchmarking import BENCHMARK_DEGRADED_WARNING, BenchmarkDataManager
 from .catalysts import build_catalyst_intelligence
 from .chart_signals import build_signal_snapshot
 from .indicators import atr, average, clamp, close_location, pct_change, sample_stddev, sma
@@ -30,6 +31,7 @@ class ScanDiagnostics:
     attempted: int
     aborted_tickers: list[str]
     provider_health: dict[str, Any]
+    benchmark_health: dict[str, Any]
 
 
 def _coerce_float_or_none(value: Any) -> float | None:
@@ -122,6 +124,7 @@ class DeterministicScanner:
         self.provider = provider
         self.analysis_date = analysis_date or date.today()
         self._cache: dict[str, SecurityData] = {}
+        self._benchmark_manager = BenchmarkDataManager(provider)
 
     def scan(self, tickers: Iterable[str], mode: str = "standard") -> list[ScannerResult]:
         diagnostics = self.scan_with_diagnostics(tickers, mode=mode, include_failures_in_results=True)
@@ -141,7 +144,7 @@ class DeterministicScanner:
         prefetch = getattr(self.provider, "prefetch_many", None)
         if callable(prefetch):
             try:
-                prefetch([*normalized, "SPY", "QQQ", *SECTOR_BENCHMARKS.values()], batch_size=25)
+                prefetch(normalized, batch_size=25)
             except Exception:
                 pass
         attempted = 0
@@ -178,13 +181,15 @@ class DeterministicScanner:
             results.sort(key=lambda result: (-result.regular_investing_score, result.risk_score, -result.winner_score, result.ticker))
         else:
             results.sort(key=lambda result: (-result.winner_score, result.risk_score, -result.outlier_score, result.ticker))
-        provider_health = getattr(self.provider, "health_report", lambda: {"provider": "unavailable", "status": "healthy"})()
+        benchmark_health = self._benchmark_manager.as_dict()
+        provider_health = getattr(self.provider, "health_report", lambda: {"provider": "unavailable", "status": "healthy"})() | benchmark_health
         return ScanDiagnostics(
             results=results,
             failures=failures,
             attempted=attempted,
             aborted_tickers=aborted_tickers,
             provider_health=provider_health,
+            benchmark_health=benchmark_health,
         )
 
     def _get_data(self, ticker: str) -> SecurityData:
@@ -196,10 +201,13 @@ class DeterministicScanner:
         notes = list(security.data_notes)
         self._append_availability_notes(notes, security)
 
-        spy = self._safe_get("SPY", notes, "SPY benchmark unavailable.")
-        qqq = self._safe_get("QQQ", notes, "QQQ benchmark unavailable.")
+        spy = self._safe_get_benchmark("SPY")
+        qqq = self._safe_get_benchmark("QQQ")
         sector_symbol = SECTOR_BENCHMARKS.get(security.sector or "")
-        sector = self._safe_get(sector_symbol, notes, f"{security.sector} sector benchmark unavailable.") if sector_symbol else None
+        sector = self._safe_get_benchmark(sector_symbol) if sector_symbol else None
+        if (spy is None or qqq is None or (sector_symbol and sector is None)) and BENCHMARK_DEGRADED_WARNING not in notes:
+            notes.append(BENCHMARK_DEGRADED_WARNING)
+        benchmark_health = self._benchmark_manager.as_dict()
 
         features = self._build_features(security, spy, qqq, sector)
 
@@ -326,6 +334,10 @@ class DeterministicScanner:
             "manual_catalyst_source_count": catalyst_intelligence["catalyst_source_count"],
             "alternative_data_available": bool(alternative_data["alternative_data_source_count"]),
             "alternative_data_source_count": alternative_data["alternative_data_source_count"],
+            "benchmark_health": benchmark_health["benchmark_health"],
+            "benchmark_degraded": benchmark_health["benchmark_degraded"],
+            "sector_benchmark_available": bool(sector_symbol and sector is not None),
+            "sector_relative_strength": round(features.rs_vs_sector_3m, 4) if features.rs_vs_sector_3m is not None else "unavailable",
             "outlier_components": outlier_components,
         }
         velocity = self._velocity_payload(features=features, security=security, trade_plan=trade_plan, risk_score=risk_score)
@@ -541,14 +553,10 @@ class DeterministicScanner:
         if not security.ipo_date:
             notes.append("IPO date unavailable.")
 
-    def _safe_get(self, ticker: str | None, notes: list[str], note: str) -> SecurityData | None:
+    def _safe_get_benchmark(self, ticker: str | None) -> SecurityData | None:
         if not ticker:
             return None
-        try:
-            return self._get_data(ticker)
-        except Exception:
-            notes.append(note)
-            return None
+        return self._benchmark_manager.get(ticker)
 
     def _build_features(
         self,

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import csv
 import importlib
+import io
 import json
 import math
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -22,18 +24,26 @@ from .ticker_symbols import display_ticker, provider_ticker
 from .taxonomy import infer_catalyst_tags, infer_theme_tags
 
 
+CORE_BENCHMARK_SYMBOLS = ("SPY", "QQQ")
+
 SECTOR_BENCHMARKS = {
     "Technology": "XLK",
     "Healthcare": "XLV",
     "Consumer Discretionary": "XLY",
+    "Consumer Cyclical": "XLY",
+    "Consumer Staples": "XLP",
     "Communication Services": "XLC",
     "Financial Services": "XLF",
     "Financial": "XLF",
     "Industrials": "XLI",
     "Energy": "XLE",
+    "Utilities": "XLU",
+    "Materials": "XLB",
+    "Basic Materials": "XLB",
+    "Real Estate": "XLRE",
 }
 
-BENCHMARK_SYMBOLS = {"SPY", "QQQ", *SECTOR_BENCHMARKS.values()}
+BENCHMARK_SYMBOLS = {*CORE_BENCHMARK_SYMBOLS, *SECTOR_BENCHMARKS.values()}
 
 
 class ProviderConfigurationError(RuntimeError):
@@ -252,8 +262,10 @@ class YFinanceMarketDataProvider:
         benchmark_symbol = provider_symbol in BENCHMARK_SYMBOLS or ticker in BENCHMARK_SYMBOLS
 
         try:
-            instrument = self._yf.Ticker(provider_symbol)
-            history = instrument.history(period=self.history_period, interval="1d", auto_adjust=True)
+            instrument = self._quiet_yfinance(lambda: self._yf.Ticker(provider_symbol))
+            history = self._quiet_yfinance(
+                lambda: instrument.history(period=self.history_period, interval="1d", auto_adjust=True)
+            )
         except Exception as exc:
             raise ProviderFetchError(f"Could not fetch {ticker} history from yfinance: {exc}") from exc
         if history is None or history.empty:
@@ -329,14 +341,16 @@ class YFinanceMarketDataProvider:
             batch = unique[start : start + max(1, batch_size)]
             symbols = [provider_ticker(ticker) for ticker in batch]
             try:
-                history = self._yf.download(
-                    tickers=" ".join(symbols),
-                    period=self.history_period,
-                    interval="1d",
-                    auto_adjust=True,
-                    progress=False,
-                    group_by="ticker",
-                    threads=True,
+                history = self._quiet_yfinance(
+                    lambda: self._yf.download(
+                        tickers=" ".join(symbols),
+                        period=self.history_period,
+                        interval="1d",
+                        auto_adjust=True,
+                        progress=False,
+                        group_by="ticker",
+                        threads=True,
+                    )
                 )
             except Exception:
                 continue
@@ -397,10 +411,16 @@ class YFinanceMarketDataProvider:
             frame = history if single_symbol else history[provider_symbol]
         except Exception:
             return []
-        try:
-            return cls._history_to_bars(frame)
-        except Exception:
-            return []
+            try:
+                return cls._history_to_bars(frame)
+            except Exception:
+                return []
+
+    @staticmethod
+    def _quiet_yfinance(loader: Any) -> Any:
+        sink = io.StringIO()
+        with redirect_stdout(sink), redirect_stderr(sink):
+            return loader()
 
     @staticmethod
     def _safe_info(instrument: Any) -> dict[str, Any]:

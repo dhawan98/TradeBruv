@@ -119,6 +119,8 @@ def run_movers_scan(
         "tickers_successfully_scanned": len(results),
         "scan_failures": failures,
         "provider_health": getattr(provider, "health_report", lambda: {"provider": provider_name, "status": "healthy"})(),
+        "benchmark_health": getattr(scanner, "_benchmark_manager", None).as_dict() if getattr(scanner, "_benchmark_manager", None) else {},
+        "benchmark_warnings": [getattr(scanner, "_benchmark_manager", None).as_dict()["benchmark_warning"]] if getattr(scanner, "_benchmark_manager", None) and getattr(scanner, "_benchmark_manager", None).as_dict().get("benchmark_warning") else [],
         "cache": provider.cache_stats(),
         "results": final_rows,
         "top_gainers": _top(final_rows, key="percent_change", reverse=True, limit=top_n, predicate=lambda row: float(row.get("percent_change") or 0) > 0),

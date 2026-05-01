@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from .actionability import actionability_priority
 from .ticker_symbols import canonical_ticker_key, display_ticker
 
 
@@ -157,7 +158,7 @@ def _row_candidate_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
 def _canonical_decision_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
     return (
         _validation_priority(_row_validation_status(item)),
-        _actionability_priority(str(item.get("actionability_label") or "Data Insufficient")),
+        actionability_priority(str(item.get("actionability_label") or "Data Insufficient")),
         -_to_float(item.get("actionability_score")),
         -_to_float(item.get("score")),
         str(item.get("ticker") or ""),
@@ -206,17 +207,6 @@ def _source_preference(source_group: str) -> int:
         "Outlier": 4,
         "Velocity": 5,
     }.get(source_group, 6)
-
-
-def _actionability_priority(label: str) -> int:
-    return {
-        "Actionable Today": 0,
-        "Research First": 1,
-        "Wait for Better Entry": 2,
-        "Watch for Trigger": 3,
-        "Avoid / Do Not Chase": 4,
-        "Data Insufficient": 5,
-    }.get(label, 6)
 
 
 def _merge_warnings(grouped_decisions: list[dict[str, Any]], grouped_rows: list[dict[str, Any]], *, merged_source_group: str) -> list[str]:

@@ -69,15 +69,7 @@ class FileCacheMarketDataProvider:
                 raise
             self.cache_fallback_hits += 1
             return _with_cache_note(cached_fallback, "cached stale" if self.is_cached_stale(ticker) else "cached fresh")
-        payload = {
-            "cached_at": datetime.utcnow().isoformat() + "Z",
-            "ticker": ticker,
-            "provider": self.provider_name,
-            "history_period": self.history_period,
-            "interval": self.interval,
-            "security": _security_to_dict(security),
-        }
-        self._cache_path(ticker).write_text(json.dumps(payload), encoding="utf-8")
+        self.store_security(security, ticker=ticker)
         return security
 
     def cache_stats(self) -> dict[str, Any]:
@@ -156,15 +148,19 @@ class FileCacheMarketDataProvider:
                 security = fresh(ticker)
             except Exception:
                 continue
-            payload = {
-                "cached_at": datetime.utcnow().isoformat() + "Z",
-                "ticker": ticker,
-                "provider": self.provider_name,
-                "history_period": self.history_period,
-                "interval": self.interval,
-                "security": _security_to_dict(security),
-            }
-            self._cache_path(ticker).write_text(json.dumps(payload), encoding="utf-8")
+            self.store_security(security, ticker=ticker)
+
+    def store_security(self, security: SecurityData, *, ticker: str | None = None) -> None:
+        symbol = (ticker or security.ticker).upper()
+        payload = {
+            "cached_at": datetime.utcnow().isoformat() + "Z",
+            "ticker": symbol,
+            "provider": self.provider_name,
+            "history_period": self.history_period,
+            "interval": self.interval,
+            "security": _security_to_dict(security),
+        }
+        self._cache_path(symbol).write_text(json.dumps(payload), encoding="utf-8")
 
     def _cache_path(self, ticker: str) -> Path:
         key = f"{self.provider_name}_{ticker}_{self.history_period}_{self.interval}.json".replace("/", "_")
