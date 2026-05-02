@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import json
 from datetime import date, datetime
 from pathlib import Path
@@ -8,7 +7,19 @@ from types import SimpleNamespace
 from typing import Any
 
 from .actionability import actionability_priority, is_fast_actionable_label, label_bucket
-from .ai_rerank import AIRerankProvider, apply_ai_rerank, build_ai_rerank_provider
+from .ai_analysis import (
+    DEFAULT_AI_CACHE_DIR,
+    DEFAULT_AI_MAX_NAMES,
+    DEFAULT_AI_MAX_TOKENS,
+    DEFAULT_AI_TIMEOUT_SECONDS,
+    normalize_ai_provider,
+    normalize_ai_providers,
+    normalize_analysis_mode,
+    resolve_default_ai_provider,
+    review_candidates,
+    run_ai_committee,
+    shortlist_ai_candidates,
+)
 from .alternative_data import DEFAULT_ALTERNATIVE_DATA_PATH, AlternativeDataOverlayProvider, load_alternative_data_repository
 from .catalysts import CatalystOverlayProvider, load_catalyst_repository
 from .cli import build_provider, load_universe
@@ -54,8 +65,16 @@ def run_daily_decision(
     refresh_cache: bool = False,
     analysis_date: date | None = None,
     output_dir: Path = DEFAULT_DAILY_DECISION_OUTPUT_DIR,
+    analysis_mode: str = "deterministic",
+    ai_provider: str | None = None,
+    ai_providers: list[str] | str | None = None,
+    ai_max_names: int = DEFAULT_AI_MAX_NAMES,
+    ai_max_tokens: int = DEFAULT_AI_MAX_TOKENS,
+    ai_timeout_seconds: int = DEFAULT_AI_TIMEOUT_SECONDS,
+    ai_cache: bool = True,
+    ai_force_refresh: bool = False,
+    ai_cache_dir: Path = DEFAULT_AI_CACHE_DIR,
     ai_rerank: str = "off",
-    ai_rerank_provider: AIRerankProvider | None = None,
 ) -> dict[str, Any]:
     as_of = analysis_date or date.today()
     validation_context = build_validation_context()
@@ -394,25 +413,63 @@ def run_daily_decision(
     merged = merge_canonical_rows(combined_rows, combined_decisions)
     merged_rows = merged["canonical_rows"]
     merged_decisions = merged["canonical_decisions"]
-    ai_rerank_summary = _build_ai_rerank_summary([], merged_decisions, mode="off", provider_name="off")
-    if ai_rerank != "off":
-        original_decisions = [deepcopy(decision) for decision in merged_decisions]
-        chosen_ai_rerank_provider = ai_rerank_provider or build_ai_rerank_provider(ai_rerank)
-        merged_decisions = apply_ai_rerank(
-            merged_decisions,
-            mode=ai_rerank,
-            provider=chosen_ai_rerank_provider,
-            limit=min(top_n, 3),
-        )
-        ai_rerank_summary = _build_ai_rerank_summary(
-            original_decisions,
-            merged_decisions,
-            mode=ai_rerank,
-            provider_name=getattr(chosen_ai_rerank_provider, "name", ai_rerank),
-        )
     unique_scan_failures = _dedupe_scan_failures(scan_failures)
     data_issues = [decision for decision in merged_decisions if decision.get("price_validation_status") != "PASS"]
     picker_view = _build_picker_view(merged_decisions, data_issues=data_issues)
+    resolved_analysis_mode = normalize_analysis_mode(analysis_mode, legacy_ai_rerank=ai_rerank)
+    resolved_ai_provider = normalize_ai_provider(ai_provider, legacy_ai_rerank=ai_rerank) or resolve_default_ai_provider()
+    resolved_ai_providers = normalize_ai_providers(ai_providers, fallback_provider=resolved_ai_provider)
+    ai_candidates = shortlist_ai_candidates(
+        {
+            **picker_view,
+            "earnings_news_movers": (earnings_payload or {}).get("earnings_movers", []),
+            "decisions": merged_decisions,
+        },
+        max_names=ai_max_names,
+    )
+    ai_review_summary = _empty_ai_review_summary()
+    ai_committee_summary: dict[str, Any] = {}
+    if resolved_analysis_mode == "ai_review":
+        chosen_provider = resolved_ai_provider or "openai"
+        ai_review_summary = review_candidates(
+            ai_candidates,
+            provider_name=chosen_provider,
+            ai_max_names=ai_max_names,
+            timeout_seconds=ai_timeout_seconds,
+            max_tokens=ai_max_tokens,
+            cache=ai_cache,
+            force_refresh=ai_force_refresh,
+            cache_dir=ai_cache_dir,
+        )
+        review_map = ai_review_summary.get("reviews") or {}
+        merged_decisions = [
+            ({**decision, "ai_review": review_map[str(decision.get("ticker"))]})
+            if str(decision.get("ticker")) in review_map
+            else decision
+            for decision in merged_decisions
+        ]
+    elif resolved_analysis_mode == "ai_committee":
+        ai_committee_summary = run_ai_committee(
+            ai_candidates,
+            providers=resolved_ai_providers or ([resolved_ai_provider] if resolved_ai_provider else []),
+            ai_max_names=ai_max_names,
+            timeout_seconds=ai_timeout_seconds,
+            max_tokens=ai_max_tokens,
+            cache=ai_cache,
+            force_refresh=ai_force_refresh,
+            cache_dir=ai_cache_dir,
+        )
+        committee_reviews = {
+            ticker: item.get("row_review")
+            for ticker, item in (ai_committee_summary.get("per_ticker_reviews") or {}).items()
+            if isinstance(item, dict) and item.get("row_review")
+        }
+        merged_decisions = [
+            ({**decision, "ai_review": committee_reviews[str(decision.get("ticker"))]})
+            if str(decision.get("ticker")) in committee_reviews
+            else decision
+            for decision in merged_decisions
+        ]
     broad_universe_status = validate_universe_file(broad_universe) if broad_universe else {
         "universe_label": "Tracked + Active",
         "universe_file": "active configured universes",
@@ -479,8 +536,17 @@ def run_daily_decision(
         "generated_at": datetime.utcnow().isoformat() + "Z",
         "analysis_date": as_of.isoformat(),
         "provider": provider_name,
+        "analysis_mode": resolved_analysis_mode,
+        "ai_provider": resolved_ai_provider or "unconfigured",
+        "ai_providers": resolved_ai_providers,
+        "ai_mode": "off" if resolved_analysis_mode == "deterministic" else resolved_analysis_mode,
         "ai_rerank": ai_rerank,
-        "ai_rerank_summary": ai_rerank_summary,
+        "ai_rerank_summary": _legacy_ai_rerank_summary(
+            analysis_mode=resolved_analysis_mode,
+            ai_review_summary=ai_review_summary,
+        ),
+        "ai_review_summary": ai_review_summary,
+        "ai_committee": ai_committee_summary,
         "mode": "daily-decision",
         "data_mode": "live_daily_decision",
         "results": merged_rows,
@@ -557,7 +623,11 @@ def load_daily_decision(path: Path = DEFAULT_DAILY_DECISION_JSON_PATH) -> dict[s
             "provider": "unavailable",
             "mode": "daily-decision",
             "data_mode": "live_daily_decision",
+            "analysis_mode": "deterministic",
+            "ai_mode": "off",
             "ai_rerank_summary": {},
+            "ai_review_summary": _empty_ai_review_summary(),
+            "ai_committee": {},
             "results": [],
             "summary": {},
             "decisions": [],
@@ -1000,18 +1070,19 @@ def _build_daily_decision_markdown(payload: dict[str, Any]) -> str:
     highs_summary = payload.get("highs_scan_summary") or {}
     earnings_summary = payload.get("earnings_scan_summary") or {}
     theme_summary = payload.get("theme_scan_summary") or {}
+    analysis_mode = str(payload.get("analysis_mode") or "")
+    ai_review_summary = payload.get("ai_review_summary") or {}
+    ai_committee = payload.get("ai_committee") or {}
+    legacy_ai_rerank = not analysis_mode and bool(payload.get("ai_rerank_summary"))
+    analysis_mode = analysis_mode or "deterministic"
     lines = [
         "# TradeBruv Daily Pick",
         "",
         f"- Generated: {payload.get('generated_at', 'unavailable')}",
         f"- Analysis date: {payload.get('analysis_date', 'unavailable')}",
         f"- Provider: {payload.get('provider', 'unavailable')}",
-        f"- AI rerank: {payload.get('ai_rerank', 'off')}",
-        f"- AI rerank provider: {(payload.get('ai_rerank_summary') or {}).get('provider', 'off')}",
-        f"- AI rerank reviewed: {(payload.get('ai_rerank_summary') or {}).get('names_reviewed', 0)}",
-        f"- AI rerank downgraded: {(payload.get('ai_rerank_summary') or {}).get('downgraded', 0)}",
-        f"- AI unsupported claims detected: {(payload.get('ai_rerank_summary') or {}).get('unsupported_claims_detected', 0)}",
-        f"- AI top label changed: {'yes' if (payload.get('ai_rerank_summary') or {}).get('top_label_changed') else 'no'}",
+        f"- Analysis mode: {analysis_mode}",
+        f"- AI mode: {'off' if analysis_mode == 'deterministic' else analysis_mode}",
         f"- Demo mode: {payload.get('demo_mode', False)}",
         f"- Scan health: {(payload.get('scan_health') or {}).get('status', 'healthy')}",
         f"- Benchmark health: {(payload.get('benchmark_health') or {}).get('benchmark_health', 'healthy')}",
@@ -1021,10 +1092,51 @@ def _build_daily_decision_markdown(payload: dict[str, Any]) -> str:
         f"- Theme scan: {_movers_summary_line(theme_summary)}",
         "",
     ]
+    if legacy_ai_rerank:
+        lines[5:5] = [
+            f"- AI rerank: {payload.get('ai_rerank', 'off')}",
+            f"- AI rerank provider: {(payload.get('ai_rerank_summary') or {}).get('provider', 'off')}",
+            f"- AI rerank reviewed: {(payload.get('ai_rerank_summary') or {}).get('names_reviewed', 0)}",
+            f"- AI rerank downgraded: {(payload.get('ai_rerank_summary') or {}).get('downgraded', 0)}",
+            f"- AI unsupported claims detected: {(payload.get('ai_rerank_summary') or {}).get('unsupported_claims_detected', 0)}",
+            f"- AI top label changed: {'yes' if (payload.get('ai_rerank_summary') or {}).get('top_label_changed') else 'no'}",
+        ]
     for warning in payload.get("benchmark_warnings", [])[:1]:
         lines.extend([f"- Warning: {warning}", ""])
     if payload.get("coverage_limitation"):
         lines.extend([f"- {payload.get('coverage_limitation')}", ""])
+    if analysis_mode == "ai_review":
+        lines.extend(
+            [
+                "## AI Review Summary",
+                f"- Provider: {ai_review_summary.get('provider', 'unavailable')}",
+                f"- Model: {ai_review_summary.get('model', 'unavailable')}",
+                f"- Names reviewed: {ai_review_summary.get('names_reviewed', 0)}",
+                f"- Downgraded: {ai_review_summary.get('downgraded', 0)}",
+                f"- Caution flags: {ai_review_summary.get('caution_flags', 0)}",
+                f"- Top AI-agreed names: {', '.join(ai_review_summary.get('top_ai_agreed_names', [])) or 'None'}",
+                f"- Names AI says not to chase: {', '.join(ai_review_summary.get('names_ai_says_not_to_chase', [])) or 'None'}",
+                f"- Unsupported claims detected: {ai_review_summary.get('unsupported_claims_detected', 0)}",
+                "",
+            ]
+        )
+    if analysis_mode == "ai_committee":
+        failed_models = ", ".join(
+            f"{item.get('provider')}: {item.get('reason')}"
+            for item in ai_committee.get("models_failed", [])
+        ) or "None"
+        lines.extend(
+            [
+                "## AI Committee Summary",
+                f"- Providers used: {', '.join(ai_committee.get('models_used', [])) or 'None'}",
+                f"- Providers failed: {failed_models}",
+                f"- Consensus names: {', '.join(ai_committee.get('consensus_candidates', [])) or 'None'}",
+                f"- Disagreement names: {', '.join(ai_committee.get('disagreement_candidates', [])) or 'None'}",
+                f"- Names all models warned against: {', '.join(ai_committee.get('names_all_models_warn_against', [])) or 'None'}",
+                f"- Committee one-line summary: {ai_committee.get('committee_summary', 'None')}",
+                "",
+            ]
+        )
     lines.extend(["## Fast Actionable Setups"])
     if not fast_actionable:
         lines.append(f"- None. {payload.get('no_clean_candidate_reason') or 'No near-term setup cleared the actionability gate.'}")
@@ -1364,6 +1476,40 @@ def _build_ai_rerank_summary(
     }
 
 
+def _empty_ai_review_summary() -> dict[str, Any]:
+    return {
+        "enabled": False,
+        "mode": "deterministic",
+        "provider": "off",
+        "model": "off",
+        "names_reviewed": 0,
+        "downgraded": 0,
+        "caution_flags": 0,
+        "top_ai_agreed_names": [],
+        "names_ai_says_not_to_chase": [],
+        "unsupported_claims_detected": 0,
+        "reviews_unavailable": [],
+        "reviews": {},
+    }
+
+
+def _legacy_ai_rerank_summary(*, analysis_mode: str, ai_review_summary: dict[str, Any]) -> dict[str, Any]:
+    if analysis_mode != "ai_review":
+        return _build_ai_rerank_summary([], [], mode="off", provider_name="off")
+    return {
+        "enabled": True,
+        "mode": "ai_review",
+        "status": "applied" if int(ai_review_summary.get("names_reviewed") or 0) else "no_eligible_names",
+        "provider": ai_review_summary.get("provider", "unavailable"),
+        "names_reviewed": ai_review_summary.get("names_reviewed", 0),
+        "reviews_available": int(ai_review_summary.get("names_reviewed") or 0) - len(ai_review_summary.get("reviews_unavailable") or []),
+        "reviews_unavailable": len(ai_review_summary.get("reviews_unavailable") or []),
+        "downgraded": ai_review_summary.get("downgraded", 0),
+        "unsupported_claims_detected": ai_review_summary.get("unsupported_claims_detected", 0),
+        "top_label_changed": False,
+    }
+
+
 def _build_picker_view(decisions: list[dict[str, Any]], *, data_issues: list[dict[str, Any]]) -> dict[str, Any]:
     actionable = [row for row in decisions if is_fast_actionable_label(_decision_label(row)) and row.get("primary_action") == "Research / Buy Candidate"]
     research = [row for row in decisions if _decision_label(row) == "Long-Term Research Candidate" and row.get("primary_action") == "Research / Buy Candidate"]
@@ -1408,11 +1554,11 @@ def _build_picker_view(decisions: list[dict[str, Any]], *, data_issues: list[dic
 
 
 def _decision_label(row: dict[str, Any]) -> str:
-    return str(row.get("ai_adjusted_actionability_label") or row.get("actionability_label") or "Data Insufficient")
+    return str(row.get("actionability_label") or row.get("ai_adjusted_actionability_label") or "Data Insufficient")
 
 
 def _decision_score(row: dict[str, Any]) -> int:
-    score = row.get("ai_rerank_score") if row.get("ai_adjusted_actionability_label") else row.get("actionability_score")
+    score = row.get("actionability_score") or row.get("ai_rerank_score")
     try:
         return int(round(float(score or 0)))
     except (TypeError, ValueError):

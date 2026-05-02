@@ -32,6 +32,8 @@ vi.stubGlobal(
         generated_at: '2026-04-24T00:00:00Z',
         provider: 'real',
         mode: 'daily-decision',
+        analysis_mode: 'deterministic',
+        ai_mode: 'off',
         demo_mode: false,
         report_snapshot: false,
         stale_data: false,
@@ -397,6 +399,17 @@ vi.stubGlobal(
         },
       },
       '/api/reports/latest': { available: false, results: [], market_regime: {}, summary: {}, decisions: [], validation_context: { messages: ['Not enough evidence yet.'] } },
+      '/api/ai-health': {
+        any_configured: false,
+        default_provider: 'none',
+        warning: 'No AI keys configured.',
+        providers: {
+          openai: { configured: false, model: 'gpt-4o-mini', reason: 'OPENAI_API_KEY is not configured.' },
+          gemini: { configured: false, model: 'gemini-1.5-flash', reason: 'GEMINI_API_KEY is not configured.' },
+          anthropic: { configured: false, model: 'claude-3-5-sonnet-latest', reason: 'ANTHROPIC_API_KEY is not configured.' },
+          generic: { configured: false, model: 'gpt-4o-mini', reason: 'TRADEBRUV_LLM_API_KEY is not configured.' },
+        },
+      },
       '/api/tracked': {
         path: 'config/tracked_tickers.txt',
         tickers: ['NVDA', 'PLTR'],
@@ -755,6 +768,101 @@ vi.stubGlobal(
           next_review_trigger: 'Review on earnings.',
         }],
       },
+      '/api/ai-review': {
+        available: true,
+        provider: 'openai',
+        model: 'gpt-test',
+        ticker: 'NVDA',
+        deterministic_label: 'Breakout Actionable Today',
+        ai_final_view: 'downgrade',
+        ai_caution_level: 'high',
+        ai_summary_one_liner: 'Interesting but extended. Wait for pullback or gap-and-hold confirmation.',
+      },
+      '/api/daily-decision/run': {
+        available: true,
+        generated_at: '2026-04-24T12:00:00Z',
+        provider: 'real',
+        mode: 'daily-decision',
+        analysis_mode: 'ai_review',
+        ai_mode: 'ai_review',
+        demo_mode: false,
+        report_snapshot: false,
+        stale_data: false,
+        scan_health: { status: 'healthy' },
+        market_regime: { regime: 'Risk On' },
+        summary: {},
+        validation_context: { messages: ['Fresh live prices validated.'] },
+        decisions: [
+          {
+            ticker: 'NVDA',
+            company: 'NVIDIA',
+            primary_action: 'Research / Buy Candidate',
+            actionability_score: 84,
+            actionability_label: 'Breakout Actionable Today',
+            reason: 'Quality long-term candidate.',
+            why_not: 'Valuation can reset.',
+            entry_zone: '95 - 100',
+            stop_loss: 90,
+            tp1: 110,
+            source_row: { ticker: 'NVDA', current_price: 100, price_change_1d_pct: 2.4, relative_volume_20d: 1.8, ema_stack: 'Bullish Stack', signal_summary: 'Breakout with Volume' },
+            ai_review: {
+              provider: 'openai',
+              ai_final_view: 'downgrade',
+              ai_caution_level: 'high',
+              ai_summary_one_liner: 'Interesting but extended. Wait for pullback or gap-and-hold confirmation.',
+            },
+          },
+        ],
+        top_candidate: {
+          ticker: 'NVDA',
+          company: 'NVIDIA',
+          primary_action: 'Research / Buy Candidate',
+          actionability_score: 84,
+          actionability_label: 'Breakout Actionable Today',
+          source_row: { ticker: 'NVDA', current_price: 100, price_change_1d_pct: 2.4, relative_volume_20d: 1.8, ema_stack: 'Bullish Stack', signal_summary: 'Breakout with Volume' },
+        },
+        top_gainers: [],
+        top_losers: [],
+        unusual_volume: [],
+        breakout_volume: [],
+        workspace: {
+          selected_ticker: 'NVDA',
+          canonical_rows: [{
+            ticker: 'NVDA',
+            company: 'NVIDIA',
+            primary_action: 'Research / Buy Candidate',
+            actionability_score: 84,
+            actionability_label: 'Breakout Actionable Today',
+            source_row: { ticker: 'NVDA', current_price: 100, price_change_1d_pct: 2.4, relative_volume_20d: 1.8, ema_stack: 'Bullish Stack', signal_summary: 'Breakout with Volume' },
+            ai_review: {
+              provider: 'openai',
+              ai_final_view: 'downgrade',
+              ai_caution_level: 'high',
+              ai_summary_one_liner: 'Interesting but extended. Wait for pullback or gap-and-hold confirmation.',
+            },
+          }],
+          signal_table_rows: [],
+          decision_by_ticker: {
+            NVDA: {
+              ticker: 'NVDA',
+              company: 'NVIDIA',
+              primary_action: 'Research / Buy Candidate',
+              actionability_score: 84,
+              actionability_label: 'Breakout Actionable Today',
+              source_row: { ticker: 'NVDA', current_price: 100, price_change_1d_pct: 2.4, relative_volume_20d: 1.8, ema_stack: 'Bullish Stack', signal_summary: 'Breakout with Volume' },
+              ai_review: {
+                provider: 'openai',
+                ai_final_view: 'downgrade',
+                ai_caution_level: 'high',
+                ai_summary_one_liner: 'Interesting but extended. Wait for pullback or gap-and-hold confirmation.',
+              },
+            },
+          },
+          chart_data_by_ticker: {},
+          coverage_status: { universe_label: 'Large Cap Starter', tickers_attempted: 1, tickers_successfully_scanned: 1, tracked_tickers_count: 1 },
+          source_aware_top: { overall_top_setup: { ticker: 'NVDA', actionability_label: 'Breakout Actionable Today' } },
+        },
+      },
     };
     const pathname = new URL(url, 'http://localhost:8000').pathname;
     if (pathname === '/api/scan/start') {
@@ -786,6 +894,10 @@ describe('App', () => {
   it('renders the chart-first decision cockpit workspace on the home screen', async () => {
     render(<App />);
     expect((await screen.findAllByText(/Decision Cockpit/i)).length).toBeGreaterThan(0);
+    expect(screen.getByDisplayValue('deterministic')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Run Deterministic Scan/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Run AI Review on Top Candidates/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Run AI Committee/i })).toBeDisabled();
     expect(screen.getByRole('button', { name: /Movers/i })).toBeInTheDocument();
     expect(screen.getByText(/Top screener/i)).toBeInTheDocument();
     expect(screen.getAllByText(/Large Cap Starter/i).length).toBeGreaterThan(0);
@@ -798,6 +910,14 @@ describe('App', () => {
     expect(screen.getAllByText('PLTR')).toHaveLength(1);
     expect(screen.queryByText('This strategy beat SPY/QQQ but did not beat random baseline.')).not.toBeInTheDocument();
     expect(screen.queryByText('No live daily decision loaded')).not.toBeInTheDocument();
+  });
+
+  it('only runs AI review when the user explicitly clicks an AI button', async () => {
+    const fetchMock = vi.mocked(fetch);
+    render(<App />);
+    await screen.findAllByText(/Decision Cockpit/i);
+    const before = fetchMock.mock.calls.filter(([url]) => String(url).includes('/api/daily-decision/run'));
+    expect(before).toHaveLength(0);
   });
 
   it('renders data-source setup and workflow panels', async () => {

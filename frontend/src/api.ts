@@ -165,6 +165,9 @@ export const api = {
   updateLocalEnv: (values: Record<string, string>) =>
     request<EnvUpdatePayload>('/api/env/update-local', { method: 'POST', body: JSON.stringify({ values }) }),
   dailyDecisionLatest: () => request<DecisionSnapshotPayload>('/api/daily-decision/latest'),
+  runDailyDecision: (payload: Record<string, unknown>) =>
+    request<DecisionSnapshotPayload>('/api/daily-decision/run', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
+  aiHealth: () => request<Record<string, unknown>>('/api/ai-health'),
   chart: (ticker: string, provider = 'sample', timeframe = '1Y') =>
     request<ChartPayload>(`/api/chart/${encodeURIComponent(ticker)}?provider=${encodeURIComponent(provider)}&timeframe=${encodeURIComponent(timeframe)}`),
   tracked: () => request<TrackedPayload>('/api/tracked'),
@@ -187,6 +190,10 @@ export const api = {
     request<ScanPayload>(`/api/scan/result/${encodeURIComponent(jobId)}`, undefined, { timeoutMs: LONG_TIMEOUT_MS }),
   deepResearch: (payload: Record<string, unknown>) =>
     request<ResearchPayload>('/api/deep-research', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
+  aiReview: (payload: Record<string, unknown>) =>
+    request<Record<string, unknown>>('/api/ai-review', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
+  aiBrief: (payload: Record<string, unknown>) =>
+    request<Record<string, unknown>>('/api/ai-brief', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
   portfolioAnalyze: (payload: Record<string, unknown>) =>
     request<Record<string, unknown>>('/api/portfolio/analyze', { method: 'POST', body: JSON.stringify(payload) }, { timeoutMs: LONG_TIMEOUT_MS }),
   aiCommittee: (payload: Record<string, unknown>) =>
@@ -521,6 +528,12 @@ export type DecisionSnapshotPayload = ScanPayload & {
   no_clean_candidate_reason?: string;
   data_coverage_status?: Record<string, unknown>;
   workspace?: WorkspacePayload;
+  analysis_mode?: 'deterministic' | 'ai_review' | 'ai_committee' | string;
+  ai_mode?: string;
+  ai_provider?: string;
+  ai_providers?: string[];
+  ai_review_summary?: Record<string, unknown>;
+  ai_committee?: Record<string, unknown>;
 };
 export type ResearchPayload = Record<string, unknown> & {
   scanner_row?: ScannerRow;

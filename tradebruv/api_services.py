@@ -10,6 +10,19 @@ from typing import Any
 
 from .automation import DEFAULT_DAILY_OUTPUT_DIR, DEFAULT_SCAN_ARCHIVE_ROOT
 from .app_status import build_app_status_report, load_latest_app_status
+from .ai_analysis import (
+    DEFAULT_AI_MAX_NAMES,
+    DEFAULT_AI_MAX_TOKENS,
+    DEFAULT_AI_OUTPUT_DIR,
+    DEFAULT_AI_TIMEOUT_SECONDS,
+    build_ai_health_report,
+    build_ai_provider,
+    build_candidate_packet,
+    build_brief_payload,
+    review_candidate_packet,
+    write_brief_outputs,
+    write_single_ticker_review,
+)
 from .chart_signals import build_chart_payload
 from .decision_engine import build_unified_decision, build_unified_decisions, build_validation_context
 from .cli import build_provider, load_universe
@@ -35,6 +48,7 @@ from .dashboard_data import (
     upsert_dashboard_position,
 )
 from .daily_decision import load_daily_decision
+from .daily_decision import run_daily_decision
 from .env import (
     LOCAL_ENV_WARNING,
     create_local_env_from_template,
@@ -411,6 +425,107 @@ def daily_decision_latest() -> dict[str, Any]:
         workspace["selected_ticker_consistency_status"] = "FAIL"
         workspace["selected_ticker_consistency_reason"] = "Selected ticker is missing a canonical validated row or chart payload."
     return payload
+
+
+def daily_decision_run(payload: dict[str, Any]) -> dict[str, Any]:
+    from .universe_refresh import resolve_discovery_universe
+
+    broad_universe = Path(str(payload["broad_universe"])) if payload.get("broad_universe") else None
+    if broad_universe is None:
+        try:
+            broad_universe = resolve_discovery_universe(None)["path"]
+        except FileNotFoundError:
+            broad_universe = None
+    return run_daily_decision(
+        provider_name=str(payload.get("provider") or "real"),
+        core_universe=Path(str(payload.get("core_universe") or ACTIVE_CORE_UNIVERSE)),
+        outlier_universe=Path(str(payload.get("outlier_universe") or ACTIVE_OUTLIER_UNIVERSE)),
+        velocity_universe=Path(str(payload.get("velocity_universe") or ACTIVE_VELOCITY_UNIVERSE)),
+        broad_universe=broad_universe,
+        tracked=Path(str(payload.get("tracked"))) if payload.get("tracked") else DEFAULT_TRACKED_TICKERS_PATH,
+        include_movers=bool(payload.get("include_movers", True)),
+        include_highs=bool(payload.get("include_highs", True)),
+        include_earnings_movers=bool(payload.get("include_earnings_movers", True)),
+        include_themes=bool(payload.get("include_themes", True)),
+        theme_etfs=Path(str(payload.get("theme_etfs") or "config/theme_etfs.txt")),
+        top_n=int(payload.get("top_n") or 50),
+        history_period=str(payload.get("history_period") or "3y"),
+        data_dir=Path(str(payload["data_dir"])) if payload.get("data_dir") else None,
+        refresh_cache=bool(payload.get("refresh_cache", False)),
+        analysis_date=_parse_date(payload.get("as_of_date")) or date.today(),
+        output_dir=Path(str(payload.get("output_dir") or "outputs/daily")),
+        analysis_mode=str(payload.get("analysis_mode") or "deterministic"),
+        ai_provider=str(payload.get("ai_provider") or "") or None,
+        ai_providers=str(payload.get("ai_providers") or ""),
+        ai_max_names=int(payload.get("ai_max_names") or DEFAULT_AI_MAX_NAMES),
+        ai_max_tokens=int(payload.get("ai_max_tokens") or DEFAULT_AI_MAX_TOKENS),
+        ai_timeout_seconds=int(payload.get("ai_timeout_seconds") or DEFAULT_AI_TIMEOUT_SECONDS),
+        ai_cache=bool(payload.get("ai_cache", True)),
+        ai_force_refresh=bool(payload.get("ai_force_refresh", False)),
+        ai_rerank=str(payload.get("ai_rerank") or "off"),
+    )
+
+
+def ai_health() -> dict[str, Any]:
+    payload = build_ai_health_report()
+    return {
+        "providers": {
+            name: {
+                "configured": status.configured,
+                "model": status.model,
+                "reason": status.reason,
+                "base_url": status.base_url,
+            }
+            for name, status in payload["providers"].items()
+        },
+        "default_provider": payload["default_provider"],
+        "warning": payload["warning"],
+        "any_configured": payload["any_configured"],
+    }
+
+
+def ai_review(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("decision"):
+        decision = dict(payload["decision"])
+    else:
+        source = load_daily_decision(Path(str(payload.get("input") or "outputs/daily/decision_today.json")))
+        ticker = str(payload.get("ticker") or "").upper()
+        decision = next((row for row in source.get("decisions", []) if str(row.get("ticker") or "").upper() == ticker), {})
+    if not decision:
+        raise ValueError("Ticker was not found in the supplied daily decision input.")
+    provider = build_ai_provider(
+        str(payload.get("provider") or "openai"),
+        timeout_seconds=int(payload.get("ai_timeout_seconds") or DEFAULT_AI_TIMEOUT_SECONDS),
+        max_tokens=int(payload.get("ai_max_tokens") or DEFAULT_AI_MAX_TOKENS),
+    )
+    review = review_candidate_packet(
+        build_candidate_packet(decision),
+        provider=provider,
+        cache=bool(payload.get("ai_cache", True)),
+        force_refresh=bool(payload.get("ai_force_refresh", False)),
+    )
+    if payload.get("write_output"):
+        paths = write_single_ticker_review(review, ticker=str(decision.get("ticker") or payload.get("ticker") or "ticker"), output_dir=Path(str(payload.get("output_dir") or DEFAULT_AI_OUTPUT_DIR)))
+        review["json_path"] = paths["json_path"]
+        review["markdown_path"] = paths["markdown_path"]
+    return review
+
+
+def ai_brief(payload: dict[str, Any]) -> dict[str, Any]:
+    source = load_daily_decision(Path(str(payload.get("input") or "outputs/daily/decision_today.json")))
+    brief = build_brief_payload(
+        source,
+        provider_name=str(payload.get("provider") or "openai"),
+        timeout_seconds=int(payload.get("ai_timeout_seconds") or DEFAULT_AI_TIMEOUT_SECONDS),
+        max_tokens=int(payload.get("ai_max_tokens") or DEFAULT_AI_MAX_TOKENS),
+        cache=bool(payload.get("ai_cache", True)),
+        force_refresh=bool(payload.get("ai_force_refresh", False)),
+    )
+    if payload.get("write_output", True):
+        paths = write_brief_outputs(brief, output_dir=Path(str(payload.get("output_dir") or DEFAULT_AI_OUTPUT_DIR)))
+        brief["json_path"] = paths["json_path"]
+        brief["markdown_path"] = paths["markdown_path"]
+    return brief
 
 
 def reports_archive() -> dict[str, Any]:

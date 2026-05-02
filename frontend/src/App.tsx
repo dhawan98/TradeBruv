@@ -235,13 +235,17 @@ function HomePage({
   latest,
 }: {
   setPage: (page: PageKey) => void;
-  latest: { data: DecisionSnapshotPayload | null; error: Error | null; retry: () => void };
+  latest: { data: DecisionSnapshotPayload | null; error: Error | null; retry: () => void; setData: (payload: DecisionSnapshotPayload | null) => void };
 }) {
   const tracked = useAsync(api.tracked, []);
+  const aiHealth = useAsync(api.aiHealth, []);
   const [selectedTicker, setSelectedTicker] = useState('');
   const [timeframe, setTimeframe] = useState<'3M' | '6M' | '1Y' | '2Y'>('1Y');
   const [activeView, setActiveView] = useState<CockpitView>('Top');
   const [trackedInput, setTrackedInput] = useState('');
+  const [analysisMode, setAnalysisMode] = useState<'deterministic' | 'ai_review' | 'ai_committee'>('deterministic');
+  const [runError, setRunError] = useState<Error | null>(null);
+  const [runLoading, setRunLoading] = useState('');
   const workspace = latest.data?.workspace;
   const canonicalRows = workspace?.canonical_rows ?? latest.data?.decisions ?? EMPTY_DECISIONS;
   const signalRows = workspace?.signal_table_rows ?? latest.data?.signal_table ?? EMPTY_SIGNALS;
@@ -264,6 +268,12 @@ function HomePage({
       setSelectedTicker(defaultTicker);
     }
   }, [canonicalRows, defaultTicker, selectedTicker]);
+  useEffect(() => {
+    const mode = latest.data?.analysis_mode;
+    if (mode === 'deterministic' || mode === 'ai_review' || mode === 'ai_committee') {
+      setAnalysisMode(mode);
+    }
+  }, [latest.data?.analysis_mode]);
 
   const selectedDecision =
     (selectedTicker ? decisionByTicker[selectedTicker] : null)
@@ -279,6 +289,8 @@ function HomePage({
     [selectedTicker, timeframe, latest.data?.provider],
   );
   const activeChart = chart.data?.ticker ? chart.data : (workspace?.chart_data_by_ticker?.[selectedTicker] ?? chart.data);
+  const defaultAiProvider = String((aiHealth.data as Record<string, unknown> | null)?.default_provider ?? 'openai');
+  const anyAiConfigured = Boolean((aiHealth.data as Record<string, unknown> | null)?.any_configured);
 
   async function addTrackedTicker(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -301,10 +313,82 @@ function HomePage({
     );
   }
 
+  async function runDaily(mode: 'deterministic' | 'ai_review' | 'ai_committee') {
+    setRunLoading(mode);
+    setRunError(null);
+    try {
+      const payload = await api.runDailyDecision({
+        provider: latest.data?.provider ?? 'real',
+        analysis_mode: mode,
+        ai_provider: defaultAiProvider,
+        ai_providers: 'openai,gemini,anthropic',
+        ai_max_names: 10,
+        include_movers: true,
+        include_highs: true,
+        include_earnings_movers: true,
+        include_themes: true,
+        top_n: 50,
+      });
+      latest.setData(payload);
+      setAnalysisMode(mode);
+    } catch (err) {
+      setRunError(err instanceof Error ? err : new Error('Daily decision run failed'));
+    } finally {
+      setRunLoading('');
+    }
+  }
+
+  async function runSelectedTickerAIReview() {
+    if (!selectedDecision) return;
+    setRunLoading('selected-ai-review');
+    setRunError(null);
+    try {
+      const review = await api.aiReview({
+        ticker: selectedDecision.ticker,
+        provider: defaultAiProvider,
+        decision: selectedDecision,
+        write_output: true,
+      });
+      latest.setData(attachAiReviewToSnapshot(latest.data, selectedDecision.ticker, review));
+    } catch (err) {
+      setRunError(err instanceof Error ? err : new Error('Single-ticker AI review failed'));
+    } finally {
+      setRunLoading('');
+    }
+  }
+
   return (
     <div className="cockpit-page">
       {latest.error && <ApiErrorPanel error={latest.error} onRetry={latest.retry} />}
+      {runError && <ApiErrorPanel error={runError} onRetry={() => setRunError(null)} compact />}
       {tracked.error && <ApiErrorPanel error={tracked.error} onRetry={tracked.retry} compact />}
+      <div className="toolbar">
+        <Select
+          name="analysis_mode"
+          label="Analysis Mode"
+          value={analysisMode}
+          onChange={(event) => setAnalysisMode(event.target.value as 'deterministic' | 'ai_review' | 'ai_committee')}
+          options={['deterministic', 'ai_review', 'ai_committee']}
+        />
+        <button className="primary" disabled={runLoading === 'deterministic'} onClick={() => runDaily('deterministic')} type="button">
+          <RefreshCcw size={16} /> {runLoading === 'deterministic' ? 'Running' : 'Run Deterministic Scan'}
+        </button>
+        <button className="secondary" disabled={!anyAiConfigured || runLoading === 'ai_review'} onClick={() => runDaily('ai_review')} type="button">
+          <Brain size={16} /> {runLoading === 'ai_review' ? 'Reviewing' : 'Run AI Review on Top Candidates'}
+        </button>
+        <button className="ghost" disabled={!anyAiConfigured || runLoading === 'ai_committee'} onClick={() => runDaily('ai_committee')} type="button">
+          <Sparkles size={16} /> {runLoading === 'ai_committee' ? 'Reviewing' : 'Run AI Committee'}
+        </button>
+        <button className="ghost" disabled={!anyAiConfigured || !selectedDecision || runLoading === 'selected-ai-review'} onClick={runSelectedTickerAIReview} type="button">
+          <Search size={16} /> {runLoading === 'selected-ai-review' ? 'Reviewing' : 'Run AI Review for Selected Ticker'}
+        </button>
+      </div>
+      <Notice tone="neutral">AI review costs API credits. Deterministic scan is free.</Notice>
+      {anyAiConfigured ? (
+        <Notice tone="neutral">Reviews top 10 deterministic candidates. Deterministic labels remain primary and AI stays separate.</Notice>
+      ) : (
+        <Notice tone="warn">AI provider not configured. Add OPENAI_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY to .env.</Notice>
+      )}
       {latest.data?.available ? (
         <>
           <div className="cockpit-grid">
@@ -370,7 +454,7 @@ function HomePage({
                     trackedTickers={tracked.data?.tickers ?? []}
                     onToggleTracked={toggleTrackedTicker}
                     onDeepResearch={() => setPage('Deep Research')}
-                    onAICommittee={() => setPage('AI Committee')}
+                    onAICommittee={anyAiConfigured ? runSelectedTickerAIReview : undefined}
                   />
                   <MarketLeadersPanel
                     gainers={latest.data?.top_gainers ?? []}
@@ -576,7 +660,7 @@ function SelectedDecisionPanel({
       <div className="decision-heading">
         <div>
           <h3>{row.ticker}</h3>
-          <p>{decisionLabel(row)} · Score {decisionScore(row)}</p>
+          <p>Deterministic: {row.actionability_label ?? decisionLabel(row)} · Score {decisionScore(row)}</p>
         </div>
         <div className="decision-score-block">
           <span>{money(Number(row.source_row?.current_price ?? 0))}</span>
@@ -627,7 +711,7 @@ function SelectedDecisionPanel({
         {onDeepResearch ? <button className="secondary" onClick={onDeepResearch} type="button">Deep Research</button> : null}
         {onToggleTracked ? <button className="ghost" onClick={() => onToggleTracked(row.ticker)} type="button">{tracked ? 'Untrack' : 'Track'}</button> : null}
         {row.source_row ? <TrackPredictionButton scannerRow={row.source_row} /> : null}
-        {onAICommittee ? <button className="ghost" onClick={onAICommittee} type="button">Run AI Committee</button> : null}
+        {onAICommittee ? <button className="ghost" onClick={onAICommittee} type="button">Run AI Review</button> : null}
       </div>
       <details className="decision-disclosure">
         <summary>Why</summary>
@@ -640,8 +724,8 @@ function SelectedDecisionPanel({
       {row.ai_review ? (
         <details className="decision-disclosure">
           <summary>AI Second Pass</summary>
-          <p>{String((row.ai_review as Record<string, unknown>).disagreement_reason ?? row.ai_disagreement_reason ?? 'No AI disagreement note.')}</p>
-          <p>Suggested label: {String((row.ai_review as Record<string, unknown>).suggested_label ?? decisionLabel(row))} • Caution {String((row.ai_review as Record<string, unknown>).final_ai_caution ?? row.ai_caution ?? 'medium')}</p>
+          <p>AI Review: {String((row.ai_review as Record<string, unknown>).ai_summary_one_liner ?? (row.ai_review as Record<string, unknown>).disagreement_reason ?? row.ai_disagreement_reason ?? 'No AI review note.')}</p>
+          <p>AI View: {String((row.ai_review as Record<string, unknown>).ai_final_view ?? 'needs_more_research')} • Caution {String((row.ai_review as Record<string, unknown>).ai_caution_level ?? (row.ai_review as Record<string, unknown>).final_ai_caution ?? row.ai_caution ?? 'medium')}</p>
         </details>
       ) : null}
       <details className="decision-disclosure">
@@ -1810,11 +1894,23 @@ function Field({ name, label, defaultValue = '' }: { name: string; label: string
   );
 }
 
-function Select({ name, label, options }: { name: string; label: string; options: string[] }) {
+function Select({
+  name,
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  name: string;
+  label: string;
+  options: string[];
+  value?: string;
+  onChange?: React.ChangeEventHandler<HTMLSelectElement>;
+}) {
   return (
     <label className="field">
       <span>{label}</span>
-      <select name={name}>
+      <select name={name} value={value} onChange={onChange}>
         {options.map((option) => <option key={option}>{option}</option>)}
       </select>
     </label>
@@ -2703,13 +2799,52 @@ function labelWeight(value: unknown) {
   }[String(value ?? '')] ?? 0;
 }
 
+function attachAiReviewToSnapshot(
+  snapshot: DecisionSnapshotPayload | null,
+  ticker: string,
+  review: Record<string, unknown>,
+): DecisionSnapshotPayload | null {
+  if (!snapshot) return snapshot;
+  const apply = (row: UnifiedDecision) => (row.ticker === ticker ? { ...row, ai_review: review } : row);
+  const workspace = snapshot.workspace
+    ? {
+        ...snapshot.workspace,
+        canonical_rows: snapshot.workspace.canonical_rows?.map(apply),
+        top_candidates: snapshot.workspace.top_candidates?.map(apply),
+        tracked_rows: snapshot.workspace.tracked_rows?.map(apply),
+        broad_rows: snapshot.workspace.broad_rows?.map(apply),
+        mover_rows: snapshot.workspace.mover_rows?.map(apply),
+        watch_rows: snapshot.workspace.watch_rows?.map(apply),
+        avoid_rows: snapshot.workspace.avoid_rows?.map(apply),
+        decision_by_ticker: snapshot.workspace.decision_by_ticker
+          ? {
+              ...snapshot.workspace.decision_by_ticker,
+              [ticker]: snapshot.workspace.decision_by_ticker[ticker]
+                ? { ...snapshot.workspace.decision_by_ticker[ticker], ai_review: review }
+                : snapshot.workspace.decision_by_ticker[ticker],
+            }
+          : snapshot.workspace.decision_by_ticker,
+      }
+    : snapshot.workspace;
+  return {
+    ...snapshot,
+    decisions: snapshot.decisions?.map(apply),
+    top_candidate: snapshot.top_candidate?.ticker === ticker ? { ...snapshot.top_candidate, ai_review: review } : snapshot.top_candidate,
+    overall_top_candidate: snapshot.overall_top_candidate?.ticker === ticker ? { ...snapshot.overall_top_candidate, ai_review: review } : snapshot.overall_top_candidate,
+    best_tracked_setup: snapshot.best_tracked_setup?.ticker === ticker ? { ...snapshot.best_tracked_setup, ai_review: review } : snapshot.best_tracked_setup,
+    best_broad_setup: snapshot.best_broad_setup?.ticker === ticker ? { ...snapshot.best_broad_setup, ai_review: review } : snapshot.best_broad_setup,
+    best_mover_setup: snapshot.best_mover_setup?.ticker === ticker ? { ...snapshot.best_mover_setup, ai_review: review } : snapshot.best_mover_setup,
+    workspace,
+  };
+}
+
 function decisionLabel(row?: Partial<UnifiedDecision> | null) {
   if (!row) return 'Data Insufficient';
-  return String(row.ai_adjusted_actionability_label ?? row.actionability_label ?? row.primary_action ?? 'Data Insufficient');
+  return String(row.actionability_label ?? row.ai_adjusted_actionability_label ?? row.primary_action ?? 'Data Insufficient');
 }
 
 function decisionScore(row?: Partial<UnifiedDecision> | null) {
-  return Math.round(Number(row?.ai_rerank_score ?? row?.actionability_score ?? row?.score ?? 0));
+  return Math.round(Number(row?.actionability_score ?? row?.ai_rerank_score ?? row?.score ?? 0));
 }
 
 function fastIdeaLabels() {

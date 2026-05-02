@@ -92,6 +92,17 @@ def create_app() -> "FastAPI":
     def daily_decision_latest() -> dict[str, Any]:
         return services.daily_decision_latest()
 
+    @app.post("/api/daily-decision/run")
+    def daily_decision_run(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        try:
+            return services.daily_decision_run(payload or {})
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/ai-health")
+    def ai_health() -> dict[str, Any]:
+        return services.ai_health()
+
     @app.get("/api/chart/{ticker}")
     def chart(
         ticker: str,
@@ -144,6 +155,17 @@ def create_app() -> "FastAPI":
     @app.post("/api/deep-research")
     def deep_research(payload: dict[str, Any]) -> dict[str, Any]:
         return services.deep_research(payload)
+
+    @app.post("/api/ai-review")
+    def ai_review(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return services.ai_review(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/ai-brief")
+    def ai_brief(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return services.ai_brief(payload or {})
 
     @app.get("/api/portfolio")
     def portfolio() -> dict[str, Any]:

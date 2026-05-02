@@ -7,6 +7,23 @@ from datetime import date
 from pathlib import Path
 
 from .actionability import label_bucket
+from .ai_analysis import (
+    DEFAULT_AI_MAX_NAMES,
+    DEFAULT_AI_MAX_TOKENS,
+    DEFAULT_AI_OUTPUT_DIR,
+    DEFAULT_AI_TIMEOUT_SECONDS,
+    build_ai_health_report,
+    build_brief_payload,
+    normalize_analysis_mode,
+    normalize_ai_provider,
+    normalize_ai_providers,
+    resolve_default_ai_provider,
+    review_candidate_packet,
+    build_candidate_packet,
+    build_ai_provider,
+    write_brief_outputs,
+    write_single_ticker_review,
+)
 from .ai_explanations import apply_ai_explanations, build_explanation_provider
 from .app_status import build_app_status_report
 from .alternative_data import DEFAULT_ALTERNATIVE_DATA_PATH, AlternativeDataOverlayProvider, load_alternative_data_repository
@@ -93,20 +110,40 @@ def _daily_decision_count(payload: dict[str, object], bucket: str) -> int:
     return count
 
 
-def _format_ai_rerank_status(payload: dict[str, object]) -> str:
-    summary = payload.get("ai_rerank_summary")
-    if not isinstance(summary, dict) or not summary:
-        return str(payload.get("ai_rerank") or "off")
-    if not summary.get("enabled"):
+def _format_ai_status(payload: dict[str, object]) -> str:
+    analysis_mode = str(payload.get("analysis_mode") or "")
+    if not analysis_mode:
+        summary = payload.get("ai_rerank_summary")
+        if isinstance(summary, dict) and summary.get("enabled"):
+            provider = str(summary.get("provider") or payload.get("ai_rerank") or "unknown")
+            status = str(summary.get("status") or "unknown")
+            return (
+                f"{status} via {provider}"
+                f" | reviewed {int(summary.get('names_reviewed') or 0)}"
+                f" | downgraded {int(summary.get('downgraded') or 0)}"
+                f" | unsupported claims {int(summary.get('unsupported_claims_detected') or 0)}"
+                f" | top label changed {'yes' if summary.get('top_label_changed') else 'no'}"
+            )
+        analysis_mode = "deterministic"
+    if analysis_mode == "deterministic":
         return "off"
-    provider = str(summary.get("provider") or payload.get("ai_rerank") or "unknown")
-    status = str(summary.get("status") or "unknown")
+    if analysis_mode == "ai_review":
+        summary = payload.get("ai_review_summary") or {}
+        if not isinstance(summary, dict):
+            return "ai_review"
+        return (
+            f"ai_review via {summary.get('provider', 'unavailable')}"
+            f" | reviewed {int(summary.get('names_reviewed') or 0)}"
+            f" | downgraded {int(summary.get('downgraded') or 0)}"
+            f" | unsupported claims {int(summary.get('unsupported_claims_detected') or 0)}"
+        )
+    committee = payload.get("ai_committee") or {}
+    if not isinstance(committee, dict):
+        return "ai_committee"
     return (
-        f"{status} via {provider}"
-        f" | reviewed {int(summary.get('names_reviewed') or 0)}"
-        f" | downgraded {int(summary.get('downgraded') or 0)}"
-        f" | unsupported claims {int(summary.get('unsupported_claims_detected') or 0)}"
-        f" | top label changed {'yes' if summary.get('top_label_changed') else 'no'}"
+        f"ai_committee | models used {len(committee.get('models_used') or [])}"
+        f" | failed {len(committee.get('models_failed') or [])}"
+        f" | consensus {len(committee.get('consensus_candidates') or [])}"
     )
 
 
@@ -191,6 +228,14 @@ def main(argv: list[str] | None = None) -> int:
                 refresh_cache=args.refresh_cache,
                 analysis_date=args.as_of_date or date.today(),
                 output_dir=args.output_dir,
+                analysis_mode=args.analysis_mode,
+                ai_provider=args.ai_provider,
+                ai_providers=args.ai_providers,
+                ai_max_names=args.ai_max_names,
+                ai_max_tokens=args.ai_max_tokens,
+                ai_timeout_seconds=args.ai_timeout_seconds,
+                ai_cache=args.ai_cache,
+                ai_force_refresh=args.ai_force_refresh,
                 ai_rerank=args.ai_rerank,
             )
         except (ProviderConfigurationError, FileNotFoundError, ValueError) as exc:
@@ -214,9 +259,104 @@ def main(argv: list[str] | None = None) -> int:
         else:
             movers_scanned = "Not run"
         print(f"Movers scanned: {movers_scanned}")
-        print(f"AI rerank status: {_format_ai_rerank_status(payload)}")
+        ai_status = _format_ai_status(payload)
+        print(f"AI status: {ai_status}")
+        if not payload.get("analysis_mode") and (payload.get("ai_rerank_summary") or {}).get("enabled"):
+            print(f"AI rerank status: {ai_status}")
         for warning in payload.get("benchmark_warnings", [])[:1]:
             print(f"Warning: {warning}")
+        return 0
+
+    if args.command == "ai-health":
+        payload = build_ai_health_report()
+        print(f"OpenAI: {'configured' if payload['providers']['openai'].configured else 'missing'}")
+        print(f"Gemini: {'configured' if payload['providers']['gemini'].configured else 'missing'}")
+        print(f"Anthropic: {'configured' if payload['providers']['anthropic'].configured else 'missing'}")
+        print(f"Generic OpenAI-compatible: {'configured' if payload['providers']['generic'].configured else 'missing'}")
+        print(f"Default provider: {payload['default_provider']}")
+        for provider_name, status in payload["providers"].items():
+            print(f"{provider_name} model: {status.model}")
+        if payload.get("warning"):
+            print(f"Warning: {payload['warning']}")
+        return 0
+
+    if args.command == "ai-brief":
+        input_payload = json.loads(args.input.read_text(encoding="utf-8"))
+        brief = build_brief_payload(
+            input_payload,
+            provider_name=args.provider,
+            timeout_seconds=args.ai_timeout_seconds,
+            max_tokens=args.ai_max_tokens,
+            cache=args.ai_cache,
+            force_refresh=args.ai_force_refresh,
+        )
+        paths = write_brief_outputs(brief, output_dir=args.output_dir)
+        print(f"AI brief JSON: {paths['json_path']}")
+        print(f"AI brief MD:   {paths['markdown_path']}")
+        return 0
+
+    if args.command == "ai-review":
+        input_payload = json.loads(args.input.read_text(encoding="utf-8"))
+        decision = next(
+            (
+                row
+                for row in input_payload.get("decisions", [])
+                if str(row.get("ticker") or "").upper() == args.ticker.upper()
+            ),
+            None,
+        )
+        if not isinstance(decision, dict):
+            print(f"AI-review error: {args.ticker.upper()} was not found in {args.input}")
+            return 2
+        provider = build_ai_provider(
+            args.provider,
+            timeout_seconds=args.ai_timeout_seconds,
+            max_tokens=args.ai_max_tokens,
+        )
+        review = review_candidate_packet(
+            build_candidate_packet(decision),
+            provider=provider,
+            cache=args.ai_cache,
+            force_refresh=args.ai_force_refresh,
+        )
+        paths = write_single_ticker_review(review, ticker=args.ticker, output_dir=args.output_dir)
+        print(f"AI review JSON: {paths['json_path']}")
+        print(f"AI review MD:   {paths['markdown_path']}")
+        return 0
+
+    if args.command == "deep-research":
+        from .analysis import deep_research
+
+        try:
+            provider = build_provider(args=args, analysis_date=args.as_of_date or date.today())
+            research = deep_research(
+                ticker=args.ticker,
+                provider=provider,
+                analysis_date=args.as_of_date or date.today(),
+            )
+        except (ProviderConfigurationError, ValueError) as exc:
+            print(f"Deep-research error: {exc}")
+            return 2
+        output_dir = args.output_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        deterministic_path = output_dir / f"{args.ticker.upper()}_deep_research.json"
+        deterministic_path.write_text(json.dumps(research, indent=2), encoding="utf-8")
+        print(f"Deep research JSON: {deterministic_path}")
+        if args.ai_review:
+            provider = build_ai_provider(
+                args.ai_review,
+                timeout_seconds=args.ai_timeout_seconds,
+                max_tokens=args.ai_max_tokens,
+            )
+            review = review_candidate_packet(
+                build_candidate_packet(research.get("unified_decision") or {"ticker": args.ticker, "actionability_label": "Data Insufficient", "source_row": research.get("scanner_row") or {}}),
+                provider=provider,
+                cache=args.ai_cache,
+                force_refresh=args.ai_force_refresh,
+            )
+            paths = write_single_ticker_review(review, ticker=args.ticker, output_dir=args.output_dir)
+            print(f"AI review JSON: {paths['json_path']}")
+            print(f"AI review MD:   {paths['markdown_path']}")
         return 0
 
     if args.command == "coverage-audit":
@@ -986,6 +1126,48 @@ def build_parser() -> argparse.ArgumentParser:
     decision_today.add_argument("--output-dir", type=Path, default=Path("outputs/daily"))
     decision_today.add_argument("--as-of-date", type=_parse_date)
     decision_today.add_argument("--ai-rerank", choices=("off", "openai", "gemini"), default="off")
+    decision_today.add_argument("--analysis-mode", choices=("deterministic", "ai_review", "ai_committee"), default="deterministic")
+    decision_today.add_argument("--ai-provider", choices=("openai", "gemini", "anthropic", "generic"))
+    decision_today.add_argument("--ai-providers", default="")
+    decision_today.add_argument("--ai-max-names", type=int, default=DEFAULT_AI_MAX_NAMES)
+    decision_today.add_argument("--ai-max-tokens", type=int, default=DEFAULT_AI_MAX_TOKENS)
+    decision_today.add_argument("--ai-timeout-seconds", type=int, default=DEFAULT_AI_TIMEOUT_SECONDS)
+    decision_today.add_argument("--ai-cache", action=argparse.BooleanOptionalAction, default=True)
+    decision_today.add_argument("--ai-force-refresh", action="store_true")
+
+    ai_health = subparsers.add_parser("ai-health", help="Show which AI providers are configured without printing secrets.")
+
+    ai_brief = subparsers.add_parser("ai-brief", help="Generate a daily AI brief from deterministic daily decision output.")
+    ai_brief.add_argument("--provider", choices=("openai", "gemini", "anthropic", "generic"), default=resolve_default_ai_provider() or "openai")
+    ai_brief.add_argument("--input", type=Path, default=Path("outputs/daily/decision_today.json"))
+    ai_brief.add_argument("--output-dir", type=Path, default=DEFAULT_AI_OUTPUT_DIR)
+    ai_brief.add_argument("--ai-max-tokens", type=int, default=DEFAULT_AI_MAX_TOKENS)
+    ai_brief.add_argument("--ai-timeout-seconds", type=int, default=DEFAULT_AI_TIMEOUT_SECONDS)
+    ai_brief.add_argument("--ai-cache", action=argparse.BooleanOptionalAction, default=True)
+    ai_brief.add_argument("--ai-force-refresh", action="store_true")
+
+    ai_review = subparsers.add_parser("ai-review", help="Run a single-ticker AI review from a saved daily decision file.")
+    ai_review.add_argument("ticker")
+    ai_review.add_argument("--provider", choices=("openai", "gemini", "anthropic", "generic"), default=resolve_default_ai_provider() or "openai")
+    ai_review.add_argument("--input", type=Path, default=Path("outputs/daily/decision_today.json"))
+    ai_review.add_argument("--output-dir", type=Path, default=DEFAULT_AI_OUTPUT_DIR)
+    ai_review.add_argument("--ai-max-tokens", type=int, default=DEFAULT_AI_MAX_TOKENS)
+    ai_review.add_argument("--ai-timeout-seconds", type=int, default=DEFAULT_AI_TIMEOUT_SECONDS)
+    ai_review.add_argument("--ai-cache", action=argparse.BooleanOptionalAction, default=True)
+    ai_review.add_argument("--ai-force-refresh", action="store_true")
+
+    deep_research = subparsers.add_parser("deep-research", help="Run deterministic single-ticker research with optional AI review.")
+    deep_research.add_argument("ticker")
+    deep_research.add_argument("--provider", choices=("sample", "local", "real"), default="real")
+    deep_research.add_argument("--data-dir", type=Path)
+    deep_research.add_argument("--history-period", default="3y")
+    deep_research.add_argument("--as-of-date", type=_parse_date)
+    deep_research.add_argument("--output-dir", type=Path, default=DEFAULT_AI_OUTPUT_DIR)
+    deep_research.add_argument("--ai-review", choices=("openai", "gemini", "anthropic", "generic"))
+    deep_research.add_argument("--ai-max-tokens", type=int, default=DEFAULT_AI_MAX_TOKENS)
+    deep_research.add_argument("--ai-timeout-seconds", type=int, default=DEFAULT_AI_TIMEOUT_SECONDS)
+    deep_research.add_argument("--ai-cache", action=argparse.BooleanOptionalAction, default=True)
+    deep_research.add_argument("--ai-force-refresh", action="store_true")
 
     universe = subparsers.add_parser("universe", help="List or write curated starter universe files.")
     universe_subparsers = universe.add_subparsers(dest="universe_command", required=True)
