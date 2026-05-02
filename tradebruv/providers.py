@@ -411,10 +411,10 @@ class YFinanceMarketDataProvider:
             frame = history if single_symbol else history[provider_symbol]
         except Exception:
             return []
-            try:
-                return cls._history_to_bars(frame)
-            except Exception:
-                return []
+        try:
+            return cls._history_to_bars(frame)
+        except Exception:
+            return []
 
     @staticmethod
     def _quiet_yfinance(loader: Any) -> Any:

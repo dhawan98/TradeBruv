@@ -165,12 +165,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "decision-today":
         try:
             from .daily_decision import run_daily_decision
+            from .universe_refresh import resolve_discovery_universe
+
+            broad_universe = args.broad_universe
+            if broad_universe is None:
+                try:
+                    broad_universe = resolve_discovery_universe(None)["path"]
+                except FileNotFoundError:
+                    broad_universe = None
             payload = run_daily_decision(
                 provider_name=args.provider,
                 core_universe=args.core_universe,
                 outlier_universe=args.outlier_universe,
                 velocity_universe=args.velocity_universe,
-                broad_universe=args.broad_universe,
+                broad_universe=broad_universe,
                 tracked=args.tracked,
                 include_movers=args.include_movers,
                 include_highs=args.include_highs,
@@ -251,6 +259,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "universe":
+        from .universe_refresh import build_liquid_universe, refresh_all_universes, refresh_liquidity, refresh_symbol_master
         from .universe_registry import clean_universe_file, expand_universe, import_universe_csv, list_universe_definitions, merge_universe_files, universe_text, validate_universe_file
 
         if args.universe_command == "list":
@@ -301,6 +310,42 @@ def main(argv: list[str] | None = None) -> int:
                     indent=2,
                 )
             )
+            return 0
+        if args.universe_command == "refresh-symbol-master":
+            payload = refresh_symbol_master(source=args.source, output_path=args.output)
+            print(json.dumps(payload, indent=2))
+            return 0
+        if args.universe_command == "build-liquid":
+            payload = build_liquid_universe(
+                symbol_master_path=args.symbol_master,
+                provider_name=args.provider,
+                output_path=args.output,
+                snapshot_path=args.snapshot,
+                min_price=args.min_price,
+                min_dollar_volume=args.min_dollar_volume,
+                min_avg_volume=args.min_avg_volume,
+                exclude_etfs=args.exclude_etfs,
+                exclude_funds=args.exclude_funds,
+                exclude_warrants=args.exclude_warrants,
+                exclude_rights=args.exclude_rights,
+                exclude_units=args.exclude_units,
+                exclude_preferred=args.exclude_preferred,
+                history_period=args.history_period,
+                data_dir=args.data_dir,
+                refresh_cache=args.refresh_cache,
+            )
+            print(json.dumps(payload, indent=2))
+            return 0
+        if args.universe_command == "refresh-all":
+            payload = refresh_all_universes(
+                provider_name=args.provider,
+                symbol_source=args.source,
+            )
+            print(json.dumps(payload, indent=2))
+            return 0
+        if args.universe_command == "refresh-liquidity":
+            payload = refresh_liquidity(provider_name=args.provider)
+            print(json.dumps(payload, indent=2))
             return 0
 
     if args.command == "tracked":
@@ -402,9 +447,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "movers":
         try:
             from .movers import run_movers_scan
+            from .universe_refresh import resolve_discovery_universe
 
+            resolved = resolve_discovery_universe(args.universe)
+            universe_path = resolved["path"]
             payload = run_movers_scan(
-                universe=load_universe(args.universe),
+                universe=load_universe(universe_path),
                 provider_name=args.provider,
                 analysis_date=args.as_of_date or date.today(),
                 history_period=args.history_period,
@@ -422,6 +470,7 @@ def main(argv: list[str] | None = None) -> int:
         except (ProviderConfigurationError, FileNotFoundError, ValueError) as exc:
             print(f"Movers error: {exc}")
             return 2
+        print(f"Universe used: {universe_path}")
         print(f"Movers JSON: {payload.json_path}")
         print(f"Movers CSV:  {payload.csv_path}")
         print(f"Movers MD:   {payload.markdown_path}")
@@ -430,9 +479,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "highs":
         try:
             from .discovery import run_highs_scan
+            from .universe_refresh import resolve_discovery_universe
 
+            resolved = resolve_discovery_universe(args.universe)
+            universe_path = resolved["path"]
             payload = run_highs_scan(
-                universe=load_universe(args.universe),
+                universe=load_universe(universe_path),
                 provider_name=args.provider,
                 analysis_date=args.as_of_date or date.today(),
                 history_period=args.history_period,
@@ -446,6 +498,7 @@ def main(argv: list[str] | None = None) -> int:
         except (ProviderConfigurationError, FileNotFoundError, ValueError) as exc:
             print(f"Highs error: {exc}")
             return 2
+        print(f"Universe used: {universe_path}")
         print(f"Highs JSON: {payload.json_path}")
         print(f"Highs MD:   {payload.markdown_path}")
         return 0
@@ -453,9 +506,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "earnings-movers":
         try:
             from .discovery import run_earnings_movers_scan
+            from .universe_refresh import resolve_discovery_universe
 
+            resolved = resolve_discovery_universe(args.universe)
+            universe_path = resolved["path"]
             payload = run_earnings_movers_scan(
-                universe=load_universe(args.universe),
+                universe=load_universe(universe_path),
                 provider_name=args.provider,
                 analysis_date=args.as_of_date or date.today(),
                 history_period=args.history_period,
@@ -469,6 +525,7 @@ def main(argv: list[str] | None = None) -> int:
         except (ProviderConfigurationError, FileNotFoundError, ValueError) as exc:
             print(f"Earnings-movers error: {exc}")
             return 2
+        print(f"Universe used: {universe_path}")
         print(f"Earnings movers JSON: {payload.json_path}")
         print(f"Earnings movers MD:   {payload.markdown_path}")
         return 0
@@ -516,6 +573,52 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Theme constituents MD:   {payload.markdown_path}")
         if not payload.payload.get("available", True):
             print(payload.payload.get("message"))
+        return 0
+
+    if args.command == "theme-basket":
+        try:
+            from .discovery import run_theme_basket_scan
+
+            payload = run_theme_basket_scan(
+                basket_path=args.basket,
+                provider_name=args.provider,
+                analysis_date=args.as_of_date or date.today(),
+                history_period=args.history_period,
+                data_dir=args.data_dir,
+                top_n=args.top_n,
+                output_dir=args.output_dir,
+                refresh_cache=args.refresh_cache,
+            )
+        except (ProviderConfigurationError, FileNotFoundError, ValueError) as exc:
+            print(f"Theme-basket error: {exc}")
+            return 2
+        print(f"Theme basket JSON: {payload.json_path}")
+        print(f"Theme basket MD:   {payload.markdown_path}")
+        if not payload.payload.get("available", True):
+            print(payload.payload.get("message"))
+        return 0
+
+    if args.command == "theme-discovery":
+        try:
+            from .discovery import run_theme_discovery
+
+            payload = run_theme_discovery(
+                themes=load_universe(args.themes),
+                baskets_dir=args.baskets_dir,
+                provider_name=args.provider,
+                analysis_date=args.as_of_date or date.today(),
+                history_period=args.history_period,
+                data_dir=args.data_dir,
+                top_themes=args.top_themes,
+                top_n=args.top_n,
+                output_dir=args.output_dir,
+                refresh_cache=args.refresh_cache,
+            )
+        except (ProviderConfigurationError, FileNotFoundError, ValueError) as exc:
+            print(f"Theme-discovery error: {exc}")
+            return 2
+        print(f"Theme discovery JSON: {payload.json_path}")
+        print(f"Theme discovery MD:   {payload.markdown_path}")
         return 0
 
     if args.command == "review":
@@ -910,6 +1013,31 @@ def build_parser() -> argparse.ArgumentParser:
     universe_expand.add_argument("--csv-input", action="append", default=[], help="Optional CSV import in PATH or PATH:COLUMN form. May be repeated.")
     universe_expand.add_argument("--default-ticker-column", default="ticker")
     universe_expand.add_argument("--extra-file", type=Path, action="append", default=[], help="Optional newline universe file to merge in. May be repeated.")
+    universe_refresh_symbol_master = universe_subparsers.add_parser("refresh-symbol-master", help="Refresh the dynamic symbol master from NasdaqTrader or a provider listing endpoint.")
+    universe_refresh_symbol_master.add_argument("--source", choices=("nasdaqtrader", "alphavantage", "finnhub", "fmp"), default="nasdaqtrader")
+    universe_refresh_symbol_master.add_argument("--output", type=Path, default=Path("data/universes/symbol_master.csv"))
+    universe_build_liquid = universe_subparsers.add_parser("build-liquid", help="Build the liquid U.S. stock universe from the symbol master and cached/live liquidity snapshots.")
+    universe_build_liquid.add_argument("--symbol-master", type=Path, default=Path("data/universes/symbol_master.csv"))
+    universe_build_liquid.add_argument("--provider", choices=("sample", "local", "real"), default="real")
+    universe_build_liquid.add_argument("--data-dir", type=Path)
+    universe_build_liquid.add_argument("--history-period", default="6mo")
+    universe_build_liquid.add_argument("--output", type=Path, default=Path("config/universe_us_liquid_stocks.txt"))
+    universe_build_liquid.add_argument("--snapshot", type=Path, default=Path("data/universes/liquidity_snapshot.csv"))
+    universe_build_liquid.add_argument("--min-price", type=float, default=5.0)
+    universe_build_liquid.add_argument("--min-dollar-volume", type=float, default=10_000_000.0)
+    universe_build_liquid.add_argument("--min-avg-volume", type=float, default=300_000.0)
+    universe_build_liquid.add_argument("--exclude-etfs", action=argparse.BooleanOptionalAction, default=True)
+    universe_build_liquid.add_argument("--exclude-funds", action=argparse.BooleanOptionalAction, default=True)
+    universe_build_liquid.add_argument("--exclude-warrants", action=argparse.BooleanOptionalAction, default=True)
+    universe_build_liquid.add_argument("--exclude-rights", action=argparse.BooleanOptionalAction, default=True)
+    universe_build_liquid.add_argument("--exclude-units", action=argparse.BooleanOptionalAction, default=True)
+    universe_build_liquid.add_argument("--exclude-preferred", action=argparse.BooleanOptionalAction, default=True)
+    universe_build_liquid.add_argument("--refresh-cache", action="store_true")
+    universe_refresh_all = universe_subparsers.add_parser("refresh-all", help="Refresh the symbol master, rebuild liquid universes, refresh theme ETF files, and validate coverage.")
+    universe_refresh_all.add_argument("--provider", choices=("sample", "local", "real"), default="real")
+    universe_refresh_all.add_argument("--source", choices=("nasdaqtrader", "alphavantage", "finnhub", "fmp"), default="nasdaqtrader")
+    universe_refresh_liquidity = universe_subparsers.add_parser("refresh-liquidity", help="Reuse the current symbol master and refresh only the liquidity snapshot and liquid universes.")
+    universe_refresh_liquidity.add_argument("--provider", choices=("sample", "local", "real"), default="real")
 
     tracked = subparsers.add_parser("tracked", help="Manage the tracked-tickers watchlist file.")
     tracked_subparsers = tracked.add_subparsers(dest="tracked_command", required=True)
@@ -953,7 +1081,7 @@ def build_parser() -> argparse.ArgumentParser:
     provider_check.add_argument("--fallbacks", action="store_true")
 
     movers = subparsers.add_parser("movers", help="Scan for top gainers, losers, and unusual-volume setups.")
-    movers.add_argument("--universe", type=Path, required=True)
+    movers.add_argument("--universe", type=Path)
     movers.add_argument("--provider", choices=("sample", "local", "real"), default="real")
     movers.add_argument("--data-dir", type=Path)
     movers.add_argument("--history-period", default="3y")
@@ -968,7 +1096,7 @@ def build_parser() -> argparse.ArgumentParser:
     movers.add_argument("--as-of-date", type=_parse_date)
 
     highs = subparsers.add_parser("highs", help="Scan for new 52-week highs and relative-strength leaders.")
-    highs.add_argument("--universe", type=Path, required=True)
+    highs.add_argument("--universe", type=Path)
     highs.add_argument("--provider", choices=("sample", "local", "real"), default="real")
     highs.add_argument("--data-dir", type=Path)
     highs.add_argument("--history-period", default="3y")
@@ -980,7 +1108,7 @@ def build_parser() -> argparse.ArgumentParser:
     highs.add_argument("--as-of-date", type=_parse_date)
 
     earnings_movers = subparsers.add_parser("earnings-movers", help="Scan for earnings/news movers and earnings-like gaps.")
-    earnings_movers.add_argument("--universe", type=Path, required=True)
+    earnings_movers.add_argument("--universe", type=Path)
     earnings_movers.add_argument("--provider", choices=("sample", "local", "real"), default="real")
     earnings_movers.add_argument("--data-dir", type=Path)
     earnings_movers.add_argument("--history-period", default="3y")
@@ -1011,6 +1139,30 @@ def build_parser() -> argparse.ArgumentParser:
     theme_constituents.add_argument("--output-dir", type=Path, default=Path("outputs/themes"))
     theme_constituents.add_argument("--refresh-cache", action="store_true")
     theme_constituents.add_argument("--as-of-date", type=_parse_date)
+
+    theme_basket = subparsers.add_parser("theme-basket", help="Work with manual theme stock basket files.")
+    theme_basket_subparsers = theme_basket.add_subparsers(dest="theme_basket_command", required=True)
+    theme_basket_scan = theme_basket_subparsers.add_parser("scan", help="Scan a manual theme stock basket file.")
+    theme_basket_scan.add_argument("--basket", type=Path, required=True)
+    theme_basket_scan.add_argument("--provider", choices=("sample", "local", "real"), default="real")
+    theme_basket_scan.add_argument("--data-dir", type=Path)
+    theme_basket_scan.add_argument("--history-period", default="3y")
+    theme_basket_scan.add_argument("--top-n", type=int, default=25)
+    theme_basket_scan.add_argument("--output-dir", type=Path, default=Path("outputs/themes"))
+    theme_basket_scan.add_argument("--refresh-cache", action="store_true")
+    theme_basket_scan.add_argument("--as-of-date", type=_parse_date)
+
+    theme_discovery = subparsers.add_parser("theme-discovery", help="Scan theme ETFs, then scan the strongest mapped theme baskets.")
+    theme_discovery.add_argument("--themes", type=Path, default=Path("config/theme_etfs.txt"))
+    theme_discovery.add_argument("--baskets-dir", type=Path, default=Path("config/theme_baskets"))
+    theme_discovery.add_argument("--provider", choices=("sample", "local", "real"), default="real")
+    theme_discovery.add_argument("--data-dir", type=Path)
+    theme_discovery.add_argument("--history-period", default="3y")
+    theme_discovery.add_argument("--top-themes", type=int, default=5)
+    theme_discovery.add_argument("--top-n", type=int, default=25)
+    theme_discovery.add_argument("--output-dir", type=Path, default=Path("outputs/themes"))
+    theme_discovery.add_argument("--refresh-cache", action="store_true")
+    theme_discovery.add_argument("--as-of-date", type=_parse_date)
 
     coverage_audit = subparsers.add_parser("coverage-audit", help="Audit configured market coverage and tracked inclusion honestly.")
     coverage_audit.add_argument("--universe", type=Path, required=True)

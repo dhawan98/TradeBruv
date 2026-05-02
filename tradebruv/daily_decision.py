@@ -19,7 +19,7 @@ from .dashboard_data import (
 )
 from .decision_merge import merge_canonical_rows
 from .decision_engine import build_unified_decisions, build_validation_context
-from .discovery import run_earnings_movers_scan, run_highs_scan, run_theme_constituents_scan, run_theme_scan
+from .discovery import run_earnings_movers_scan, run_highs_scan, run_theme_basket_scan, run_theme_constituents_scan, run_theme_scan
 from .market_cache import DEFAULT_MARKET_CACHE_DIR, FileCacheMarketDataProvider
 from .market_reliability import ResilientMarketDataProvider
 from .movers import run_movers_scan
@@ -28,6 +28,7 @@ from .providers import MarketDataProvider
 from .scanner import DeterministicScanner
 from .tracked import DEFAULT_TRACKED_TICKERS_PATH, list_tracked_tickers
 from .universe_registry import validate_universe_file
+from .universe_refresh import DEFAULT_THEME_BASKETS_DIR, resolve_theme_basket
 
 DEFAULT_DAILY_DECISION_OUTPUT_DIR = Path("outputs/daily")
 DEFAULT_DAILY_DECISION_JSON_PATH = DEFAULT_DAILY_DECISION_OUTPUT_DIR / "decision_today.json"
@@ -244,22 +245,37 @@ def run_daily_decision(
             if not theme:
                 continue
             constituent_file = constituent_dir / f"{theme}.csv"
-            if not constituent_file.exists():
+            if constituent_file.exists():
+                theme_constituent_payloads.append(
+                    run_theme_constituents_scan(
+                        theme=theme,
+                        constituents_path=constituent_file,
+                        provider_name=provider_name,
+                        analysis_date=as_of,
+                        history_period=history_period,
+                        data_dir=data_dir,
+                        top_n=top_n,
+                        refresh_cache=refresh_cache,
+                        scanner_override=shared_scanner,
+                        provider_override=shared_provider,
+                    ).payload
+                )
                 continue
-            theme_constituent_payloads.append(
-                run_theme_constituents_scan(
-                    theme=theme,
-                    constituents_path=constituent_file,
-                    provider_name=provider_name,
-                    analysis_date=as_of,
-                    history_period=history_period,
-                    data_dir=data_dir,
-                    top_n=top_n,
-                    refresh_cache=refresh_cache,
-                    scanner_override=shared_scanner,
-                    provider_override=shared_provider,
-                ).payload
-            )
+            basket_file = resolve_theme_basket(theme, baskets_dir=DEFAULT_THEME_BASKETS_DIR)
+            if basket_file.exists():
+                theme_constituent_payloads.append(
+                    run_theme_basket_scan(
+                        basket_path=basket_file,
+                        provider_name=provider_name,
+                        analysis_date=as_of,
+                        history_period=history_period,
+                        data_dir=data_dir,
+                        top_n=top_n,
+                        refresh_cache=refresh_cache,
+                        scanner_override=shared_scanner,
+                        provider_override=shared_provider,
+                    ).payload
+                )
     if tracked_tickers:
         scans.append(
             {
@@ -1221,6 +1237,7 @@ def _merge_theme_constituent_candidates(payloads: list[dict[str, Any]], *, limit
         if not payload.get("available", False):
             continue
         rows.extend(payload.get("theme_constituent_candidates", []))
+        rows.extend(payload.get("basket_candidates", []))
     rows.sort(
         key=lambda row: (
             0 if str(row.get("actionability_label")) in {"Momentum Actionable Today", "Breakout Actionable Today", "Pullback Actionable Today"} else 1,

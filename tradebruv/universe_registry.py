@@ -173,6 +173,9 @@ def validate_universe_file(path: Path) -> dict[str, Any]:
     elif "us_broad_1000" in file_name:
         expected_universe_size = 1000
         universe_label = "US Broad 1000 Target"
+    elif "liquid_stocks" in file_name:
+        expected_universe_size = max(row_count, 1500)
+        universe_label = "Broader Liquid Universe" if row_count >= 700 else "Partial Liquid Universe"
     elif "liquid_expanded" in file_name:
         expected_universe_size = 1000
         universe_label = "US Liquid Expanded"

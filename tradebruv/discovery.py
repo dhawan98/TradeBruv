@@ -17,6 +17,14 @@ from .models import SecurityData
 from .providers import BENCHMARK_SYMBOLS, MarketDataProvider
 from .scanner import DeterministicScanner
 from .ticker_symbols import display_ticker
+from .universe_refresh import (
+    DEFAULT_LIQUID_STOCKS_UNIVERSE,
+    DEFAULT_SYMBOL_MASTER_CSV,
+    DEFAULT_THEME_BASKETS_DIR,
+    DEFAULT_THEME_ETF_UNIVERSE,
+    build_universe_health_report,
+    resolve_theme_basket,
+)
 
 DEFAULT_COVERAGE_OUTPUT_DIR = Path("outputs/coverage")
 DEFAULT_DISCOVERY_OUTPUT_DIR = Path("outputs/discovery")
@@ -122,10 +130,23 @@ def build_coverage_audit(
     tracked_included = [ticker for ticker in tracked_report["unique_symbols"] if ticker in universe_report["unique_symbols"]]
     tracked_missing = [ticker for ticker in tracked_report["unique_symbols"] if ticker not in universe_report["unique_symbols"]]
     coverage_label = _coverage_label(universe_report["unique_count"])
+    universe_health = build_universe_health_report(
+        liquid_universe_path=DEFAULT_LIQUID_STOCKS_UNIVERSE,
+        symbol_master_path=DEFAULT_SYMBOL_MASTER_CSV,
+        theme_universe_path=DEFAULT_THEME_ETF_UNIVERSE,
+        theme_baskets_dir=DEFAULT_THEME_BASKETS_DIR,
+    )
     sufficiency = _coverage_sufficiency(
         unique_count=universe_report["unique_count"],
         tracked_count=tracked_report["unique_count"],
         etf_count=universe_report["etf_count"],
+        theme_basket_count=int(universe_health.get("theme_basket_count") or 0),
+    )
+    recommendations = _coverage_recommendations(
+        coverage_label=coverage_label,
+        sufficiency=sufficiency,
+        universe_health=universe_health,
+        tracked_missing=tracked_missing,
     )
 
     payload = {
@@ -140,18 +161,29 @@ def build_coverage_audit(
         "tracked_symbols_included_count": len(tracked_included),
         "tracked_symbols_missing_count": len(tracked_missing),
         "coverage_label": coverage_label,
+        "symbol_master_age": universe_health["symbol_master"],
+        "liquid_universe_age": universe_health["liquid_universe"],
+        "number_of_symbols_in_liquid_universe": universe_health["liquid_universe"]["symbol_count"],
+        "theme_etf_universe_exists": universe_health["theme_universe_exists"],
+        "theme_baskets_exist": universe_health["theme_baskets_exist"],
+        "theme_basket_count": universe_health["theme_basket_count"],
+        "theme_basket_files": universe_health["theme_basket_files"],
+        "universe_is_stale": universe_health["universe_is_stale"],
         "coverage_notes": [
             "TradeBruv scans the configured universe only.",
             "This is not the full U.S. stock market.",
             "Smaller liquid movers outside the file can be missed.",
         ],
         "sufficiency": sufficiency,
+        "coverage_recommendations": recommendations,
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "coverage_audit.json"
     markdown_path = output_dir / "coverage_audit.md"
+    recommendations_path = output_dir / "coverage_recommendations.md"
     json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     markdown_path.write_text(_build_coverage_markdown(payload), encoding="utf-8")
+    recommendations_path.write_text(_build_coverage_recommendations_markdown(payload), encoding="utf-8")
     return DiscoveryResult(payload=payload, json_path=json_path, markdown_path=markdown_path)
 
 
@@ -674,6 +706,162 @@ def run_theme_constituents_scan(
     return DiscoveryResult(payload=payload, json_path=json_path, markdown_path=markdown_path)
 
 
+def run_theme_basket_scan(
+    *,
+    basket_path: Path,
+    provider_name: str,
+    analysis_date: date,
+    history_period: str = "3y",
+    data_dir: Path | None = None,
+    top_n: int = 25,
+    output_dir: Path = DEFAULT_THEMES_OUTPUT_DIR,
+    refresh_cache: bool = False,
+    scanner_override: DeterministicScanner | None = None,
+    provider_override: MarketDataProvider | None = None,
+) -> DiscoveryResult:
+    basket_name = basket_path.stem
+    if not basket_path.exists():
+        payload = {
+            "available": False,
+            "generated_at": _utcnow(),
+            "provider": provider_name,
+            "basket": basket_name,
+            "message": f"No basket file found. Add {basket_path}.",
+            "results": [],
+        }
+        output_dir.mkdir(parents=True, exist_ok=True)
+        json_path = output_dir / f"{basket_name}_basket.json"
+        markdown_path = output_dir / f"{basket_name}_basket.md"
+        json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        markdown_path.write_text(_build_theme_basket_markdown(payload), encoding="utf-8")
+        return DiscoveryResult(payload=payload, json_path=json_path, markdown_path=markdown_path)
+    tickers = (
+        import_tickers_from_csv(basket_path)
+        if basket_path.suffix.lower() == ".csv"
+        else read_ticker_file(basket_path)
+    )
+    prepared_payload = collect_prepared_tickers(
+        tickers=tickers,
+        provider_name=provider_name,
+        analysis_date=analysis_date,
+        history_period=history_period,
+        data_dir=data_dir,
+        refresh_cache=refresh_cache,
+        preferred_lane="Outlier",
+        scanner_override=scanner_override,
+        provider_override=provider_override,
+    )
+    ranked = sorted(
+        [item.discovery for item in prepared_payload["prepared"] if not item.discovery["below_min_price"] and not item.discovery["too_illiquid"]],
+        key=lambda row: (
+            0 if row["actionability_label"] in {"Momentum Actionable Today", "Breakout Actionable Today", "Pullback Actionable Today"} else 1,
+            -_safe_float(row.get("rs_3m")),
+            -_safe_float(row.get("relative_volume")),
+            row["ticker"],
+        ),
+    )[:top_n]
+    payload = {
+        "available": True,
+        "generated_at": prepared_payload["generated_at"],
+        "provider": provider_name,
+        "analysis_date": analysis_date.isoformat(),
+        "basket": basket_name,
+        "basket_file": str(basket_path),
+        "tickers_successfully_scanned": len(prepared_payload["prepared"]),
+        "scan_failures": prepared_payload["failures"],
+        "provider_health": prepared_payload["provider_health"],
+        "cache": prepared_payload["cache"],
+        "results": ranked,
+        "basket_candidates": ranked,
+        "new_highs": [row for row in ranked if row["new_52_week_high"]][:top_n],
+        "breakout_or_pullback_setups": [
+            row
+            for row in ranked
+            if row["actionability_label"] in {"Momentum Actionable Today", "Breakout Actionable Today", "Pullback Actionable Today"}
+        ][:top_n],
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / f"{basket_name}_basket.json"
+    markdown_path = output_dir / f"{basket_name}_basket.md"
+    json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    markdown_path.write_text(_build_theme_basket_markdown(payload), encoding="utf-8")
+    return DiscoveryResult(payload=payload, json_path=json_path, markdown_path=markdown_path)
+
+
+def run_theme_discovery(
+    *,
+    themes: list[str],
+    baskets_dir: Path,
+    provider_name: str,
+    analysis_date: date,
+    history_period: str = "3y",
+    data_dir: Path | None = None,
+    top_themes: int = 5,
+    top_n: int = 25,
+    output_dir: Path = DEFAULT_THEMES_OUTPUT_DIR,
+    refresh_cache: bool = False,
+    scanner_override: DeterministicScanner | None = None,
+    provider_override: MarketDataProvider | None = None,
+) -> DiscoveryResult:
+    theme_payload = run_theme_scan(
+        themes=themes,
+        provider_name=provider_name,
+        analysis_date=analysis_date,
+        history_period=history_period,
+        data_dir=data_dir,
+        top_n=max(top_themes, top_n),
+        output_dir=output_dir,
+        refresh_cache=refresh_cache,
+        scanner_override=scanner_override,
+        provider_override=provider_override,
+    ).payload
+    strongest = list(theme_payload.get("strongest_themes", []))[:top_themes]
+    basket_payloads: list[dict[str, Any]] = []
+    missing_baskets: list[str] = []
+    for row in strongest:
+        theme = str(row.get("ticker") or "").upper()
+        if not theme:
+            continue
+        basket_path = resolve_theme_basket(theme, baskets_dir=baskets_dir)
+        if not basket_path.exists():
+            missing_baskets.append(f"No basket file found. Add {basket_path}.")
+            continue
+        basket_payloads.append(
+            run_theme_basket_scan(
+                basket_path=basket_path,
+                provider_name=provider_name,
+                analysis_date=analysis_date,
+                history_period=history_period,
+                data_dir=data_dir,
+                top_n=top_n,
+                output_dir=output_dir,
+                refresh_cache=refresh_cache,
+                scanner_override=scanner_override,
+                provider_override=provider_override,
+            ).payload
+        )
+    theme_stock_candidates = _merge_theme_constituent_candidates(basket_payloads, limit=top_n)
+    payload = {
+        "available": True,
+        "generated_at": _utcnow(),
+        "provider": provider_name,
+        "analysis_date": analysis_date.isoformat(),
+        "themes_scanned": len(themes),
+        "top_themes_requested": top_themes,
+        "strongest_themes": strongest,
+        "theme_basket_results": basket_payloads,
+        "missing_baskets": missing_baskets,
+        "theme_stock_candidates": theme_stock_candidates,
+        "results": theme_stock_candidates,
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "theme_discovery.json"
+    markdown_path = output_dir / "theme_discovery.md"
+    json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    markdown_path.write_text(_build_theme_discovery_markdown(payload), encoding="utf-8")
+    return DiscoveryResult(payload=payload, json_path=json_path, markdown_path=markdown_path)
+
+
 def _build_scan_stack(
     *,
     provider_name: str,
@@ -906,14 +1094,14 @@ def _file_symbol_report(lines: list[str], *, source: str) -> dict[str, Any]:
 def _coverage_label(unique_count: int) -> str:
     if unique_count < 150:
         return "tiny curated list"
-    if unique_count < 900:
+    if unique_count < 700:
         return "partial broad universe"
-    if unique_count < 2200:
-        return "large liquid universe"
+    if unique_count < 2500:
+        return "broader liquid universe"
     return "near-full liquid universe"
 
 
-def _coverage_sufficiency(*, unique_count: int, tracked_count: int, etf_count: int) -> dict[str, str]:
+def _coverage_sufficiency(*, unique_count: int, tracked_count: int, etf_count: int, theme_basket_count: int) -> dict[str, str]:
     def status(ok: bool, limited: bool, ok_text: str, limited_text: str, weak_text: str) -> str:
         if ok:
             return ok_text
@@ -950,14 +1138,39 @@ def _coverage_sufficiency(*, unique_count: int, tracked_count: int, etf_count: i
             "Limited: catches bigger liquid earnings movers, but not full breadth.",
             "No: too narrow to trust for earnings breadth.",
         ),
-        "theme_etf_discovery": status(
-            etf_count >= 20 or tracked_count >= 20,
-            etf_count >= 5 or tracked_count >= 8,
-            "Yes: enough ETF/theme coverage to rank sectors and themes.",
-            "Limited: some ETF/theme discovery is possible, but coverage is incomplete.",
-            "No: add a dedicated ETF/theme universe for real theme discovery.",
+        "theme_rotation_discovery": status(
+            (etf_count >= 20 or tracked_count >= 20) and theme_basket_count >= 5,
+            etf_count >= 5 or theme_basket_count >= 2,
+            "Mostly: enough ETF and basket coverage to support theme rotation discovery.",
+            "Limited: some theme rotation discovery is possible, but ETF or basket coverage is incomplete.",
+            "No: add dedicated ETF files and manual theme baskets for real theme rotation discovery.",
         ),
     }
+
+
+def _coverage_recommendations(
+    *,
+    coverage_label: str,
+    sufficiency: dict[str, str],
+    universe_health: dict[str, Any],
+    tracked_missing: list[str],
+) -> list[str]:
+    recommendations = [
+        f"Current configured coverage is '{coverage_label}', not the full U.S. market.",
+    ]
+    if universe_health.get("universe_is_stale"):
+        recommendations.append("Refresh the symbol master and liquid universe because at least one universe artifact is stale.")
+    if not universe_health.get("theme_universe_exists"):
+        recommendations.append("Create or refresh config/universe_theme_etfs.txt so theme ETF discovery has a dedicated universe.")
+    if not universe_health.get("theme_baskets_exist"):
+        recommendations.append("Add manual files under config/theme_baskets so strong themes can map into actionable stock baskets.")
+    if tracked_missing:
+        recommendations.append("Some tracked tickers are outside the universe. Either add them to the dynamic universe or keep them as tracked-only exceptions.")
+    if "Limited" in sufficiency.get("outlier_discovery", "") or "No:" in sufficiency.get("outlier_discovery", ""):
+        recommendations.append("Use the dynamic symbol master plus liquid-universe build so smaller liquid movers are less likely to be missed.")
+    if "Limited" in sufficiency.get("theme_rotation_discovery", "") or "No:" in sufficiency.get("theme_rotation_discovery", ""):
+        recommendations.append("Expand ETF/theme coverage and map strong ETFs to manual stock baskets for better sector-rotation discovery.")
+    return recommendations
 
 
 def _why_missed_reason(
@@ -1036,6 +1249,14 @@ def _build_coverage_markdown(payload: dict[str, Any]) -> str:
         "- This is not the full U.S. market.",
         "- Smaller liquid movers outside the file can be missed.",
         "",
+        "## Refresh Health",
+        f"- Symbol master age: {payload['symbol_master_age'].get('age_days')} days",
+        f"- Liquid universe age: {payload['liquid_universe_age'].get('age_days')} days",
+        f"- Liquid universe symbols: {payload['number_of_symbols_in_liquid_universe']}",
+        f"- Theme ETF universe exists: {payload['theme_etf_universe_exists']}",
+        f"- Theme baskets exist: {payload['theme_baskets_exist']} ({payload['theme_basket_count']})",
+        f"- Universe stale: {payload['universe_is_stale']}",
+        "",
         "## Universe File",
         f"- File: {universe['source']}",
         f"- Total symbols: {universe['total_symbols']}",
@@ -1072,6 +1293,19 @@ def _build_coverage_markdown(payload: dict[str, Any]) -> str:
         lines.extend(["", "## Tracked Missing From Universe"])
         for ticker in payload["tracked_symbols_missing"][:25]:
             lines.append(f"- {ticker}")
+    return "\n".join(lines)
+
+
+def _build_coverage_recommendations_markdown(payload: dict[str, Any]) -> str:
+    lines = [
+        "# Coverage Recommendations",
+        "",
+        f"- Coverage label: {payload['coverage_label']}",
+        f"- Universe stale: {payload['universe_is_stale']}",
+        "",
+    ]
+    for item in payload.get("coverage_recommendations", []):
+        lines.append(f"- {item}")
     return "\n".join(lines)
 
 
@@ -1166,6 +1400,37 @@ def _build_theme_constituents_markdown(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _build_theme_basket_markdown(payload: dict[str, Any]) -> str:
+    lines = [f"# Theme Basket: {payload.get('basket', 'Unknown')}", ""]
+    if not payload.get("available", False):
+        lines.append(f"- {payload.get('message')}")
+        return "\n".join(lines)
+    lines.extend(["## Basket Candidates", ""])
+    _append_discovery_rows(lines, payload.get("basket_candidates", []), limit=15)
+    lines.extend(["", "## Breakout / Pullback Setups"])
+    _append_discovery_rows(lines, payload.get("breakout_or_pullback_setups", []), limit=10)
+    return "\n".join(lines)
+
+
+def _build_theme_discovery_markdown(payload: dict[str, Any]) -> str:
+    lines = [
+        "# Theme Discovery",
+        "",
+        f"- Provider: {payload.get('provider')}",
+        f"- Themes scanned: {payload.get('themes_scanned')}",
+        "",
+        "## Strongest Themes",
+    ]
+    _append_discovery_rows(lines, payload.get("strongest_themes", []), limit=10)
+    lines.extend(["", "## Theme Stock Candidates"])
+    _append_discovery_rows(lines, payload.get("theme_stock_candidates", []), limit=15)
+    if payload.get("missing_baskets"):
+        lines.extend(["", "## Missing Baskets"])
+        for item in payload["missing_baskets"]:
+            lines.append(f"- {item}")
+    return "\n".join(lines)
+
+
 def _append_discovery_rows(lines: list[str], rows: list[dict[str, Any]], *, limit: int) -> None:
     if not rows:
         lines.append("- None.")
@@ -1174,6 +1439,31 @@ def _append_discovery_rows(lines: list[str], rows: list[dict[str, Any]], *, limi
         lines.append(
             f"- {row['ticker']}: {row['actionability_label']} | {row['why_it_is_interesting']} | RV {row['relative_volume']} | 1M RS {row['rs_1m']} | 3M RS {row['rs_3m']}"
         )
+
+
+def _merge_theme_constituent_candidates(payloads: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for payload in payloads:
+        if not payload.get("available", False):
+            continue
+        rows.extend(payload.get("theme_constituent_candidates", []))
+        rows.extend(payload.get("basket_candidates", []))
+    rows.sort(
+        key=lambda row: (
+            0 if str(row.get("actionability_label")) in {"Momentum Actionable Today", "Breakout Actionable Today", "Pullback Actionable Today"} else 1,
+            -float(row.get("rs_3m") or 0),
+            -float(row.get("relative_volume") or 0),
+            str(row.get("ticker") or ""),
+        )
+    )
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        ticker = str(row.get("ticker") or "").upper()
+        if ticker and ticker not in seen:
+            seen.add(ticker)
+            deduped.append(row)
+    return deduped[:limit]
 
 
 def _first_by_ticker(rows: list[dict[str, Any]] | Any, ticker: str) -> dict[str, Any] | None:
